@@ -16,3 +16,6 @@ build/
 *.migawka.tar.gz
 *.migawka.tar.gz.tmp
 .data*/
+
+# Blokada katalogu danych działającego API (numer procesu, port)
+*.blokada
