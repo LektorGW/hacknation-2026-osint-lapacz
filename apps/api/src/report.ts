@@ -25,6 +25,7 @@ import { renderIndicatorSections, renderMethodologyBox, renderProofSection } fro
 import { renderServiceSection } from './report-service.ts';
 import { renderOrganizationSections } from './report-org.ts';
 import { renderBusinessSection } from './report-business.ts';
+import { renderMixerSection } from './mixers.ts';
 import type { CaseSummary } from './storage.ts';
 
 export interface ConnectorInfo {
@@ -732,6 +733,8 @@ ${renderOrganizationSections(dossier)}
 
 <h2>Dowód spieniężenia</h2>
 ${renderProofSection(dossier.cashOutProof)}
+
+${renderMixerSection(dossier.mixerExposure)}
 
 ${
   dossier.unconfirmedAddresses.length > 0

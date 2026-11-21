@@ -134,6 +134,16 @@ Dane w `data/fiat.ts` (osoba i „Giełda Wisła” zmyślone; wcześniejsze cz�
 
 Nowe dane wymagają restartu piaskownicy.
 
+### Miksery i CoinJoin
+
+Dane w `data/mixers.ts` (osoba i mikser „WirMix” zmyślone; wcześniejsze części bez zmian). Wynik: baner pod kafelkami podsumowania sprawy, odznaka „mikser” na moście „Śledzenie w blockchainie”, blok „Miksery i CoinJoin” w sekcji Pieniądze, węzeł ze spiralą w grafie i sekcja raportu „Miksery i CoinJoin”.
+
+| Przypadek | Identyfikator do wpisania | Oczekiwany wynik |
+|---|---|---|
+| **Edward Wirski** — środki przez fikcyjny mikser | nick `e_wirski` (albo adres `bc1qwvesxke7vc3zacv89tss38pu0tu58v0zxaxvdj`) | Profil `/gitpub/e_wirski` z adresem BTC. Blockchain: dwa przelewy **do** „WirMix: pula miksera (fikcyjny mikser)” (0,3 i 0,2 BTC, 03.2026), przelew **z** miksera 0,45 BTC (04.2026) i transakcja z czterema wyjściami po 0,05 BTC do różnych adresów (wzorzec CoinJoin / nominał Whirlpool — **hipoteza**). Poziom „potwierdzony” (czerwony baner): „Środki przeszły przez mikser (WirMix, 3 transakcje, ok. 140 tys. zł do miksera) — dalsza droga nieustalona”. Wskaźnik C: składniki `cashout.mixer_obfuscation` i `cashout.mixer_inflow` (waga 0, nie zmieniają wyniku). Kwoty PLN po kursie przykładowym z wpłat na „Giełda Bursztyn”. |
+
+Nowe dane wymagają restartu piaskownicy.
+
 ### Podmiana adresu między analizami
 
 Strona `/_demo` przełącza fazę scenariusza Dominika:

@@ -40,6 +40,24 @@ type EsploraTx = UtxoTx;
 export const TRANSACTION_LIMIT = 50;
 /** Esplora zwraca potwierdzone transakcje stronami po 25. */
 const PAGE_SIZE = 25;
+/** Przerwy przed kolejnymi próbami pobrania strony historii po błędzie eksploratora (przeciążenie, strona błędu). */
+const PAGE_RETRY_DELAYS_MS = [3000, 6000];
+
+/** Przerwa przerywana sygnałem analizy — ponowna próba nie może przetrzymać przerwanej analizy. */
+function pauseFor(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      },
+      { once: true },
+    );
+  });
+}
 const SATOSHI = 1e8;
 
 export interface EsploraProviderConfig extends ActivityOptions {
@@ -233,25 +251,31 @@ export class EsploraProvider implements ChainProvider {
         break;
       }
       const path = `/api/address/${encodeURIComponent(address)}/txs/chain/${txs.at(-1)!.txid}`;
-      let next: EsploraTx[];
-      try {
-        next = await fetchJson<EsploraTx[]>(this.fetchImpl, `${site}${path}`, request);
-      } catch (error) {
-        if (context.signal?.aborted) throw error;
-        const reason = error instanceof Error ? error.message : String(error);
-        if (!fallback) {
-          stoppedBy = `błąd przy pobieraniu kolejnej strony historii — ${reason}`;
-          break;
-        }
-        // Ten sam interfejs API ma drugi publiczny eksplorator — kontynuujemy od tego samego miejsca.
+      // Publiczne eksploratory przy przeciążeniu zwracają chwilowo stronę błędu zamiast JSON-a. Zamiast przerywać
+      // całą historię po pierwszym błędzie: główny, zapasowy, po przerwie znowu główny i znowu zapasowy.
+      const attempts: { base: string; delayMs: number; fallback: boolean }[] = [
+        { base: site, delayMs: 0, fallback: false },
+        ...(fallback ? [{ base: fallback, delayMs: 0, fallback: true }] : []),
+        { base: site, delayMs: PAGE_RETRY_DELAYS_MS[0]!, fallback: false },
+        ...(fallback ? [{ base: fallback, delayMs: PAGE_RETRY_DELAYS_MS[1]!, fallback: true }] : [{ base: site, delayMs: PAGE_RETRY_DELAYS_MS[1]!, fallback: false }]),
+      ];
+      let next: EsploraTx[] | undefined;
+      const reasons: string[] = [];
+      for (const attempt of attempts) {
+        if (attempt.delayMs > 0) await pauseFor(attempt.delayMs, context.signal);
         try {
-          next = await fetchJson<EsploraTx[]>(this.fetchImpl, `${fallback}${path}`, { ...request, source: `${this.label} (zapas: ${fallback})` });
-          usedFallback = true;
-        } catch (second) {
-          if (context.signal?.aborted) throw second;
-          stoppedBy = `błąd przy pobieraniu kolejnej strony historii — ${reason}; zapasowy eksplorator też nie odpowiedział`;
+          next = await fetchJson<EsploraTx[]>(this.fetchImpl, `${attempt.base}${path}`, attempt.fallback ? { ...request, source: `${this.label} (zapas: ${attempt.base})` } : request);
+          if (attempt.fallback) usedFallback = true;
           break;
+        } catch (error) {
+          if (context.signal?.aborted) throw error;
+          const reason = error instanceof Error ? error.message : String(error);
+          if (!reasons.includes(reason)) reasons.push(reason);
         }
+      }
+      if (next === undefined) {
+        stoppedBy = `błąd przy pobieraniu kolejnej strony historii po ${attempts.length} próbach — ${reasons.join('; ')}${fallback ? '; zapasowy eksplorator też nie odpowiedział' : ''}`;
+        break;
       }
       if (!Array.isArray(next)) break;
       historyRequests += 1;

@@ -26,6 +26,8 @@ import { Term } from '../../components/ui/Term.tsx';
 import { OrganizationTile } from '../../components/OrganizationCards.tsx';
 import { leadOrganization } from '../../organizations.ts';
 import { BusinessHeroLine } from '../../components/BusinessActivity.tsx';
+import { MixerBanner, SwirlIcon } from '../../components/MixerExposure.tsx';
+import { mixerBadgeText, mixerExposureOf } from '../../mixers.ts';
 
 const replyRef = (person: PersonCandidate | undefined): ServiceReplyRef | undefined =>
   (person as (PersonCandidate & { confirmedByReply?: ServiceReplyRef }) | undefined)?.confirmedByReply;
@@ -110,7 +112,7 @@ function BridgeDrawing() {
  * osoba ↔ adresy to ślady z otwartych źródeł (OSINT), adresy ↔ wyjścia to przepływy w blockchainie.
  * Zaznaczenie obu mostów pokazuje jeden, połączony graf obu warstw.
  */
-function Bridge({ title, detail, empty, kind, active, onToggle }: { title: string; detail: string; empty: boolean; kind: 'osint' | 'chain'; active: boolean; onToggle: () => void }) {
+function Bridge({ title, detail, empty, kind, active, onToggle, badge }: { title: string; detail: string; empty: boolean; kind: 'osint' | 'chain'; active: boolean; onToggle: () => void; badge?: { text: string; tone: string } }) {
   return (
     <button
       type="button"
@@ -122,6 +124,11 @@ function Bridge({ title, detail, empty, kind, active, onToggle }: { title: strin
       <BridgeDrawing />
       <span className="bridge-title">{title}</span>
       <span className="bridge-detail">{detail}</span>
+      {badge && (
+        <span className={`mixer-badge is-${badge.tone}`}>
+          <SwirlIcon /> {badge.text}
+        </span>
+      )}
       <span className="bridge-cta">{active ? '✓ na grafie poniżej' : 'pokaż na grafie'}</span>
     </button>
   );
@@ -180,6 +187,7 @@ export function CaseHero() {
   const sources = new Set(dossier.findings.flatMap((finding) => finding.evidence.map((item) => item.url))).size;
   const accounts = dossier.profiles.length;
   const chainEdges = dossier.graph.edges.filter((edge) => edgeLayer(edge) === 'chain').length;
+  const mixers = mixerExposureOf(dossier);
   const graphHref = tabHref('graf');
   const [shown, setShown] = useState<{ osint: boolean; chain: boolean }>({ osint: false, chain: false });
   const heroLayer = shown.osint && shown.chain ? 'both' : shown.osint ? 'identity' : shown.chain ? 'chain' : undefined;
@@ -301,6 +309,7 @@ export function CaseHero() {
           empty={chainEdges === 0}
           active={shown.chain}
           onToggle={() => setShown((current) => ({ ...current, chain: !current.chain }))}
+          {...(mixers ? { badge: { text: mixerBadgeText(mixers), tone: mixers.level } } : {})}
         />
 
         <article className="answer">
@@ -357,6 +366,8 @@ export function CaseHero() {
           </a>
         </article>
       </div>
+
+      <MixerBanner />
 
       <BusinessHeroLine />
 

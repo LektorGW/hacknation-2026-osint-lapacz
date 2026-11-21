@@ -11,6 +11,7 @@ import { PROOF_ADDR, proofAccounts, proofLabeledAddresses, proofLedger, proofPag
 import { NETWORK_ADDR, networkAccounts, networkLabeledAddresses, networkLedger, networkPages } from './network.ts';
 import { BUSINESS_ADDR, businessAccounts, businessLabeledAddresses, businessLedger, businessPages } from './business.ts';
 import { FIAT_ADDR, fiatAccounts, fiatLabeledAddresses, fiatLedger, fiatPages, fiatThreads } from './fiat.ts';
+import { MIXER_ADDR, mixerAccounts, mixerLabeledAddresses, mixerLedger, mixerPages } from './mixers.ts';
 
 export type Service = 'gitpub' | 'www' | 'targ' | 'forum' | 'spolecznosc' | 'komunikator';
 
@@ -79,7 +80,7 @@ export interface LabeledAddress {
   address: string;
   network: SandboxNetwork;
   label?: string;
-  addressClass?: 'private' | 'exchange' | 'smart_contract' | 'institutional';
+  addressClass?: 'private' | 'exchange' | 'smart_contract' | 'institutional' | 'mixer';
   isContract?: boolean;
   /** Rodzaj usługi wyjścia do walut tradycyjnych — wskazówka dla modułu danych blockchain. */
   kind?: 'p2p_service' | 'payment_gateway' | 'crypto_card' | 'stablecoin_swap';
@@ -91,6 +92,8 @@ export interface LedgerRow {
   to: string;
   asset: string;
   amount: number;
+  /** Wspólny identyfikator transakcji dla kilku wierszy (transakcja o wielu wyjściach); domyślnie skrót wiersza. */
+  txid?: string;
 }
 
 // ---------- Adresy ----------
@@ -719,9 +722,9 @@ export const snapshots: Snapshot[] = [
 // ---------- Całość: scenariusze a–h, „rynek P2P" (data/market.ts), „powiązane tożsamości" (data/related.ts), „dowody" (data/proofs.ts) ----------
 
 /** Adresy części rynkowej — do testów i dokumentacji. */
-export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR, NETWORK_ADDR, BUSINESS_ADDR, FIAT_ADDR };
+export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR, NETWORK_ADDR, BUSINESS_ADDR, FIAT_ADDR, MIXER_ADDR };
 
-export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses, ...networkLabeledAddresses, ...businessLabeledAddresses, ...fiatLabeledAddresses];
+export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses, ...networkLabeledAddresses, ...businessLabeledAddresses, ...fiatLabeledAddresses, ...mixerLabeledAddresses];
 export const ledger: LedgerRow[] = [
   ...baseLedger,
   ...marketLedger(ADDR),
@@ -754,9 +757,11 @@ export const ledger: LedgerRow[] = [
   ...businessLedger({ exchangeBtc: ADDR.exchangeBtc }),
   // Część „wyjście do walut tradycyjnych” (data/fiat.ts) — demonstracja wskaźnika C (Web2 + blockchain).
   ...fiatLedger({ swapEth: ADDR.swapEth, anonEth: MARKET_ADDR.anonEth4 }),
+  // Część „miksery i CoinJoin” (data/mixers.ts) — przelewy do i z fikcyjnego miksera oraz transakcja o wzorcu CoinJoin.
+  ...mixerLedger({ exchangeBtc: ADDR.exchangeBtc }),
 ];
-export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts, ...networkAccounts, ...businessAccounts, ...fiatAccounts];
-export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages, ...networkPages, ...businessPages, ...fiatPages];
+export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts, ...networkAccounts, ...businessAccounts, ...fiatAccounts, ...mixerAccounts];
+export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages, ...networkPages, ...businessPages, ...fiatPages, ...mixerPages];
 export const threads: Thread[] = [...baseThreads, ...marketThreads, ...proofThreads, ...fiatThreads];
 
 export const scenario = { accounts, pages, threads, snapshots, labeledAddresses, ledger };

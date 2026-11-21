@@ -187,7 +187,8 @@ function buildExplorer(): Map<string, ExplorerAddress> {
     const from = entry(row.from);
     const to = entry(row.to);
     const hash = createHash('sha256').update(JSON.stringify(row)).digest('hex');
-    const txid = from.network === 'ethereum' ? `0x${hash}` : hash;
+    // Kilka wierszy z tym samym `txid` to jedna transakcja o wielu wyjściach (np. wzorzec CoinJoin).
+    const txid = row.txid ?? (from.network === 'ethereum' ? `0x${hash}` : hash);
     const common = { txid, time: row.time, asset: row.asset, amount: row.amount };
     from.transfers.push({ ...common, direction: 'out', counterparty: row.to, ...describe(to) });
     to.transfers.push({ ...common, direction: 'in', counterparty: row.from, ...describe(from) });

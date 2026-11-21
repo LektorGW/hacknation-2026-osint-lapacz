@@ -8,6 +8,7 @@ import { buildChain, proofSummary, splitProofs } from '../proof.ts';
 import { countText, groupProofs, plainComponent } from '../ux.ts';
 import type { ProofGroup } from '../ux.ts';
 import { Explanations } from './Explanations.tsx';
+import { MixerBlock } from './MixerExposure.tsx';
 import type { CashOutProof, ChainNode } from '../proof.ts';
 import { useAsync } from '../useAsync.ts';
 import { CopyButton, EmptyState, ExternalLink, LayerTag, ShortAddress } from './common.tsx';
@@ -325,6 +326,7 @@ export function ProofTab() {
           </p>
         </div>
       </header>
+      <MixerBlock />
       {firm.length === 0 && conditional.length === 0 && (explained ? <Explanations /> : <IndicatorsOnly />)}
       {firm.length > 0 && (
         <>

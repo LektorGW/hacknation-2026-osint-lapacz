@@ -821,3 +821,28 @@ a.sidebar-button[aria-current='page'] { background: #2b4a86; border-color: #2b4a
 .app-footer-credit { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2) !important; padding-top: var(--s2); border-top: 1px solid var(--border); font-size: 0.78rem; }
 .app-footer-credit img { flex: none; border-radius: 5px; }
 .app-footer-credit strong { color: var(--text); font-weight: 600; }
+
+/* Miksery i CoinJoin: spokojny baner pod kafelkami, odznaka na moście, blok w sekcji Pieniądze, węzeł ze spiralą w grafie.
+   Kolor: bursztyn (hipoteza, heurystyka) albo czerwień (oznaczony mikser). Bez animacji — nic do wyłączania przy ograniczonym ruchu. */
+.swirl-icon { display: inline-block; vertical-align: -0.15em; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.mixer-banner { --mixer-tone: var(--inference); --mixer-bg: var(--inference-bg); display: flex; align-items: flex-start; gap: var(--s3); margin: var(--s4) 0 0; padding: var(--s3) var(--s4); border: 1px solid color-mix(in srgb, var(--mixer-tone) 45%, transparent); border-left: 4px solid var(--mixer-tone); border-radius: var(--radius-small); background: var(--mixer-bg); color: var(--text); }
+.mixer-banner.is-confirmed, .mixer-block.is-confirmed, .mixer-badge.is-confirmed { --mixer-tone: var(--danger); --mixer-bg: var(--danger-bg); }
+.mixer-banner-icon { flex: none; color: var(--mixer-tone); font-size: 1.35rem; line-height: 1; }
+.mixer-banner-text { flex: 1 1 auto; min-width: 0; margin: 0; }
+.mixer-banner-text strong { color: var(--mixer-tone); }
+.mixer-banner-note { color: var(--muted); font-size: 0.88rem; }
+.mixer-banner-link { flex: none; align-self: center; font-weight: 600; color: var(--mixer-tone); white-space: nowrap; }
+.mixer-badge { --mixer-tone: var(--inference); --mixer-bg: var(--inference-bg); display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; padding: 1px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; color: var(--mixer-tone); background: var(--mixer-bg); border: 1px solid color-mix(in srgb, var(--mixer-tone) 45%, transparent); white-space: nowrap; }
+.mixer-block { --mixer-tone: var(--inference); --mixer-bg: var(--inference-bg); border-left: 4px solid var(--mixer-tone); margin-bottom: var(--s4); }
+.mixer-block h4 { margin-top: var(--s3); }
+.mixer-sanctions li, .mixer-hypotheses li { margin: var(--s2) 0; }
+.gnode.is-mixer > circle { fill: var(--danger-bg); stroke: var(--danger); }
+.gnode.is-mixer.st-hypothesis > circle { fill: var(--inference-bg); stroke: var(--inference); stroke-dasharray: 4 3; }
+.gnode > path.gnode-swirl, .gnode-swirl { fill: none; stroke: var(--danger); stroke-width: 2.4; stroke-linecap: round; }
+.gnode.is-mixer.st-hypothesis .gnode-swirl { stroke: var(--inference); }
+.gnode.is-box.is-mixer .gnode-box { stroke: var(--danger); }
+@media (max-width: 640px) {
+  .mixer-banner { flex-wrap: wrap; }
+  .mixer-banner-link { align-self: flex-start; }
+}
+@media print { .mixer-banner-link { display: none; } }

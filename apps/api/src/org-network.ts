@@ -147,6 +147,8 @@ export interface OrgNetworkParams {
 
 const KRS_API = 'https://api-krs.ms.gov.pl/api/krs/OdpisAktualny';
 const WIKIDATA_API = 'https://www.wikidata.org/w/api.php';
+/** Przerwa przed jedyną ponowną próbą zapytania do rejestru po błędzie sieci, 429 albo 5xx. */
+const REGISTRY_RETRY_DELAY_MS = 1500;
 const WIKIDATA_SPARQL = 'https://query.wikidata.org/sparql';
 const GLEIF_API = 'https://api.gleif.org/api/v1/lei-records';
 const PROPUBLICA_API = 'https://projects.propublica.org/nonprofits/api/v2/search.json';
@@ -211,22 +213,31 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
     }
     requests++;
     const retrievedAt = now().toISOString();
-    try {
-      const signal = params.signal ? AbortSignal.any([params.signal, AbortSignal.timeout(limits.requestTimeoutMs)]) : AbortSignal.timeout(limits.requestTimeoutMs);
-      const response = await doFetch(url, { headers: { 'User-Agent': ORG_USER_AGENT, Accept: accept }, signal });
-      if (response.status === 404) return { status: 404 };
-      if (!response.ok) throw new Error(`kod ${response.status}`);
-      const json = obj(await response.json());
-      const source: RegistrySource = { registry, url, retrievedAt, terms: REGISTRY_TERMS[registry] };
-      sources.push(source);
-      return { ...(json ? { json } : {}), source, status: response.status };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const entry = failures.get(registry) ?? { count: 0, message };
-      entry.count++;
-      failures.set(registry, entry);
-      log(`[rejestry] ${registry}: błąd zapytania ${url} — ${message}.`);
-      return { status: -1 };
+    // Chwilowy błąd sieci albo przeciążenie (5xx, 429) — jedna ponowna próba po krótkiej przerwie.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const signal = params.signal ? AbortSignal.any([params.signal, AbortSignal.timeout(limits.requestTimeoutMs)]) : AbortSignal.timeout(limits.requestTimeoutMs);
+        const response = await doFetch(url, { headers: { 'User-Agent': ORG_USER_AGENT, Accept: accept }, signal });
+        if (response.status === 404) return { status: 404 };
+        if (!response.ok) throw Object.assign(new Error(`kod ${response.status}`), { retryable: response.status === 429 || response.status >= 500 });
+        const json = obj(await response.json());
+        const source: RegistrySource = { registry, url, retrievedAt, terms: REGISTRY_TERMS[registry] };
+        sources.push(source);
+        return { ...(json ? { json } : {}), source, status: response.status };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const retryable = (error as { retryable?: boolean }).retryable !== false && !params.signal?.aborted;
+        if (attempt === 0 && retryable) {
+          log(`[rejestry] ${registry}: ${message} — ponawiam raz po przerwie.`);
+          await new Promise((resolve) => setTimeout(resolve, REGISTRY_RETRY_DELAY_MS));
+          continue;
+        }
+        const entry = failures.get(registry) ?? { count: 0, message };
+        entry.count++;
+        failures.set(registry, entry);
+        log(`[rejestry] ${registry}: błąd zapytania ${url} — ${message}.`);
+        return { status: -1 };
+      }
     }
   };
 

@@ -181,7 +181,14 @@ const entries = {
   },
   mikser: {
     term: 'Mikser',
-    short: 'Usługa, która miesza środki wielu osób, aby utrudnić śledzenie, skąd pochodzą.',
+    short: 'Usługa, która miesza środki wielu osób, aby utrudnić śledzenie, skąd pochodzą i dokąd trafiły (np. Tornado Cash, Wasabi).',
+    why: 'Po mikserze dalszej drogi środków nie da się ustalić z blockchainu. Samo użycie miksera bywa legalną ochroną prywatności — nie świadczy o niczym więcej.',
+    group: 'adresy',
+  },
+  coinjoin: {
+    term: 'CoinJoin',
+    short: 'Wspólna transakcja Bitcoin wielu osób: każdy wpłaca środki i dostaje z powrotem wyjście o tej samej kwocie, więc nie widać, które wyjście należy do kogo.',
+    why: 'Rozpoznajemy go heurystyką (wiele równych wyjść w jednej transakcji) — to hipoteza, bo wypłata zbiorcza usługi może wyglądać podobnie.',
     group: 'adresy',
   },
 

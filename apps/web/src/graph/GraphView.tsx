@@ -13,6 +13,7 @@ import { DecisionControls, DecisionHistory, useDossier } from '../components/Dos
 import { EvidenceRefs, OperatorDecision, OperatorHypothesisDetails, IndicatorScore, StatusBadge } from '../components/Indicators.tsx';
 import { SyntheticTag } from '../components/Mode.tsx';
 import { addressKey, jointProbability } from '../dossier.ts';
+import { SWIRL_PATH, isMixerNode } from '../mixers.ts';
 import { fmtAmount, fmtPln, scoreLevel, truncate } from '../format.ts';
 import {
   CLAIM_STATUSES,
@@ -86,6 +87,16 @@ function Glyph({ kind }: { kind: GraphNodeKind }) {
     default:
       return <polygon points="0,-14 13,10 -13,10" />;
   }
+}
+
+/** Węzeł miksera: koło ze spiralą — wyróżnia usługę, po której dalszej drogi środków nie widać. */
+function MixerGlyph() {
+  return (
+    <>
+      <circle r={15} />
+      <path className="gnode-swirl" d={SWIRL_PATH} />
+    </>
+  );
 }
 
 type Selection = { type: 'node'; id: string } | { type: 'edge'; id: string } | null;
@@ -577,6 +588,7 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
   const at = (id: string): Point => layout.positions.get(id) ?? { x: 0, y: 0 };
   const curved = flow || !radial;
   const kinds = KIND_ORDER.filter((kind) => all.nodes.some((node) => node.kind === kind));
+  const hasMixer = all.nodes.some(isMixerNode);
   const label = (id: string) => all.nodes.find((item) => item.id === id)?.label ?? id;
   const statusCount = (status: ClaimStatus) => all.edges.filter((edge) => edgeStatus(edge) === status).length;
   const chainEdges = all.edges.filter((edge) => edgeLayer(edge) === 'chain').length;
@@ -902,11 +914,12 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
               const description = `${isInput ? 'Wejście wyszukiwania — ' : ''}${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}${risk ? ` — ${risk.badge} (${risk.status === 'source_fact' ? 'fakt o liście' : 'hipoteza: zgodność nazwy'}): ${risk.tooltip}` : ''}`;
               const dim = (near && !focus && !near.has(node.id)) || (path && !pathNodes.has(node.id)) || (focus !== null && !focus.has(node.id));
               const serviceBox = flow && node.kind === 'service';
+              const mixer = isMixerNode(node);
               return (
                 <g
                   key={node.id}
                   data-node
-                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''} ${isNew ? 'is-new' : ''} ${risk ? (risk.status === 'source_fact' ? 'risk-fact' : 'risk-hypothesis') : ''}`}
+                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''} ${isNew ? 'is-new' : ''} ${risk ? (risk.status === 'source_fact' ? 'risk-fact' : 'risk-hypothesis') : ''} ${mixer ? 'is-mixer' : ''}`}
                   transform={`translate(${point.x},${point.y})`}
                   tabIndex={0}
                   role="button"
@@ -924,6 +937,7 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
                   {serviceBox ? (
                     <>
                       <rect className="gnode-box" x={-16} y={-22} width={SERVICE_BOX} height={44} rx={10} />
+                      {mixer && <path className="gnode-swirl" d={SWIRL_PATH} transform={`translate(${SERVICE_BOX - 30},0) scale(0.8)`} />}
                       <text className="gnode-label" x={-4} y={-3}>
                         {truncate(node.label, 22)}
                       </text>
@@ -931,6 +945,8 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
                         {truncate(node.sublabel ?? 'usługa', 28)}
                       </text>
                     </>
+                  ) : mixer ? (
+                    <MixerGlyph />
                   ) : (
                     <Glyph kind={node.kind} />
                   )}
@@ -1072,6 +1088,14 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
               {NODE_KIND_LABEL[kind] ?? kind}
             </li>
           ))}
+          {hasMixer && (
+            <li>
+              <svg className="legend-glyph gnode gnode-service is-mixer" viewBox="-20 -20 40 40" aria-hidden="true">
+                <MixerGlyph />
+              </svg>
+              mikser lub CoinJoin: dalsza droga środków nieustalona; krawędzie „do miksera” / „z miksera”
+            </li>
+          )}
           <li>
             <span className="legend-arrow" aria-hidden="true">
               ➤

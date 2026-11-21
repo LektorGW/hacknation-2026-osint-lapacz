@@ -37,6 +37,8 @@ import type { RiskGraphResult } from '@olcys/sources';
 import { addressKey, sightingKey } from './intel.ts';
 import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
+import { applyMixerExposure, mixerKeyFindings } from './mixers.ts';
+import type { MixerExposure } from './mixers.ts';
 import { buildAccountWalletLinks, buildOperatorHypotheses } from './operator.ts';
 import { PERSON_RULES, resolvePersons } from './persons.ts';
 import { summarizeFindings } from './priority.ts';
@@ -163,6 +165,8 @@ export interface DossierView extends Dossier {
   addressNetwork: AddressNetwork[];
   /** Odznaki list sankcyjnych i ostrzeżeń dla węzłów grafu (id węzła → trafienie); brak = brak trafień. */
   riskLists?: RiskGraphResult['badges'];
+  /** Miksery i CoinJoin: czy środki adresów sprawy przeszły przez mikser (poziom, przekazania, hipotezy, listy sankcyjne). */
+  mixerExposure: MixerExposure;
 }
 
 export interface DossierInput {
@@ -767,6 +771,8 @@ export function buildDossier(input: DossierInput): DossierView {
     riskCheck: (riskNodes) => checkNetworkNodes(riskNodes),
   });
   applyBusinessBadges(graph, indicators.businessActivity);
+  // Miksery i CoinJoin: ekspozycja adresów sprawy, składniki informacyjne wskaźników C i D, węzły mikserów w grafie.
+  const mixerExposure = applyMixerExposure({ findings, linkedKeys, allFindings: findings, graph, indicators, serviceLinks });
 
   return {
     caseId: caseSummary.id,
@@ -807,6 +813,7 @@ export function buildDossier(input: DossierInput): DossierView {
     ...(input.intel?.organizationNetwork ? { organizationNetwork: input.intel.organizationNetwork } : {}),
     addressNetwork,
     ...(riskLists ? { riskLists } : {}),
+    mixerExposure,
     timeline: buildTimeline({
       linked,
       profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)),
@@ -850,7 +857,7 @@ export function buildDossier(input: DossierInput): DossierView {
       relatedPersons,
       priority: summary.priority,
       connectorCount: run.connectors.length,
-    }), organizations, input.intel?.organizationNetwork), riskLists), ...businessKeyFindings(indicators.businessActivity)],
+    }), organizations, input.intel?.organizationNetwork), riskLists), ...businessKeyFindings(indicators.businessActivity), ...mixerKeyFindings(mixerExposure)],
   };
 }
 

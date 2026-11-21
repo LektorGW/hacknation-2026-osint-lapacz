@@ -147,7 +147,7 @@ test('błąd strony historii: kontynuacja z zapasowego eksploratora; bez zapasu 
   const alone = provider(routes);
   const partial = await alone.esplora.getActivity('bitcoin', SUBJECT, context({ history: 'full' }));
   assert.equal(partial.transfers.length, 25);
-  assert.ok(partial.limitations.some((item) => /stronicowanie przerwano: błąd przy pobieraniu kolejnej strony historii — .*HTTP 502/.test(item)));
+  assert.ok(partial.limitations.some((item) => /stronicowanie przerwano: błąd przy pobieraniu kolejnej strony historii po \d+ próbach — .*HTTP 502/.test(item)));
 });
 
 test('do śledzenia trafiają największe wypływy, nie najnowsze; pokrycie wartości jest opisane', async () => {

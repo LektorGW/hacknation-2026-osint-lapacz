@@ -527,7 +527,7 @@ const STABLE = new Set(['USDT', 'USDC', 'DAI']);
 const assetKey = (asset: string) => (STABLE.has(asset.toUpperCase()) ? 'USD-STABLE' : asset.toUpperCase());
 
 /** Kurs w dniu wpływu z najbliższej istniejącej wyceny tego samego aktywa (w oknie `rateWindowDays`). */
-function rateFor(asset: string, time: string, valuations: BusinessValuation[]): { rate: number; note: string; sample: boolean } | undefined {
+export function rateFor(asset: string, time: string, valuations: BusinessValuation[]): { rate: number; note: string; sample: boolean } | undefined {
   const at = Date.parse(time);
   let best: { valuation: BusinessValuation; distance: number } | undefined;
   for (const valuation of valuations) {
