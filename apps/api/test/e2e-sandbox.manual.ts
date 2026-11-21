@@ -53,6 +53,11 @@ for (const value of values) {
   if (dossier.findings.length > 12) console.log(`  … oraz ${dossier.findings.length - 12} dalszych adresów`);
   for (const proof of dossier.cashOutProof.slice(0, 5)) console.log(`  dowód: ${proof.statement} [${proof.tier}, ${proof.addressBasis}]`);
   for (const link of dossier.serviceLinks.slice(0, 10)) console.log(`  usługa: ${link.name} [${link.kind}] siła ${link.strength} ${link.basis.join('+')} out=${link.outPln ?? '—'} PLN`);
+  for (const identity of dossier.linkedIdentities ?? []) {
+    console.log(`  tożsamość: ${identity.displayName} [${identity.relation}] siła ${identity.score}; wypłaty ${JSON.stringify(identity.cashOutPlnByYear)}`);
+    console.log(`      ścieżka: ${identity.path.join(' → ').slice(0, 300)}`);
+    console.log(`      przesłanka: ${identity.reasons[0].text.slice(0, 220)}`);
+  }
   for (const person of dossier.relatedPersons.slice(0, 5)) console.log(`  powiązana: ${person.handle} ${person.strength} ${person.relations.map((item: { kind: string }) => item.kind).join(',')}`);
   console.log(`  priorytet ${dossier.totals.priority}, graf ${dossier.graph.nodes.length}/${dossier.graph.edges.length}, oś czasu ${dossier.timeline.length}`);
   for (const item of dossier.keyFindings) console.log(`  • [${item.layer}] ${item.text}`);

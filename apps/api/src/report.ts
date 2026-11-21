@@ -14,6 +14,7 @@ import type {
   SourceCategory,
   StoredEvidence,
 } from '@olcys/core';
+import { identityRelationLabel } from './aliases.ts';
 import type { AddressReplacement } from './diff.ts';
 import type { DossierFinding, DossierView } from './dossier.ts';
 import { formatAmount as amount, formatPln as pln, shortAddress as short } from './format.ts';
@@ -613,6 +614,30 @@ ${
           ${replacements.map((item) => `<tr><td>${link(item.url)}</td><td class="mono">${esc(item.from)}</td><td>${dateTime(item.archivedAt)}</td><td class="mono">${esc(item.to)}</td><td>${dateTime(item.observedAt)}</td></tr>`).join('')}
         </table>`) +
       inference('<p>Podmiana adresu w profilu może oznaczać zmianę portfela przez podmiot albo próbę ukrycia wcześniejszego adresu. Oba adresy warto analizować łącznie.</p>')
+}
+
+<h2>Powiązane tożsamości i ścieżki dojścia</h2>
+${
+  dossier.linkedIdentities.length === 0
+    ? '<p>Rozszerzanie analizy (wspólne cechy profili, ten sam adres, adresy powiązane w blockchainie) nie wskazało innych tożsamości.</p>'
+    : inference(`<p>Inne nazwy, pod którymi może występować ta sama osoba, oraz osoby bliskie lub podstawione. Żadna z tych tożsamości nie jest scalona z osobą główną —
+        rozstrzyga analityk. Łączne szacunkowe wypłaty osoby głównej i tożsamości „prawdopodobnie ta sama osoba”: <strong>${esc(pln(dossier.totals.cashOutPlnTotalWithLikelySame))}</strong>
+        (sama osoba główna: ${esc(pln(dossier.totals.cashOutPlnTotal))}).</p>
+      ${dossier.linkedIdentities
+        .map(
+          (identity) => `<div class="zrodlo">
+            <h4>${esc(identity.displayName)} — ${esc(identityRelationLabel(identity.relation))}, siła ${identity.score}/100${identity.decision === 'rejected' ? ' (analityk: inna osoba)' : ''}</h4>
+            ${identity.handles.length > 0 ? `<p>Nazwy kont: ${esc(identity.handles.join(', '))}. Profile: ${identity.profiles.map((profile) => link(profile.url, `${profile.service}`)).join(', ')}.</p>` : ''}
+            <p><strong>Ścieżka dojścia:</strong> ${identity.path.length > 0 ? identity.path.map((step) => esc(step)).join(' → ') : '—'}</p>
+            <table><tr><th>Przesłanka</th><th>Dowody</th></tr>
+              ${identity.reasons.map((reason) => `<tr><td>${esc(reason.text)}</td><td>${reason.evidence.map((item) => (item.kind === 'url' ? link(item.value) : `<span class="mono">${esc(item.value)}</span>`)).join('<br>')}</td></tr>`).join('')}
+            </table>
+            ${identity.addresses.length > 0 ? `<p>Adresy: ${identity.addresses.map((item) => `<span class="mono">${esc(item.address)}</span> (${esc(item.basis)})`).join(', ')}.</p>` : ''}
+            ${identity.cashOutProof.length > 0 ? `<ul>${identity.cashOutProof.map((proof) => `<li>${esc(proof.statement)}</li>`).join('')}</ul>` : ''}
+            <p class="meta">${esc(identity.note)}</p>
+          </div>`,
+        )
+        .join('')}`)
 }
 
 <h2>7. Osoby powiązane</h2>

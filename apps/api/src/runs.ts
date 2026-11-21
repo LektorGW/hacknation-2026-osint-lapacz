@@ -7,6 +7,7 @@ import type { AiAssistant, AnalysisRun, ChainProvider, ScoreRules, SourceConnect
 import { runAnalysis } from './analysis.ts';
 import type { ActivityResolver, AnalysisStage } from './analysis.ts';
 import type { QueryTiming, StageTiming } from './intel.ts';
+import { PIVOT_LIMITS } from './pivot.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 
 export type RunDepth = 'standard' | 'deep';
@@ -112,6 +113,7 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
         maxChainAddresses: limits.maxChainAddresses,
         timeoutMs: limits.requestTimeoutMs,
         connectorTimeouts: CONNECTOR_TIMEOUTS,
+        pivot: PIVOT_LIMITS[depth],
         period: options.period,
         normalizeText: deps.normalizeText,
         totalTimeoutMs: limits.totalTimeoutMs,

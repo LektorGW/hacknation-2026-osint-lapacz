@@ -251,7 +251,7 @@ test('pomiar czasu: fazy w kolejności wykonania i najwolniejsze zapytania', asy
   const quick = fakeConnector('szybki', 'szybki.example', ['nick', 'crypto_address'], () => []);
   const result = await runAnalysis({ query: { identifiers: [nick] }, connectors: [slow, quick], chainProviders: [fakeProvider()] });
 
-  assert.deepEqual(result.intel.timings!.map((item) => item.stage), ['search-0', 'occurrences', 'chain', 'counterparties', 'scoring']);
+  assert.deepEqual(result.intel.timings!.map((item) => item.stage), ['search-0', 'occurrences', 'chain', 'counterparties', 'pivot', 'scoring']);
   assert.ok(result.intel.timings!.every((item) => Number.isInteger(item.ms) && item.ms >= 0));
   assert.ok(result.intel.timings![0]!.ms >= 25);
   const [slowest] = result.intel.slowestQueries!;

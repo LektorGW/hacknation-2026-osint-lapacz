@@ -15,6 +15,8 @@ import { addressKey, sightingKey } from './intel.ts';
 import { mentionsInDocument } from './services.ts';
 import type { AuthorComparison, DiscoveryStep, MentionSummary, QueryTiming, RunIntel, Sighting, SightingRole, StageTiming } from './intel.ts';
 import { comparablePairs } from './persons.ts';
+import { PIVOT_LIMITS, runPivot } from './pivot.ts';
+import type { PivotLead, PivotSource } from './pivot.ts';
 import type {
   AiAssistant,
   AnalysisRun,
@@ -103,6 +105,8 @@ export interface AnalysisParams {
   maxMentionAuthors?: number;
   /** Po ilu niepowiązanych autorach przestajemy zbierać wzmianki o identyfikatorze w kolejnych źródłach wyszukiwawczych. */
   mentionStopAuthors?: number;
+  /** Pętla rozszerzania (inne tożsamości, adresy powiązane): liczba kroków i zapytań na krok; `steps: 0` ją wyłącza. */
+  pivot?: { steps: number; queriesPerStep: number };
   /** Okres, którego ma dotyczyć historia blockchain (daty ISO); przekazywany dostawcom danych. */
   period?: { from?: string; to?: string };
   /** Model językowy (opcjonalny): odczyt publikacji i porównanie autorów. */
@@ -112,7 +116,7 @@ export interface AnalysisParams {
   onProgress?: (progress: AnalysisProgress) => void;
 }
 
-export type AnalysisStage = 'search' | 'occurrences' | 'chain' | 'counterparties' | 'ai' | 'scoring';
+export type AnalysisStage = 'search' | 'occurrences' | 'chain' | 'counterparties' | 'pivot' | 'ai' | 'scoring';
 
 export interface AnalysisProgress {
   stage: AnalysisStage;
@@ -130,6 +134,12 @@ export type AnalysisFinding = Omit<Finding, 'evidence'> & {
   widelyCited?: boolean;
   /** Analizę blockchain pominięto z powodu limitu adresów albo czasu. */
   chainSkipped?: boolean;
+  /**
+   * Adres opublikowany przez powiązaną tożsamość (pętla rozszerzania), a nie przez podmiot.
+   * Nie jest przypisany podmiotowi; `linkedScore` to Wskaźnik Pewności względem autora publikacji.
+   */
+  linkedOnly?: boolean;
+  linkedScore?: number;
   notes?: string[];
 };
 
@@ -187,6 +197,8 @@ interface AddressGroup {
   unrelatedAuthors: Set<string>;
   /** Wiedza o adresie z publikacji bez autora (np. serwisy ostrzegające) — adnotacje, nie ślady osoby. */
   notes: string[];
+  /** Adres znany tylko z publikacji powiązanej tożsamości. */
+  linkedOnly?: boolean;
   chain?: ChainActivity;
 }
 
@@ -934,6 +946,78 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
   await occurrencesDone;
 
+  // ---------- Rozszerzanie: inne tożsamości tej samej osoby i adresy powiązane ----------
+
+  report('pivot');
+  const pivotLimits = params.pivot ?? PIVOT_LIMITS.standard;
+  let pivotLeads: PivotLead[] = [];
+  if (pivotLimits.steps > 0) {
+    const corpus = params.connectors.find((connector) => connector.id === 'corpus');
+    const ownedAddresses = (doc: SourceDocument) =>
+      OWNERSHIP_CATEGORIES.includes(doc.category) ? extract(doc.text).map((item) => ({ network: item.network, address: item.address })) : [];
+    const subjectProfiles: PivotSource[] = [...sightings.values()]
+      .filter((item) => item.role === 'subject')
+      .map((item) => ({
+        path: [`profil „${item.profile?.handle ?? item.author ?? item.url}” podmiotu w serwisie ${item.service}`],
+        author: item.author,
+        handle: item.profile?.handle ?? item.author,
+        attributes: item.profile,
+        addresses: [],
+        ofSubject: true,
+      }));
+    const subjectChains: PivotSource[] = subjectGroups
+      .filter((group) => group.chain && (group.evidence.size > 0 || subjectAddresses.has(group.address.toLowerCase())))
+      .map((group) => ({ path: [], addresses: [{ network: group.network, address: group.address, chain: group.chain }], ofSubject: true }));
+    pivotLeads = await runPivot({
+      steps: pivotLimits.steps,
+      queriesPerStep: pivotLimits.queriesPerStep,
+      sources: [...subjectProfiles, ...subjectChains],
+      isSubjectName: (name) => knownNames.has(normalizeName(name)),
+      search: (identifier) => search(identifier, { timeShare: PIVOT_LIMITS.timeShare, directOnly: true }),
+      phraseSearch: async (phrase) => {
+        if (!corpus || expired('rozszerzanie o inne tożsamości', PIVOT_LIMITS.timeShare)) return [];
+        try {
+          return (await corpus.search({ type: 'full_name', value: phrase }, { log: (message) => log(`[corpus] ${message}`) })).map(dedupe).filter((doc): doc is SourceDocument => doc !== undefined);
+        } catch (error) {
+          log(`[corpus] BŁĄD przy frazie „${phrase}”: ${errorText(error)}.`);
+          return [];
+        }
+      },
+      ownedAddresses,
+      record: (doc, step) => {
+        const author = doc.author ? normalizeName(doc.author) : '';
+        if (!author || knownNames.has(author)) return false;
+        const contentHash = sha256Hex(doc.text);
+        const owned = ownedAddresses(doc);
+        capture(doc, contentHash);
+        noteSighting(doc, { match: 'same_handle', reasons: [] }, 'linked_identity', step, extract(doc.text).map(addressKey));
+        // Adresy opublikowane przez powiązaną tożsamość jako własne dostają osobne wpisy —
+        // nie są przypisane podmiotowi, ale ich aktywność w łańcuchu jest potrzebna do oceny.
+        for (const item of extract(doc.text)) {
+          if (!owned.some((entry) => entry.address === item.address)) continue;
+          const key = addressKey(item);
+          let group = groups.get(key);
+          if (!group) {
+            group = groupFor(item.network, item.address, item.checksumVerified);
+            group.linkedOnly = true;
+          }
+          if (group.linkedOnly) {
+            addEvidence(group, doc, { match: 'exact_identifier', reasons: [`Autor „${doc.author}” (powiązana tożsamość) sam opublikował ten adres.`] }, item.context, contentHash);
+          }
+        }
+        return true;
+      },
+      expired: () => performance.now() >= startedAt + totalMs * PIVOT_LIMITS.timeShare,
+      log,
+    });
+    // Adresy powiązanych tożsamości: analiza łańcucha w ramach wspólnego limitu adresów.
+    const linkedGroups = [...groups.values()].filter((group) => group.linkedOnly);
+    for (const group of linkedGroups) startChain(group);
+    await Promise.all(linkedGroups.map((group) => chainJobs.get(group)));
+    for (const group of linkedGroups) if (!chainJobs.has(group)) chainSkipped.add(group);
+    if (pivotLeads.length > 0) log(`Rozszerzanie: tropów ${pivotLeads.length}, adresów powiązanych tożsamości ${linkedGroups.length}.`);
+  }
+
   // ---------- Wskaźnik Pewności ----------
 
   report('scoring');
@@ -981,6 +1065,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         nextSteps: [],
       };
     }
+    let linkedScore: number | undefined;
+    if (group.linkedOnly) {
+      // Adres powiązanej tożsamości: w wyniku dla podmiotu ma 0%, a ocena względem autora zostaje obok.
+      linkedScore = confidence.score;
+      const explanation = 'Adres opublikowany przez powiązaną tożsamość, nie przez podmiot — nie jest przypisany podmiotowi (ocena względem autora publikacji w polu linkedScore).';
+      notes.push(explanation);
+      confidence = { ...confidence, score: 0, tier: [...rules.tiers].sort((a, b) => a.min - b.min)[0]!.label, ledger: [...confidence.ledger, { rule: 'info.linked_identity', delta: -confidence.score, running: 0, explanation, evidenceIds: evidence.map((item) => item.id) }], nextSteps: [] };
+    }
     if (chainSkipped.has(group)) notes.push('Nie analizowano łańcucha: adres poza limitem liczby adresów albo czasu analizy.');
     findings.push({
       address: group.address,
@@ -992,6 +1084,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       unrelatedPublishers,
       ...(widelyCited ? { widelyCited } : {}),
       ...(chainSkipped.has(group) ? { chainSkipped: true } : {}),
+      ...(group.linkedOnly ? { linkedOnly: true, linkedScore } : {}),
       ...(notes.length > 0 ? { notes } : {}),
     });
     log(
@@ -1081,6 +1174,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       checkedCounterparties: counterparties.map(addressKey),
       ...(authorComparisons ? { authorComparisons } : {}),
       ...(partial ? { partial } : {}),
+      ...(pivotLeads.length > 0 ? { pivot: pivotLeads } : {}),
       timings,
       slowestQueries,
       ...(mentions.length > 0 ? { mentions } : {}),

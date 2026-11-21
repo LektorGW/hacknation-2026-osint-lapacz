@@ -7,7 +7,7 @@ import { createMonitor } from '../src/monitor.ts';
 import type { MonitorTimers } from '../src/monitor.ts';
 import { createPgliteDriver, createStorage } from '../src/storage.ts';
 import type { Storage } from '../src/storage.ts';
-import { BTC_A, BTC_B, BTC_C, BTC_D, FIXED_NOW, fakeConnector, fakeProvider } from './helpers.ts';
+import { BTC_A, BTC_B, BTC_C, BTC_D, FIXED_NOW, evidence, fakeConnector, fakeProvider, finding, run } from './helpers.ts';
 
 type Post = { url: string; text: string; author?: string; title?: string };
 
@@ -345,4 +345,19 @@ test('trasy monitoringu: stan, ustawienia, przebieg, trafienia i działania', as
   assert.equal(rules.signals.thresholds.hitPolishNexus, 40);
   assert.equal(rules.signals.polishWeights.blik, 30);
   assert.equal(rules.signals.suspicionWeights.noKyc, 25);
+});
+
+test('trafienie z adresem znanym z innej sprawy: analiza autora bez względu na próg i wysoki priorytet', async () => {
+  const storage = await freshStorage();
+  const known = await storage.createCase('Jan K.', { identifiers: [{ type: 'nick', value: 'krypto_janek' }] }, '2026-11-20T08:00:00.000Z');
+  await storage.saveRun({ ...run('run-znany', [finding(BTC_B, 85, [evidence('https://gitpub.example/krypto_janek')])]), caseId: known.id });
+  const monitor = monitorWith(storage, [forumSource('forum', () => [ENGLISH_POST, IRRELEVANT])]);
+
+  const [hit] = (await monitor.run()) as (Awaited<ReturnType<typeof monitor.run>>[number] & { knownFromCases?: { caseId: string; caseName: string; address: string }[] })[];
+  // Oceny z reguł są zerowe (poniżej progu 100), ale adres jest już przypisany podmiotowi innej sprawy.
+  assert.deepEqual([hit!.author, hit!.polishNexus.score + hit!.suspicion.score, hit!.status], ['crypto_mike', 0, 'analyzed']);
+  assert.deepEqual(hit!.knownFromCases, [{ address: BTC_B, caseId: known.id, caseName: 'Jan K.' }]);
+  assert.equal(hit!.lead!.priority, 90);
+  assert.match(hit!.lead!.priorityReasons.at(-1)!, /^Adres znany ze sprawy „Jan K\.”: autor publikuje adres już przypisany innemu podmiotowi/);
+  await storage.close();
 });

@@ -4,6 +4,7 @@
 import type { FastifyInstance } from 'fastify';
 import { HttpError, idParams } from './http-common.ts';
 import type { RouteContext } from './http-common.ts';
+import { indexKnownAddresses, knownFor, markKnown } from './known-addresses.ts';
 import { createCaseFromAnalysis } from './lead-case.ts';
 import { DEFAULT_SWEEP_LIMIT, runSweep } from './sweep.ts';
 
@@ -42,6 +43,11 @@ export function registerSweepRoutes(app: FastifyInstance, context: RouteContext)
         ai: context.ai?.assistant,
         normalizeText: deps.normalizeText,
       });
+      // Wskazanie publikujące adres już przypisany podmiotowi innej sprawy idzie na górę rankingu.
+      const known = indexKnownAddresses(await storage.listLatestRuns());
+      sweep.leads = sweep.leads
+        .map((lead) => markKnown(lead, knownFor(known, lead.addresses.map((item) => item.address))))
+        .sort((a, b) => b.priority - a.priority || b.topScore - a.topScore || a.handle.localeCompare(b.handle));
       await storage.saveSweep(sweep);
       for (const [leadId, analysis] of analyses) await storage.saveLeadAnalysis(sweep.id, leadId, analysis);
       return reply.code(201).send(sweep);

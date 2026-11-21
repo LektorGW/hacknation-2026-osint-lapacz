@@ -5,6 +5,8 @@
 import type { Dossier, Finding, PersonCandidate, ProfileCard, RelatedPerson, ServiceLink, SourceCategory } from '@olcys/core';
 import type { AddressReplacement } from './diff.ts';
 import { formatAmount, formatDate, plural, roundPln, shortAddress } from './format.ts';
+import { identityRelationLabel } from './aliases.ts';
+import type { LinkedIdentity } from './aliases.ts';
 import type { Explanation, UnconfirmedAddress } from './explain.ts';
 import type { MentionSummary } from './intel.ts';
 import type { CashOutProof } from './proof.ts';
@@ -21,6 +23,8 @@ export interface KeyFindingsInput {
   explanations?: Explanation[];
   /** Adresy do potwierdzenia przez analityka. */
   unconfirmed?: UnconfirmedAddress[];
+  /** Powiązane tożsamości — najmocniejsza trafia do ustaleń. */
+  linkedIdentities?: LinkedIdentity[];
   /** Wzmianki o identyfikatorach podmiotu u innych autorów. */
   mentions: MentionSummary[];
   /** Dowód spieniężenia — gdy jest, jego zdania idą zaraz po ustaleniu osoby. */
@@ -182,6 +186,16 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
     input.addressOnly ? { ...item, text: item.text.replace(/^Podmiot jest powiązany/, 'Badany adres jest powiązany') } : item,
   );
   const result: KeyFinding[] = [...leadExplanations, ...addressLead, ...personSentences(input), ...pendingSentences, ...proofSentences, ...services, ...addressSentence(best)];
+
+  const identity = input.linkedIdentities?.[0];
+  if (identity) {
+    result.push({
+      text:
+        `Powiązana tożsamość: „${identity.displayName}” — ${identityRelationLabel(identity.relation)} (siła ${identity.score}/100). ${identity.reasons[0]!.text} ` +
+        'To wskazówka do rozstrzygnięcia przez analityka: ta sama osoba, osoba bliska albo podstawiona.',
+      layer: 'inference',
+    });
+  }
 
   const years = Object.entries(input.cashOutPlnByYear).sort(([a], [b]) => a.localeCompare(b));
   const total = years.reduce((sum, [, value]) => sum + value, 0);

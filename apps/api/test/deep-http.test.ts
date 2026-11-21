@@ -139,7 +139,7 @@ test('tryb głęboki: dodatkowe źródła i dostawcy; tryb standardowy bez zmian
   const progress = (await app.inject(`/api/runs/${deep.id}/progress`)).json();
   assert.equal(progress.depth, 'deep');
   // Po zakończeniu postęp zawiera pomiar czasu faz i najwolniejsze zapytania.
-  assert.deepEqual(progress.timings.map((item: { stage: string }) => item.stage), ['search-0', 'occurrences', 'chain', 'counterparties', 'scoring', 'ai']);
+  assert.deepEqual(progress.timings.map((item: { stage: string }) => item.stage), ['search-0', 'occurrences', 'chain', 'counterparties', 'pivot', 'scoring', 'ai']);
   assert.ok(progress.slowestQueries.length > 0 && progress.slowestQueries.length <= 10);
   assert.deepEqual(Object.keys(progress.slowestQueries[0]).sort(), ['connectorId', 'documents', 'identifier', 'ms']);
   assert.equal((await send('POST', `/api/cases/${caseId}/runs`, { depth: 'bardzo' })).statusCode, 400);

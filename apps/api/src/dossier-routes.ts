@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Decision, Identifier } from '@olcys/core';
 import { AI_RULES } from './ai-rules.ts';
+import { ALIAS_RULES } from './aliases.ts';
+import { PIVOT_LIMITS } from './pivot.ts';
 import { DEFAULT_MAX_IDENTIFIERS, DEFAULT_WIDELY_CITED_AUTHORS } from './analysis.ts';
 import { HttpError, TOOL_VERSION, idParams, identifierItems } from './http-common.ts';
 import type { RouteContext } from './http-common.ts';
@@ -44,6 +46,8 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     relations: RELATION_STRENGTH,
     signals: SIGNAL_RULES,
     ai: AI_RULES,
+    aliases: ALIAS_RULES,
+    pivot: PIVOT_LIMITS,
     proof: PROOF_RULES,
     analysis: { depth: DEPTH_LIMITS, widelyCitedAuthors: DEFAULT_WIDELY_CITED_AUTHORS },
   }));

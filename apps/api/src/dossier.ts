@@ -13,13 +13,15 @@ import type {
   ScoreRules,
   StoredEvidence,
 } from '@olcys/core';
+import { buildLinkedIdentities } from './aliases.ts';
+import type { LinkedIdentity } from './aliases.ts';
 import { insightEffect } from './ai-rules.ts';
 import type { InsightEvidence } from './ai-rules.ts';
-import { effectiveUnrelatedPublishers, sortFindings } from './analysis.ts';
+import { OWNERSHIP_CATEGORIES, effectiveUnrelatedPublishers, sortFindings } from './analysis.ts';
 import type { AnalysisFinding } from './analysis.ts';
 import { detectReplacements } from './diff.ts';
-import { buildProfileNodes, decisionMatchesProfile, sightingsOf } from './entity.ts';
-import { formatDate } from './format.ts';
+import { buildProfileNodes, decisionMatchesProfile, profileKey, sightingsOf } from './entity.ts';
+import { formatDate, sumByYear } from './format.ts';
 import { buildExplanations, buildUnconfirmedAddresses } from './explain.ts';
 import type { Explanation, ServiceLabel, UnconfirmedAddress } from './explain.ts';
 import { buildGraph } from './graph.ts';
@@ -75,7 +77,14 @@ export interface DossierView extends Dossier {
   findings: DossierFinding[];
   relatedPersons: RelatedPersonView[];
   decisions: DecisionRecord[];
-  totals: Dossier['totals'] & { cashOutPlnTotal: number };
+  totals: Dossier['totals'] & {
+    cashOutPlnTotal: number;
+    /** Wypłaty osoby głównej łącznie z tożsamościami o relacji „prawdopodobnie ta sama osoba”. */
+    cashOutPlnByYearWithLikelySame: Record<string, number>;
+    cashOutPlnTotalWithLikelySame: number;
+  };
+  /** Inne tożsamości tej samej osoby oraz osoby bliskie lub podstawione — karty „Powiązana tożsamość”. */
+  linkedIdentities: LinkedIdentity[];
   /** Dowód spieniężenia: ustalenia „osoba → adres → ścieżka → usługa”, od najpewniejszego. Puste, gdy brak ścieżek. */
   cashOutProof: CashOutProof[];
   /** Streszczenie wygenerowane przez model z kluczowych ustaleń; `null` bez modelu. */
@@ -120,7 +129,14 @@ const decisionNote = (decision: DecisionRecord): string =>
 
 export function buildDossier(input: DossierInput): DossierView {
   const { run, rules, caseSummary } = input;
-  const sightings = sightingsOf(run, input.intel);
+  // Decyzja „to ta sama osoba” dla profilu powiązanej tożsamości scala ją z podmiotem:
+  // jej publikacje są wtedy liczone jak publikacje podmiotu.
+  const mergedKeys = new Set(latestDecisions(input.decisions, 'profile').filter((decision) => decision.decision === 'confirmed').map((decision) => decision.key.trim().toLowerCase()));
+  const sightings = sightingsOf(run, input.intel).map((sighting) =>
+    sighting.role !== 'subject' && (mergedKeys.has(profileKey(sighting).toLowerCase()) || mergedKeys.has(sighting.url.toLowerCase()))
+      ? { ...sighting, role: 'subject' as const, step: 0, identity: { match: 'verified_link' as const, reasons: ['Tożsamość scalona z osobą główną decyzją analityka.'], distance: 0 } }
+      : sighting,
+  );
   const nodes = buildProfileNodes(run, sightings);
 
   const analystAddresses = new Set(
@@ -163,10 +179,15 @@ export function buildDossier(input: DossierInput): DossierView {
   // Decyzja dla pojedynczego śladu: „potwierdzony” cofa wpływ modelu, „odrzucony” wyłącza ślad.
   const evidenceDecisions = new Map(latestDecisions(input.decisions, 'evidence').map((decision) => [decision.key.trim().toLowerCase(), decision]));
 
-  const findings: DossierFinding[] = (run.findings as AnalysisFinding[]).map((finding) => {
+  // Adresy znane tylko z publikacji powiązanych tożsamości nie są adresami podmiotu — chyba że
+  // analityk scalił tożsamość (wtedy publikujący profil należy już do osoby głównej).
+  const stillLinkedOnly = (finding: AnalysisFinding) =>
+    finding.linkedOnly === true && !finding.evidence.some((item) => mainProfileIds.has(nodeOfDoc.get(sightingKey(item))?.card.id ?? ''));
+  const linkedFindings = (run.findings as AnalysisFinding[]).filter(stillLinkedOnly);
+  const findings: DossierFinding[] = (run.findings as AnalysisFinding[]).filter((finding) => !stillLinkedOnly(finding)).map((finding) => {
     const kept: InsightEvidence[] = [];
     const dropped: InsightEvidence[] = [];
-    const annotations: string[] = [...(finding.notes ?? [])];
+    const annotations: string[] = (finding.notes ?? []).filter((note) => !note.startsWith('Adres opublikowany przez powiązaną tożsamość'));
     /** Ślady wyłączone odczytem modelu — do osobnego wpisu w księdze. */
     const byModel: { evidence: InsightEvidence; note: string }[] = [];
     for (const evidence of finding.evidence) {
@@ -328,6 +349,26 @@ export function buildDossier(input: DossierInput): DossierView {
   ];
   const replacements = detectReplacements({ ...run, findings });
   const relatedPersons = buildRelatedPersons({ run: { ...run, findings }, linked, sightings, subjectProfiles: mainNodes, otherCases: input.otherCases, rules, addressOnly });
+  const linkedIdentities = ownerUnknown
+    ? []
+    : buildLinkedIdentities({
+        main,
+        mainNodes,
+        otherNodes: nodes.filter((node) => !mainProfileIds.has(node.card.id)),
+        externalNodes: [
+          ...buildProfileNodes(run, sightings, 'linked_identity'),
+          // Współpublikujący liczy się tylko wtedy, gdy podaje adres jako własny (profil, oferta).
+          ...buildProfileNodes(run, sightings, 'co_publisher').filter((node) => node.sightings.some((item) => OWNERSHIP_CATEGORIES.includes(item.category))),
+          ...buildProfileNodes(run, sightings, 'counterparty_publisher'),
+        ],
+        leads: input.intel?.pivot ?? [],
+        linked,
+        allFindings: run.findings,
+        authorComparisons: input.intel?.authorComparisons,
+        decisionOf: (node) => latestDecisions(input.decisions, 'profile').find((decision) => decisionMatchesProfile(decision.key, node))?.decision,
+        rules,
+      });
+  const likelySame = sumByYear([summary.cashOutPlnByYear, ...linkedIdentities.filter((item) => item.relation === 'same_person_likely').map((item) => item.cashOutPlnByYear)]);
   const profiles = (ownerUnknown ? [] : nodes)
     .map((node) => node.card)
     .sort((a, b) => Number(mainProfileIds.has(b.id)) - Number(mainProfileIds.has(a.id)) || b.identityScore - a.identityScore);
@@ -373,6 +414,7 @@ export function buildDossier(input: DossierInput): DossierView {
     mentions: input.intel?.mentions ?? [],
     unconfirmedAddresses,
     explanations,
+    linkedIdentities,
     graph: buildGraph({
       subjectLabel: main?.fullName ?? caseSummary.name,
       caseName: caseSummary.name,
@@ -384,6 +426,7 @@ export function buildDossier(input: DossierInput): DossierView {
       relatedPersons,
       trail,
       proofs: confirmedProofs,
+      linkedIdentities,
     }),
     timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: confirmedProofs }),
     totals: {
@@ -392,6 +435,8 @@ export function buildDossier(input: DossierInput): DossierView {
       topScore: summary.topScore,
       cashOutPlnByYear: summary.cashOutPlnByYear,
       cashOutPlnTotal: summary.cashOutPlnTotal,
+      cashOutPlnByYearWithLikelySame: likelySame,
+      cashOutPlnTotalWithLikelySame: Math.round(Object.values(likelySame).reduce((sum, value) => sum + value, 0) * 100) / 100,
       priority: summary.priority,
       priorityReasons: addressOnly
         ? [...summary.priorityReasons, 'Sprawa dotyczy adresu: sumy i priorytet opisują badany adres, a nie osobę.']
@@ -403,6 +448,7 @@ export function buildDossier(input: DossierInput): DossierView {
       widelyCited: subjectFindings.some((finding) => finding.widelyCited),
       mentions: input.intel?.mentions ?? [],
       explanations,
+      linkedIdentities,
       unconfirmed: unconfirmedAddresses,
       proofs: cashOutProof,
       persons,

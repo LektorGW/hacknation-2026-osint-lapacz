@@ -106,6 +106,20 @@ interface Tie {
   reasons: string[];
   /** Wiązanie przez wzajemne odnośniki — jedyne, które samo potwierdza tożsamość profilu. */
   mutual?: boolean;
+  /** Wspólne cechy, z których powstało wiązanie — z wartościami do pokazania jako dowód. */
+  features: TieFeatures;
+}
+
+export interface TieFeatures {
+  email?: string;
+  phone?: string;
+  addresses: string[];
+  website?: string;
+  avatar?: boolean;
+  sameName?: boolean;
+  sameLocation?: string;
+  sameHandle?: boolean;
+  links?: 'mutual' | 'one_way';
 }
 
 const stripDiacritics = (value: string): string =>
@@ -135,6 +149,7 @@ function emailMatchesName(email: string, name: string): boolean {
 function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): Tie {
   const { ties } = PERSON_RULES;
   const reasons: string[] = [];
+  const features: TieFeatures = { addresses: [] };
   let weight = 0;
   const add = (points: number, reason: string) => {
     weight += points;
@@ -142,9 +157,15 @@ function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): 
   };
 
   const emails = intersect((a.card.attributes.emails ?? []).map(fold), (b.card.attributes.emails ?? []).map(fold));
-  if (emails.length > 0) add(ties.same_email, `ten sam e-mail ${emails[0]}`);
+  if (emails.length > 0) {
+    features.email = emails[0];
+    add(ties.same_email, `ten sam e-mail ${emails[0]}`);
+  }
   const phones = intersect((a.card.attributes.phones ?? []).map(digits), (b.card.attributes.phones ?? []).map(digits)).filter(Boolean);
-  if (phones.length > 0) add(ties.same_phone, `ten sam telefon ${phones[0]}`);
+  if (phones.length > 0) {
+    features.phone = phones[0];
+    add(ties.same_phone, `ten sam telefon ${phones[0]}`);
+  }
 
   // Odnośnik: profil wskazuje nazwę lub adres drugiego albo identyfikator, po którym tamten znaleziono.
   const pointedBy = (target: ProfileNode) =>
@@ -162,11 +183,20 @@ function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): 
   }
 
   const addresses = intersect(a.card.addresses, b.card.addresses).filter((key) => !sharedAddresses.has(key));
-  if (addresses.length > 0) add(ties.same_address, 'ten sam adres kryptowalutowy, niepublikowany przez wiele innych osób');
+  if (addresses.length > 0) {
+    features.addresses = addresses;
+    add(ties.same_address, 'ten sam adres kryptowalutowy, niepublikowany przez wiele innych osób');
+  }
 
   const websites = intersect((a.card.attributes.urls ?? []).map(cleanUrl), (b.card.attributes.urls ?? []).map(cleanUrl));
-  if (websites.length > 0) add(ties.same_website, `ta sama strona WWW ${websites[0]}`);
-  if (a.card.attributes.avatarUrl && a.card.attributes.avatarUrl === b.card.attributes.avatarUrl) add(ties.same_avatar, 'ten sam awatar');
+  if (websites.length > 0) {
+    features.website = websites[0];
+    add(ties.same_website, `ta sama strona WWW ${websites[0]}`);
+  }
+  if (a.card.attributes.avatarUrl && a.card.attributes.avatarUrl === b.card.attributes.avatarUrl) {
+    features.avatar = true;
+    add(ties.same_avatar, 'ten sam awatar');
+  }
 
   const sameName =
     a.card.attributes.displayName !== undefined &&
@@ -183,31 +213,35 @@ function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): 
     if (sameHandle) add(ties.same_handle, 'ten sam nick (sam w sobie nie dowodzi tej samej osoby)');
     if (sameName) add(ties.same_name, 'ta sama nazwa wyświetlana (możliwa zbieżność nazwisk)');
   }
-  return { weight: Math.min(100, weight), reasons, mutual };
+  if (forward || backward) features.links = mutual ? 'mutual' : 'one_way';
+  if (sameName) features.sameName = true;
+  if (sameLocation) features.sameLocation = a.card.attributes.location;
+  if (sameHandle) features.sameHandle = true;
+  return { weight: Math.min(100, weight), reasons, mutual, features };
 }
 
 function anchorTie(node: ProfileNode, identifiers: Identifier[], decision: Decision | undefined): Tie {
   const { anchor } = PERSON_RULES;
-  if (decision === 'confirmed') return { weight: anchor.analyst_confirmed, reasons: ['profil potwierdzony decyzją analityka'] };
+  if (decision === 'confirmed') return { weight: anchor.analyst_confirmed, reasons: ['profil potwierdzony decyzją analityka'], features: { addresses: [] } };
   if (node.base.match === 'verified_link') {
-    return { weight: anchor.verified, reasons: [`tożsamość profilu potwierdzona: ${node.base.reasons.join(' ') || 'odnośniki wzajemne lub dowód kryptograficzny'}`] };
+    return { weight: anchor.verified, reasons: [`tożsamość profilu potwierdzona: ${node.base.reasons.join(' ') || 'odnośniki wzajemne lub dowód kryptograficzny'}`], features: { addresses: [] } };
   }
   const direct = node.step === 0 && node.base.match === 'exact_identifier';
   const type = node.matchedIdentifier.type;
   if (direct && isUniqueType(type) && type !== 'crypto_address') {
-    return { weight: anchor.unique_identifier, reasons: [`profil odnaleziony po identyfikatorze unikalnym podanym przez analityka („${node.matchedIdentifier.value}”)`] };
+    return { weight: anchor.unique_identifier, reasons: [`profil odnaleziony po identyfikatorze unikalnym podanym przez analityka („${node.matchedIdentifier.value}”)`], features: { addresses: [] } };
   }
   const emails = identifiers.filter((item) => item.type === 'email').map((item) => fold(item.value));
   const ownEmail = (node.card.attributes.emails ?? []).map(fold).find((email) => emails.includes(email));
-  if (ownEmail) return { weight: anchor.attribute_match, reasons: [`e-mail profilu (${ownEmail}) zgadza się z identyfikatorem podanym przez analityka`] };
+  if (ownEmail) return { weight: anchor.attribute_match, reasons: [`e-mail profilu (${ownEmail}) zgadza się z identyfikatorem podanym przez analityka`], features: { addresses: [] } };
   const urls = identifiers.filter((item) => item.type === 'profile_url').map((item) => cleanUrl(item.value));
   if (urls.includes(cleanUrl(node.card.url))) {
-    return { weight: anchor.attribute_match, reasons: ['adres profilu podał analityk'] };
+    return { weight: anchor.attribute_match, reasons: ['adres profilu podał analityk'], features: { addresses: [] } };
   }
   if (direct && type !== 'crypto_address') {
-    return { weight: anchor.confirmed_handle, reasons: [`nick lub nazwisko potwierdzone drugim identyfikatorem podmiotu: ${node.base.reasons.join(' ')}`] };
+    return { weight: anchor.confirmed_handle, reasons: [`nick lub nazwisko potwierdzone drugim identyfikatorem podmiotu: ${node.base.reasons.join(' ')}`], features: { addresses: [] } };
   }
-  return { weight: 0, reasons: [] };
+  return { weight: 0, reasons: [], features: { addresses: [] } };
 }
 
 /** Najbardziej prawdopodobne imię i nazwisko z nazw wyświetlanych; nic nie zgadujemy. */
@@ -293,6 +327,21 @@ const BASE_BY_MATCH: Record<IdentityMatch, { points: number; text: string }> = {
   name_only: { points: PERSON_RULES.probability.name_only, text: 'zgodne tylko imię i nazwisko — możliwy imiennik' },
 };
 
+/**
+ * Dwa profile podają różne imiona i nazwiska. Takich profili nie łączymy automatycznie w jedną osobę,
+ * nawet przy mocnym wiązaniu (ten sam e-mail, ten sam adres): to może być ta sama osoba pod innym
+ * nazwiskiem, osoba bliska albo podstawiona — rozstrzyga analityk, a teczka pokazuje „powiązaną tożsamość”.
+ */
+export function nameConflict(a: ProfileNode, b: ProfileNode): boolean {
+  const [left, right] = [a.card.attributes.displayName?.trim(), b.card.attributes.displayName?.trim()];
+  return left !== undefined && right !== undefined && looksLikePersonName(left) && looksLikePersonName(right) && fold(left) !== fold(right);
+}
+
+/** Wiązanie dwóch profili (wspólne cechy z wartościami) — do oceny powiązanych tożsamości. */
+export function tieBetween(a: ProfileNode, b: ProfileNode, findings: Finding[], rules: ScoreRules): { weight: number; reasons: string[]; features: TieFeatures } {
+  return pairTie(a, b, sharedAddressKeys(findings, rules));
+}
+
 /** Adresy, które nie świadczą o tej samej osobie: współdzielone albo należące do pośredników. */
 const sharedAddressKeys = (findings: Finding[], rules: ScoreRules): Set<string> =>
   new Set(
@@ -329,10 +378,10 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
   // ---------- Wiązania ----------
   const rejected = nodes.map((node) => input.decisions.get(node.card.id) === 'rejected');
   const anchors = nodes.map((node, index) =>
-    rejected[index] ? { weight: 0, reasons: [] } : anchorTie(node, input.identifiers, input.decisions.get(node.card.id)),
+    rejected[index] ? { weight: 0, reasons: [], features: { addresses: [] } } : anchorTie(node, input.identifiers, input.decisions.get(node.card.id)),
   );
   const pairs = new Map<string, Tie>();
-  const pair = (i: number, j: number): Tie => pairs.get(i < j ? `${i}|${j}` : `${j}|${i}`) ?? { weight: 0, reasons: [] };
+  const pair = (i: number, j: number): Tie => pairs.get(i < j ? `${i}|${j}` : `${j}|${i}`) ?? { weight: 0, reasons: [], features: { addresses: [] } };
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < count; j++) {
       if (rejected[i] || rejected[j]) continue;
@@ -358,9 +407,31 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
   const join = (a: number, b: number) => {
     parent[find(a)] = find(b);
   };
+  const confirmed = nodes.map((node) => input.decisions.get(node.card.id) === 'confirmed');
+  // Profile w kolejności od najmocniej związanego z identyfikatorami analityka: pierwszy wyznacza
+  // imię i nazwisko osoby głównej; profil podający INNĄ osobę nie jest do niej dołączany automatycznie.
+  const byAnchor = nodes.map((_, index) => index).sort((a, b) => anchors[b]!.weight - anchors[a]!.weight || matchRank(nodes[b]!.base.match) - matchRank(nodes[a]!.base.match) || a - b);
+  const anchored: number[] = [];
+  for (const i of byAnchor) {
+    if (confirmed[i] || anchors[i]!.weight < PERSON_RULES.joinThreshold) continue;
+    if (anchored.some((other) => nameConflict(nodes[i]!, nodes[other]!))) continue;
+    anchored.push(i);
+    join(i, ANCHOR);
+  }
   for (let i = 0; i < count; i++) {
-    if (anchors[i]!.weight >= PERSON_RULES.joinThreshold) join(i, ANCHOR);
-    for (let j = i + 1; j < count; j++) if (pair(i, j).weight >= PERSON_RULES.joinThreshold) join(i, j);
+    for (let j = i + 1; j < count; j++) {
+      // Decyzja analityka „to ta sama osoba” znosi blokadę różnych nazwisk dla potwierdzonego profilu.
+      const blocked = nameConflict(nodes[i]!, nodes[j]!) && !confirmed[i] && !confirmed[j];
+      if (pair(i, j).weight >= PERSON_RULES.joinThreshold && !blocked) join(i, j);
+    }
+  }
+  // Profil potwierdzony przez analityka trafia do osoby głównej: do profilu, który ją wyznacza
+  // (najmocniej związanego z identyfikatorami analityka), oraz do samych identyfikatorów.
+  const mainSeed = byAnchor.find((index) => !confirmed[index] && !rejected[index]);
+  for (let i = 0; i < count; i++) {
+    if (!confirmed[i]) continue;
+    join(i, ANCHOR);
+    if (mainSeed !== undefined) join(mainSeed, i);
   }
   const clusters = new Map<number, number[]>();
   for (let i = 0; i < count; i++) clusters.set(find(i), [...(clusters.get(find(i)) ?? []), i]);

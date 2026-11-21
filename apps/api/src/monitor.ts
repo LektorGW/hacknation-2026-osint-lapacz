@@ -26,6 +26,8 @@ import { mapLimit } from './concurrency.ts';
 import { pruneCorpus, toCorpusDocument } from './corpus.ts';
 import type { CorpusSettings } from './corpus.ts';
 import { normalize } from './identity.ts';
+import { indexKnownAddresses, knownFor, markKnown } from './known-addresses.ts';
+import type { KnownAddress } from './known-addresses.ts';
 import { SIGNAL_RULES, polishNexus, suspicion } from './signals.ts';
 import type { Storage } from './storage.ts';
 import { analyzeAuthor, canDiscover } from './sweep.ts';
@@ -89,6 +91,8 @@ export interface Monitor {
 
 /** Trafienie z odczytem modelu językowego (lokalne rozszerzenie kontraktu `WatchHit`). */
 export type MonitorHit = WatchHit & {
+  /** Adresy z publikacji już przypisane podmiotom innych spraw — mocny trop, analiza autora bez względu na próg. */
+  knownFromCases?: KnownAddress[];
   /** Tłumaczenie treści na polski, gdy publikacja jest w innym języku (z modelu). */
   translationPl?: string;
   insight?: TextInsight;
@@ -235,7 +239,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
     ];
     lead.priority = priority;
 
-    const updated: WatchHit = { ...hit, status: 'analyzed', lead };
+    const updated: WatchHit = { ...hit, status: 'analyzed', lead: markKnown(lead, (hit as MonitorHit).knownFromCases ?? []) };
     await storage.saveHit(updated, hitKey(hit));
     await storage.saveHitAnalysis(hit.id, analysis);
     return updated;
@@ -352,10 +356,21 @@ export function createMonitor(deps: MonitorDeps): Monitor {
     for (const [key, { hit }] of touched) await storage.saveHit(hit, key);
 
     // Automatyczna analiza autorów najwyżej ocenionych publikacji, z limitem na przebieg.
+    // Autor publikujący adres znany z innej sprawy jest analizowany zawsze i w pierwszej kolejności.
+    const known = indexKnownAddresses(await storage.listLatestRuns());
+    for (const [key, item] of touched) {
+      const matches = knownFor(known, item.hit.addresses.map((entry) => entry.address), item.hit.caseId);
+      if (matches.length === 0) continue;
+      const marked: MonitorHit = { ...item.hit, knownFromCases: matches };
+      touched.set(key, { ...item, hit: marked });
+      await storage.saveHit(marked, key);
+      log(`Trafienie „${marked.author ?? marked.url}”: adres znany ze sprawy „${matches[0]!.caseName}”.`);
+    }
+    const isKnown = (hit: WatchHit) => ((hit as MonitorHit).knownFromCases?.length ?? 0) > 0;
     const queue = [...touched.values()]
       .map((item) => item.hit)
-      .filter((hit) => hit.status === 'new' && hit.author && sumOf(hit) >= state.autoAnalyzeThreshold)
-      .sort(compareHits)
+      .filter((hit) => hit.status === 'new' && hit.author && (isKnown(hit) || sumOf(hit) >= state.autoAnalyzeThreshold))
+      .sort((a, b) => Number(isKnown(b)) - Number(isKnown(a)) || compareHits(a, b))
       .slice(0, thresholds.maxAutoAnalysesPerRun);
     const analyzed = new Map<string, WatchHit>();
     for (const hit of queue) {

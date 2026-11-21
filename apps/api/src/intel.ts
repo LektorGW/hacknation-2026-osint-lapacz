@@ -5,6 +5,7 @@
 
 import type { Identifier, IdentityMatch, ProfileAttributes, SourceCategory } from '@olcys/core';
 import type { IdentityAssessment } from './identity.ts';
+import type { PivotLead } from './pivot.ts';
 import type { ServiceMention } from './services.ts';
 
 export type SightingRole =
@@ -13,7 +14,9 @@ export type SightingRole =
   /** Inny autor publikujący adres podmiotu. */
   | 'co_publisher'
   /** Autor publikujący adres, który jest kontrahentem adresu podmiotu. */
-  | 'counterparty_publisher';
+  | 'counterparty_publisher'
+  /** Publikacja innej tożsamości znaleziona przez pętlę rozszerzania (wspólna cecha, powiązany adres). */
+  | 'linked_identity';
 
 /** Jeden dokument widziany w analizie, sprowadzony do danych o profilu autora. */
 export interface Sighting {
@@ -99,6 +102,8 @@ export interface RunIntel {
   authorComparisons?: AuthorComparison[];
   /** Analiza przerwana limitem czasu — wynik częściowy. */
   partial?: boolean;
+  /** Tropy pętli rozszerzania: inne tożsamości i adresy powiązane, ze ścieżką dojścia. */
+  pivot?: PivotLead[];
   /** Pomiar czasu: fazy analizy w kolejności wykonania. */
   timings?: StageTiming[];
   /** Dziesięć najwolniejszych zapytań łącznik × identyfikator. */

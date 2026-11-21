@@ -7,6 +7,8 @@ import type { ProfileNode } from './entity.ts';
 import { roundPln, shortAddress } from './format.ts';
 import { addressKey } from './intel.ts';
 import type { DiscoveryStep } from './intel.ts';
+import { identityRelationLabel } from './aliases.ts';
+import type { LinkedIdentity } from './aliases.ts';
 import type { CashOutProof } from './proof.ts';
 import { CONTRACTS_LINK_ID, isCashOutService, serviceIdOf, serviceKindLabel } from './services.ts';
 
@@ -23,6 +25,7 @@ export interface GraphInput {
   trail: DiscoveryStep[];
   /** Dowód spieniężenia: ścieżki środków rysowane krok po kroku. */
   proofs?: CashOutProof[];
+  linkedIdentities?: LinkedIdentity[];
 }
 
 const identifierNodeId = (identifier: Identifier) => `id:${identifier.type}:${identifier.value.trim().toLowerCase()}`;
@@ -168,6 +171,24 @@ export function buildGraph(input: GraphInput): { nodes: GraphNode[]; edges: Grap
         ...(hop.inferred || final ? { inferred: true } : {}),
       });
       from = to;
+    });
+  }
+
+  // Powiązane tożsamości: węzeł osoby połączony z podmiotem (albo z adresem, który je łączy).
+  const EVIDENCE_LABEL = { url: 'publikacja', txid: 'transakcja', attribute: 'wspólna cecha', address: 'adres' } as const;
+  for (const identity of input.linkedIdentities ?? []) {
+    const id = `identity:${identity.id}`;
+    addNode({ id, kind: 'person', label: identity.displayName, sublabel: identityRelationLabel(identity.relation), score: identity.score, url: identity.profiles[0]?.url });
+    const [lead] = identity.reasons;
+    const viaAddress = lead?.evidence.find((item) => item.kind === 'address');
+    const anchor = viaAddress ? input.findings.find((finding) => finding.address === viaAddress.value) : undefined;
+    addEdge({
+      from: anchor ? `addr:${addressKey(anchor)}` : 'subject',
+      to: id,
+      kind: 'related',
+      label: `${identityRelationLabel(identity.relation)}: ${lead ? EVIDENCE_LABEL[lead.evidence[0]?.kind ?? 'attribute'] : 'przesłanka'}`,
+      weight: identity.score,
+      inferred: true,
     });
   }
 
