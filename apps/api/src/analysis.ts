@@ -721,7 +721,11 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
             log: (message) => {
               log(`[${connector.id}] ${message}`);
               // Łącznik sam obsłużył błąd źródła i zwrócił to, co miał — analityk musi o tym wiedzieć.
-              if (REPORTED_FAILURE.test(message)) noteSourceError({ connectorId: connector.id, stage, message, reported: true });
+              // Zbiorcze podsumowanie wyszukiwarki forów („hostów N: odpowiedziało M…”) wymienia błędy pojedynczych hostów;
+              // dopóki choć jeden host odpowiedział, źródło działało i nie jest zgłaszane jako niedostępne.
+              const answered = /hostów \d+: odpowiedziało (\d+)/.exec(message);
+              const aggregateOk = answered !== null && Number(answered[1]) > 0;
+              if (!aggregateOk && REPORTED_FAILURE.test(message)) noteSourceError({ connectorId: connector.id, stage, message, reported: true });
             },
           });
           const queryStarted = performance.now();

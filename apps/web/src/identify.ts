@@ -12,7 +12,8 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_WITH_SCHEME = /^https?:\/\/\S+$/i;
 /** Domena ze ścieżką bez schematu, np. `kodhub.example/t-wzorcowy`. */
 const BARE_URL = /^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*$/i;
-const NAME_WORD = /^\p{Lu}[\p{L}'’-]+$/u;
+/** Wyraz z samych liter — także małymi literami: nazwa konta nie zawiera spacji, więc kilka takich wyrazów to imię i nazwisko. */
+const NAME_WORD = /^\p{L}[\p{L}'’-]+$/u;
 
 /** Typ identyfikatora odgadnięty z formatu; analityk może go poprawić przed utworzeniem sprawy. */
 export function detectIdentifierType(raw: string): IdentifierType {

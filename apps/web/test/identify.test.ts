@@ -18,7 +18,8 @@ test('rozpoznawanie typu identyfikatora po formacie', () => {
     ['Żaneta Źdźbło', 'full_name'],
     ['tomwzor', 'nick'],
     ['@tomwzor_tg', 'nick'],
-    ['tomasz wzorcowy', 'nick'],
+    // Wyrazy małymi literami rozdzielone spacją to imię i nazwisko — nazwa konta nie zawiera spacji.
+    ['tomasz wzorcowy', 'full_name'],
     ['krypto marek 99', 'nick'],
     ['  tomwzor  ', 'nick'],
   ];

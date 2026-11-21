@@ -44,6 +44,8 @@ export function detectIdentifierType(value: string): IdentifierType {
   if (validateAddress(text)) return 'crypto_address';
   if (/^[^\s]+\.eth$/i.test(text)) return 'ens_name';
   if (looksLikePersonName(text)) return 'full_name';
+  // Dwa do czterech wyrazów z samych liter (także małymi literami) to imię i nazwisko, nie nick: nazwa konta nie zawiera spacji.
+  if (/^\p{L}[\p{L}'’-]+(?:\s+\p{L}[\p{L}'’-]+){1,3}$/u.test(text)) return 'full_name';
   return 'nick';
 }
 
@@ -119,12 +121,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
    */
   const isDeepSource = (connector: SourceConnector) => connector.id === 'deep-search' && connector.accepts.length > 0;
 
-  const selectConnectors = (connectorIds?: string[], depth: RunDepth = 'standard'): SourceConnector[] => {
+  /**
+   * Po imieniu i nazwisku umieją szukać tylko źródła pełnotekstowe. Bez wyszukiwarki forów analiza samego
+   * nazwiska pytałaby wyłącznie piaskownicę i indeks własny, więc dla takiej sprawy jest dołączana także w trybie zwykłym.
+   */
+  const needsNameSearch = (identifiers: Identifier[]): boolean => identifiers.some((item) => item.type === 'full_name');
+
+  const selectConnectors = (connectorIds?: string[], depth: RunDepth = 'standard', nameSearch = false): SourceConnector[] => {
     const unknown = (connectorIds ?? []).filter((id) => !connectors.some((connector) => connector.id === id));
     if (unknown.length > 0) throw new HttpError(400, `Nieznane łączniki: ${unknown.join(', ')}.`);
     return connectors.filter(
       (connector) =>
-        (connectorIds ? connectorIds.includes(connector.id) : connector.enabledByDefault) || (depth === 'deep' && isDeepSource(connector)),
+        (connectorIds ? connectorIds.includes(connector.id) : connector.enabledByDefault) || ((depth === 'deep' || (nameSearch && !connectorIds)) && isDeepSource(connector)),
     );
   };
 
@@ -199,7 +207,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
   const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard', period?: RunPeriod, limits?: RunLimitOverrides): Promise<AnalysisRun> =>
-    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth), depth, period, limits });
+    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth, needsNameSearch(caseSummary.query.identifiers)), depth, period, limits });
 
   /** Limity rozszerzania z żądania: kontrola głębokości, liczby identyfikatorów i budżetu zapytań jednej analizy. */
   const limitsSchema = {
