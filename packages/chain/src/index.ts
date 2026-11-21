@@ -12,9 +12,10 @@ import { EsploraProvider } from './providers/esplora.ts';
 import { SandboxChainProvider } from './providers/sandbox.ts';
 import { TronGridProvider } from './providers/trongrid.ts';
 import { DEFAULT_REQUEST_BUDGET } from './deposit.ts';
+import { DEEP_FUNDING_BUDGET, DEFAULT_FUNDING_BUDGET } from './funding.ts';
 import { DEEP_LINK_BUDGET, DEFAULT_LINK_BUDGET } from './links.ts';
 import type { LinkOptions } from './links.ts';
-import { EvmMultiChainProvider, loadEvmNetworks } from './networks.ts';
+import { BLOCKSCOUT_KEYED_API, EvmMultiChainProvider, createKeyedFetch, resolveEvmNetworks } from './networks.ts';
 import { TronScanTagClient, WalletExplorerClient } from './party-labels.ts';
 import { MarketRateSource, StaticRateSource } from './valuation.ts';
 
@@ -22,6 +23,7 @@ export * from './activity.ts';
 export * from './cashout.ts';
 export * from './cluster.ts';
 export * from './deposit.ts';
+export * from './funding.ts';
 export * from './history.ts';
 export * from './balances.ts';
 export * from './labels.ts';
@@ -66,6 +68,21 @@ export interface ChainConfig extends ActivityOptions, HistoryOptions {
    * Domyślnie włączone dla prawdziwego `fetch`, wyłączone, gdy `fetch` podmieniono (testy).
    */
   politeFetch?: boolean;
+  /**
+   * Klucz API Blockscout (np. z `process.env.BLOCKSCOUT_API_KEY`). Gdy podany, sieci EVM obsługiwane przez
+   * wspólne API idą przez `https://api.blockscout.com/<chainId>` (klucz w nagłówku `authorization`, limit 5 żądań/s),
+   * a rejestr obejmuje też sieci dostępne tylko z kluczem. Bez klucza — publiczne instancje jak dotąd.
+   * Wartość klucza nie trafia do adresów, błędów, ograniczeń ani dzienników.
+   */
+  blockscoutApiKey?: string;
+  /**
+   * Zakres użycia klucza: `required` (domyślnie) — klucz obsługuje sieci niedostępne bez niego (Arbitrum, Gnosis),
+   * reszta idzie przez publiczne instancje, a wspólne API jest dla Ethereum zapasem; `all` — każda sieć obsługiwana
+   * przez wspólne API idzie przez nie, a publiczna instancja Ethereum jest zapasem. Pomiar z 2026-11-21: wspólne API
+   * odpowiada w 0,1–6 s, zrywa połączenia przy kilkunastu równoczesnych żądaniach i w trybie `all` analiza bywa
+   * przerywana limitem czasu — dlatego domyślny jest tryb `required`.
+   */
+  blockscoutKeyScope?: 'all' | 'required';
   /** `false` wyłącza wykrywanie innych sieci EVM (zostaje sam Ethereum mainnet). */
   evmNetworks?: boolean;
   /** Ile innych sieci EVM (o największej aktywności adresu) analizować w pełni: domyślnie 0, w trybie głębokim 3. */
@@ -75,6 +92,8 @@ export interface ChainConfig extends ActivityOptions, HistoryOptions {
   /** Osobny budżet żądań na szukanie powiązań: domyślnie 12, w trybie głębokim 40. */
   linkBudget?: number;
   links?: LinkOptions;
+  /** Osobny budżet żądań na pochodzenie środków (śledzenie wstecz): domyślnie 8, w trybie głębokim 16. */
+  fundingBudget?: number;
 }
 
 /** Budżet żądań na adres w trybie `depth: 'deep'`. */
@@ -93,7 +112,10 @@ export const DEFAULT_RATE_CACHE_FILE = fileURLToPath(new URL('../data/cache/rate
  */
 export function createChainProviders(config: ChainConfig = {}): ChainProvider[] {
   const rawFetch = config.fetch ?? fetch;
-  const fetchImpl = (config.politeFetch ?? !config.fetch) ? createPoliteFetch(rawFetch) : rawFetch;
+  const apiKey = config.blockscoutApiKey?.trim() || undefined;
+  const politeFetch = (config.politeFetch ?? !config.fetch) ? createPoliteFetch(rawFetch) : rawFetch;
+  // Klucz doklejamy najbliżej sieci, po ograniczniku tempa: żadna warstwa wyżej go nie widzi.
+  const fetchImpl = apiKey ? createKeyedFetch(politeFetch, apiKey).fetch : politeFetch;
   // Z podmienionym `fetch` (testy) nie zapisujemy niczego na dysk, chyba że plik podano wprost.
   const cacheFile =
     config.rateCacheFile === false ? undefined : (config.rateCacheFile ?? (config.fetch ? undefined : DEFAULT_RATE_CACHE_FILE));
@@ -127,6 +149,7 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       findLinks: config.findLinks ?? true,
       linkBudget: config.linkBudget ?? (deep ? DEEP_LINK_BUDGET : DEFAULT_LINK_BUDGET),
       links: config.links,
+      fundingBudget: config.fundingBudget ?? (deep ? DEEP_FUNDING_BUDGET : DEFAULT_FUNDING_BUDGET),
       // Ustawienia domyślne dla wszystkich adresów; kontekst wywołania zmienia je dla pojedynczego adresu.
       history: {
         history: config.history,
@@ -142,7 +165,16 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       ? new WalletExplorerClient({ fetch: fetchImpl, minIntervalMs: config.walletExplorerIntervalMs })
       : undefined;
     const tronScan = externalLabels ? new TronScanTagClient({ fetch: fetchImpl }) : undefined;
-    const evm = { ...live, balances: true, ...(externalLabels ? { metadataUrl: 'https://metadata.services.blockscout.com' } : {}) };
+    const evmNetworks = resolveEvmNetworks(apiKey !== undefined).map((chain) =>
+      // W zakresie `required` sieci z działającą publiczną instancją zostają przy niej.
+      apiKey && config.blockscoutKeyScope !== 'all' && !chain.requiresKey ? (resolveEvmNetworks(false).find((item) => item.id === chain.id) ?? chain) : chain,
+    );
+    const keyedAll = apiKey !== undefined && config.blockscoutKeyScope === 'all';
+    const evm = {
+      ...live,
+      balances: true,
+      ...(externalLabels ? { metadataUrl: keyedAll ? `${BLOCKSCOUT_KEYED_API}/services/metadata` : 'https://metadata.services.blockscout.com' } : {}),
+    };
     providers.push(
       new EsploraProvider({
         ...live,
@@ -165,14 +197,29 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       // Ethereum mainnet + wykrywanie innych sieci EVM; w trybie głębokim pełna analiza sieci o największej aktywności.
       (config.evmNetworks ?? true)
         ? new EvmMultiChainProvider({
-            main: new BlockscoutProvider({ ...evm, chain: loadEvmNetworks().networks.find((item) => item.id === 'ethereum') }),
+            main: new BlockscoutProvider({ ...evm, chain: evmNetworks.find((item) => item.id === 'ethereum') }),
             createProvider: (chain) => new BlockscoutProvider({ ...evm, chain }),
             fetch: fetchImpl,
+            networks: evmNetworks,
+            // Wspólne API obsługuje 2 żądania naraz, więc sprawdzenie kilkunastu sieci trwa dłużej niż na publicznych instancjach.
+            ...(keyedAll ? { discoveryTimeoutMs: 25_000 } : {}),
             maxExtraNetworks: config.maxExtraNetworks ?? (deep ? 3 : 0),
           })
-        : new BlockscoutProvider(evm),
+        : new BlockscoutProvider({ ...evm, chain: evmNetworks.find((item) => item.id === 'ethereum') }),
       new TronGridProvider({ ...live, labelLookup: tronScan, ...(externalLabels ? { tronScanUrl: 'https://apilist.tronscanapi.com' } : {}) }),
     );
+    if (apiKey) {
+      // Druga droga do Ethereum na wypadek awarii pierwszej: wspólne API z kluczem ↔ publiczna instancja.
+      const other = resolveEvmNetworks(!keyedAll).find((item) => item.id === 'ethereum');
+      const fallback = new BlockscoutProvider({
+        ...evm,
+        chain: other,
+        metadataUrl: externalLabels ? (keyedAll ? 'https://metadata.services.blockscout.com' : `${BLOCKSCOUT_KEYED_API}/services/metadata`) : undefined,
+      });
+      fallback.id = 'blockscout-ethereum-fallback';
+      fallback.label = keyedAll ? 'Blockscout (Ethereum, publiczna instancja — zapas)' : 'Blockscout (Ethereum, API z kluczem — zapas)';
+      providers.push(fallback);
+    }
   }
   return providers;
 }

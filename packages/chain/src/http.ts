@@ -73,10 +73,12 @@ export async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: F
 
   let response: Response;
   try {
-    response = await fetchImpl(url, { signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT } });
+    // Pola dodatkowe pozwalają ogranicznikowi tempa liczyć limit czasu od faktycznego startu żądania, a nie od wejścia do kolejki.
+    const init = { signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT }, callerSignal: options.signal, timeoutMs } as QueuedRequestInit;
+    response = await fetchImpl(url, init);
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    if (timeout.aborted) {
+    if (timeout.aborted || (error instanceof Error && error.name === 'TimeoutError')) {
       throw new ChainProviderError('timeout', `${options.source}: brak odpowiedzi w ciągu ${timeoutMs / 1000} s.`);
     }
     const reason = error instanceof Error ? error.message : String(error);
@@ -95,6 +97,12 @@ export async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: F
   if (response.status >= 500) {
     throw new ChainProviderError('unavailable', `${options.source}: usługa chwilowo niedostępna (HTTP ${response.status}).`);
   }
+  if (response.status === 401) {
+    throw new ChainProviderError('unavailable', `${options.source}: klucz API został odrzucony (HTTP 401) — sprawdź konfigurację klucza.`);
+  }
+  if (response.status === 402) {
+    throw new ChainProviderError('unavailable', `${options.source}: ta sieć lub wywołanie wymaga wyższego planu API albo wyczerpano dzienny limit kredytów (HTTP 402).`);
+  }
   if (!response.ok) {
     throw new ChainProviderError('unavailable', `${options.source}: żądanie odrzucone (HTTP ${response.status}).`);
   }
@@ -106,7 +114,17 @@ export async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: F
   }
 }
 
+/** `RequestInit` z polami, które `fetchJson` przekazuje ogranicznikowi tempa. */
+export interface QueuedRequestInit extends RequestInit {
+  /** Sygnał przerwania od wywołującego (bez limitu czasu). */
+  callerSignal?: AbortSignal;
+  /** Limit czasu jednego żądania, liczony od jego startu. */
+  timeoutMs?: number;
+}
+
 export interface HostPolicy {
+  /** Najwyżej tyle żądań do hosta naraz (domyślnie bez ograniczenia). */
+  maxConcurrent?: number;
   /** Minimalny odstęp między żądaniami do hosta. */
   minIntervalMs: number;
   /** Po odpowiedzi 429 czekamy tyle i ponawiamy żądanie jeden raz. */
@@ -125,6 +143,9 @@ export const DEFAULT_HOST_POLICIES: Record<string, HostPolicy> = {
   'blockstream.info': { minIntervalMs: 150, retryAfterMs: 4000 },
   'mempool.space': { minIntervalMs: 250, retryAfterMs: 4000 },
   'eth.blockscout.com': { minIntervalMs: 120, retryAfterMs: 4000 },
+  // API Blockscout z kluczem: plan darmowy pozwala na 5 żądań na sekundę.
+  // Pomiar na żywo: przy kilkunastu równoczesnych żądaniach brama zrywa połączenia po ~10 s, przy 2–3 odpowiada poprawnie.
+  'api.blockscout.com': { minIntervalMs: 220, retryAfterMs: 2000, maxConcurrent: 2 },
 };
 
 /**
@@ -132,7 +153,7 @@ export const DEFAULT_HOST_POLICIES: Record<string, HostPolicy> = {
  * a odpowiedź 429 powoduje jedną ponowną próbę po przerwie. Pozostałe hosty bez zmian.
  */
 export function createPoliteFetch(fetchImpl: FetchLike, policies: Record<string, HostPolicy> = DEFAULT_HOST_POLICIES): FetchLike {
-  const queues = new Map<string, { tail: Promise<unknown>; lastStart: number }>();
+  const queues = new Map<string, { tail: Promise<unknown>; lastStart: number; active: number; waiting: (() => void)[] }>();
   const pause = (ms: number, signal?: AbortSignal | null) =>
     new Promise<void>((resolve, reject) => {
       if (signal?.aborted) return reject(signal.reason);
@@ -151,21 +172,37 @@ export function createPoliteFetch(fetchImpl: FetchLike, policies: Record<string,
     }
     const policy = policies[host];
     if (!policy) return fetchImpl(input, init);
-    const queue = queues.get(host) ?? { tail: Promise.resolve(), lastStart: 0 };
+    const queue = queues.get(host) ?? { tail: Promise.resolve(), lastStart: 0, active: 0, waiting: [] };
     queues.set(host, queue);
-    const run = queue.tail.then(async () => {
+    // W kolejce stoi tylko START żądania (odstęp między startami). Na odpowiedź nie czekamy —
+    // jedno wolne żądanie nie może wstrzymać pozostałych aż do przekroczenia ich limitu czasu.
+    const slot = queue.tail.then(async () => {
+      if (policy.maxConcurrent !== undefined && queue.active >= policy.maxConcurrent) await new Promise<void>((resolve) => queue.waiting.push(resolve));
+      queue.active += 1;
       const wait = queue.lastStart + policy.minIntervalMs - Date.now();
       if (wait > 0) await pause(wait);
       queue.lastStart = Date.now();
-      const response = await fetchImpl(input, init);
-      if (response.status !== 429) return response;
-      await pause(policy.retryAfterMs);
-      queue.lastStart = Date.now();
-      // Limit czasu pierwszej próby mógł już minąć, więc druga dostaje własny.
-      return fetchImpl(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     });
-    queue.tail = run.catch(() => undefined);
-    return run;
+    queue.tail = slot.catch(() => undefined);
+    const queued = init as QueuedRequestInit | undefined;
+    // Limit czasu liczymy od startu żądania; czas w kolejce go nie zużywa.
+    const startSignal = () => {
+      if (queued?.timeoutMs === undefined) return init?.signal ?? undefined;
+      const timer = AbortSignal.timeout(queued.timeoutMs);
+      return queued.callerSignal ? AbortSignal.any([queued.callerSignal, timer]) : timer;
+    };
+    return slot.then(async () => {
+      try {
+        const response = await fetchImpl(input, { ...init, signal: startSignal() });
+        if (response.status !== 429) return response;
+        await pause(policy.retryAfterMs);
+        queue.lastStart = Date.now();
+        return await fetchImpl(input, { ...init, signal: queued?.timeoutMs === undefined ? AbortSignal.timeout(REQUEST_TIMEOUT_MS) : startSignal() });
+      } finally {
+        queue.active -= 1;
+        queue.waiting.shift()?.();
+      }
+    });
   };
 }
 

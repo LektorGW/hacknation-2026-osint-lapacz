@@ -47,6 +47,8 @@ const providers = createChainProviders({
   depth,
   fetch: countingFetch,
   politeFetch: true,
+  // Klucz API Blockscout z otoczenia (`node --env-file=.env …`); jego wartość nie jest nigdzie wypisywana.
+  ...(process.env.BLOCKSCOUT_API_KEY ? { blockscoutApiKey: process.env.BLOCKSCOUT_API_KEY, blockscoutKeyScope: args.includes('--key-scope=all') ? ('all' as const) : ('required' as const) } : {}),
   rateCacheFile: false,
   ...(hops ? { trace: { maxHops: Number(hops), maxCandidates: 10 } } : {}),
 });
@@ -118,6 +120,18 @@ for (const target of targets) {
   for (const transfer of activity.transfers) byChain[(transfer as { chain?: string }).chain ?? activity.profile.network] = (byChain[(transfer as { chain?: string }).chain ?? activity.profile.network] ?? 0) + 1;
   console.log(`  przelewy wg sieci: ${JSON.stringify(byChain)}`);
   for (const item of extra.balances ?? []) console.log(`  saldo ${item.kind === 'current' ? 'bieżące' : `na ${item.asOf}`}: ${item.amount} ${item.asset}${item.chain ? ` [${item.chain}]` : ''}${item.valuePln !== undefined ? ` ≈ ${item.valuePln.toLocaleString('pl-PL')} PLN` : ''}`);
+  const more = activity as {
+    seizures?: { time: string; amount: number; asset: string; counterparty: string; counterpartyLabel: string; valuePln?: number; labelSource: string }[];
+    fundingSources?: { address: string; label?: string; addressClass: string; category?: string; amount: number; asset: string; share: number; hops: number; via?: string; reason: string }[];
+  };
+  for (const item of more.seizures ?? []) {
+    console.log(`  ZAJĘCIE ${item.time.slice(0, 10)}: ${item.amount} ${item.asset} → ${short(item.counterparty)} „${item.counterpartyLabel}”${item.valuePln !== undefined ? ` ≈ ${item.valuePln.toLocaleString('pl-PL')} PLN` : ''}`);
+    if (verbose) console.log(`      źródło etykiety: ${item.labelSource}`);
+  }
+  for (const item of more.fundingSources ?? []) {
+    console.log(`  źródło środków: ${short(item.address)} ${item.label ? `„${item.label}”` : '(bez etykiety)'} [${item.category ?? item.addressClass}] ${item.amount} ${item.asset} = ${(item.share * 100).toFixed(1)}% wpływów, kroków ${item.hops}${item.via ? ` przez ${short(item.via)}` : ''}`);
+    if (verbose) console.log(`      ${redact(item.reason)}`);
+  }
   const links = (activity as { linkedAddresses?: { address: string; kind: string; strength: number; reason: string; txids: string[] }[] }).linkedAddresses ?? [];
   const byKind: Record<string, number> = {};
   for (const link of links) byKind[link.kind] = (byKind[link.kind] ?? 0) + 1;

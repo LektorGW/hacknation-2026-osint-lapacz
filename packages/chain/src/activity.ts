@@ -20,6 +20,7 @@ import type { DepositOptions, InferredDeposit } from './deposit.ts';
 import { computeBalances } from './balances.ts';
 import type { BalanceEntry, BalanceInputs } from './balances.ts';
 import type { ChainRequestContext } from './history.ts';
+import type { FundingSource } from './funding.ts';
 import type { LinkedAddress } from './links.ts';
 import { classify, getDefaultLabels } from './labels.ts';
 import type { LabelSet } from './labels.ts';
@@ -82,6 +83,8 @@ export interface RawAddressData {
   openQuestions?: { txid: string; text: string }[];
   /** Powiązane adresy — kandydaci na inne adresy tej samej osoby (heurystyki). */
   linkedAddresses?: LinkedAddress[];
+  /** Pochodzenie środków: adresy, z których przyszły największe wpływy. */
+  fundingSources?: FundingSource[];
   /** Dane do wyliczenia stanu posiadania (salda bieżące i na koniec lat). */
   balanceInputs?: BalanceInputs;
   /** Symbol waluty natywnej, gdy inny niż domyślny dla sieci (inne sieci EVM). */
@@ -115,7 +118,34 @@ export interface ActivityOptions {
 const roundAmount = (value: number) => Math.round(value * 1e8) / 1e8;
 
 /** Wynik analizy z polem dodatkowym: pytania dla ścieżek urwanych bez wyniku (poza kontraktem core). */
-export type ChainActivityWithQuestions = ChainActivity & { openQuestions?: string[]; linkedAddresses?: LinkedAddress[]; balances?: BalanceEntry[] };
+export type ChainActivityWithQuestions = ChainActivity & {
+  openQuestions?: string[];
+  linkedAddresses?: LinkedAddress[];
+  balances?: BalanceEntry[];
+  seizures?: SeizureIndicator[];
+  fundingSources?: FundingSource[];
+};
+
+/**
+ * Przekazanie środków organowi państwa (zajęcie) — to NIE jest spieniężenie i nie wchodzi do sum wypłat.
+ * Ustalenie wynika z publicznej etykiety adresu docelowego.
+ */
+export interface SeizureIndicator {
+  txid: string;
+  time: string;
+  asset: string;
+  amount: number;
+  /** Adres organu państwa / zajętych środków. */
+  counterparty: string;
+  counterpartyLabel: string;
+  /** Publiczne źródło etykiety (URL) i data sprawdzenia. */
+  labelSource: string;
+  valuePln?: number;
+  valuation?: string;
+  explanation: string;
+  explorerUrl: string;
+  chain?: string;
+}
 
 export async function buildChainActivity(raw: RawAddressData, options: ActivityOptions = {}): Promise<ChainActivityWithQuestions> {
   const labels = options.labels ?? getDefaultLabels();
@@ -129,6 +159,8 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
   const inferredFor = (txid: string, counterparty: string) =>
     inferred.find((item) => item.txid === txid && item.counterparty === counterparty);
   const windowHours = options.trace?.windowHours ?? options.deposit?.windowHours ?? DEFAULT_DEPOSIT_OPTIONS.windowHours;
+  /** Przelewy na adresy organów państwa (zajęcia) — osobny wskaźnik, nie wypłata. */
+  const seized: { transfer: RawTransfer; label: string; source: string }[] = [];
   /** Skąd pochodzi klasyfikacja kontrahenta danego przelewu — do opisu ścieżek. */
   const labelSources = new Map<string, string>();
 
@@ -144,6 +176,9 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
         isContract: transfer.counterpartyIsContract,
       });
       labelSources.set(`${transfer.txid}|${transfer.counterparty}`, counterparty.classificationSource);
+      if (transfer.direction === 'out' && counterparty.category === 'law_enforcement') {
+        seized.push({ transfer, label: counterparty.label ?? 'organ państwa', source: counterparty.source ?? counterparty.classificationSource });
+      }
       const deposit = transfer.direction === 'out' ? inferredFor(transfer.txid, transfer.counterparty) : undefined;
       let label =
         counterparty.label ??
@@ -322,6 +357,36 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
     );
   }
 
+  const seizures: SeizureIndicator[] = await Promise.all(
+    seized
+      .sort((a, b) => Date.parse(a.transfer.time) - Date.parse(b.transfer.time))
+      .map(async ({ transfer, label, source }) => {
+        const valued = await valueAmount(rateSource, transfer.asset, transfer.amount, transfer.time);
+        return {
+          txid: transfer.txid,
+          time: transfer.time,
+          asset: transfer.asset,
+          amount: transfer.amount,
+          counterparty: transfer.counterparty,
+          counterpartyLabel: label,
+          labelSource: source,
+          ...(valued ? { valuePln: valued.valuePln, valuation: valued.valuation } : {}),
+          explanation:
+            `Przelew ${formatAmount(transfer.amount)} ${transfer.asset} na adres ${transfer.counterparty}, publicznie opisany jako „${label}”. ` +
+            'To przekazanie środków organowi państwa (zajęcie), a NIE spieniężenie — nie jest liczone jako wypłata ani przychód. ' +
+            `Źródło etykiety: ${source}.`,
+          explorerUrl: transfer.explorerUrl,
+          ...chainTag,
+        };
+      }),
+  );
+  if (seizures.length > 0) {
+    limitations.push(
+      `Wskaźniki zajęcia (${seizures.length}) wynikają z PUBLICZNEJ ETYKIETY adresu docelowego (źródło przy każdym wskaźniku), nie z dokumentu urzędowego dotyczącego tej transakcji. ` +
+        'Potwierdzenie wymaga akt postępowania lub komunikatu organu; kwoty nie wchodzą do sum wypłat.',
+    );
+  }
+
   const holdings = raw.balanceInputs ? await computeBalances(raw.network, raw.balanceInputs, rateSource) : undefined;
   if (holdings) limitations.push(...holdings.limitations);
 
@@ -355,6 +420,9 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
     ...(questions.length > 0 ? { openQuestions: questions.map((item) => item.text) } : {}),
     // Pole dodatkowe: powiązane adresy (heurystyki), posortowane od najsilniejszego powiązania.
     ...(raw.linkedAddresses && raw.linkedAddresses.length > 0 ? { linkedAddresses: raw.linkedAddresses } : {}),
+    // Pola dodatkowe: przekazania organom państwa (zajęcia) i pochodzenie środków.
+    ...(seizures.length > 0 ? { seizures } : {}),
+    ...(raw.fundingSources && raw.fundingSources.length > 0 ? { fundingSources: raw.fundingSources } : {}),
     // Pole dodatkowe: stan posiadania — salda bieżące i wyliczone salda na koniec lat podatkowych.
     ...(holdings && holdings.balances.length > 0 ? { balances: holdings.balances } : {}),
   };

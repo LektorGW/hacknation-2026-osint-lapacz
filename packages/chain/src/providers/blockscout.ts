@@ -15,7 +15,10 @@ import type { TracedTrail } from '../trace.ts';
 import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, linkBudgetLimit, planHistory, traceBudgetLimit } from '../history.ts';
 import type { HistoryOptions } from '../history.ts';
 import { DEFAULT_LINK_BUDGET, findLinkedAddresses } from '../links.ts';
-import type { LinkOptions, LinkedAddress } from '../links.ts';
+import type { LinkOptions, LinkSearch, LinkedAddress } from '../links.ts';
+import { DEFAULT_FUNDING_BUDGET, traceFundingSources } from '../funding.ts';
+import type { FundingSource } from '../funding.ts';
+import { getDefaultSanctions } from '../ofac.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import type { BalanceFlow } from '../balances.ts';
@@ -153,6 +156,8 @@ export interface BlockscoutProviderConfig extends ActivityOptions {
   /** Osobny budżet żądań na szukanie powiązań (domyślnie 12). */
   linkBudget?: number;
   links?: LinkOptions;
+  /** Osobny budżet żądań na pochodzenie środków (domyślnie 8). */
+  fundingBudget?: number;
   /**
    * Adres usługi metadanych Blockscout (hurtowe znaczniki adresów, bez klucza), np.
    * `https://metadata.services.blockscout.com`. Bez niego używane są tylko znaczniki z transakcji.
@@ -192,6 +197,8 @@ export class BlockscoutProvider implements ChainProvider {
   findLinks: boolean;
   linkBudget: number;
   linkOptions: LinkOptions | undefined;
+  /** Osobny budżet żądań na pochodzenie środków. */
+  fundingBudget: number;
   metadataUrl: string | undefined;
   chainId: number;
   extraOutgoing: boolean;
@@ -228,6 +235,7 @@ export class BlockscoutProvider implements ChainProvider {
     this.findLinks = config.findLinks ?? false;
     this.linkBudget = config.linkBudget ?? DEFAULT_LINK_BUDGET;
     this.linkOptions = config.links;
+    this.fundingBudget = config.fundingBudget ?? DEFAULT_FUNDING_BUDGET;
     this.metadataUrl = config.metadataUrl?.replace(/\/+$/, '');
     this.chainId = config.chainId ?? config.chain?.chainId ?? 1;
     // Inna sieć: etykiety z Ethereum nie obowiązują; znane są tylko kontrakty stablecoinów tej sieci.
@@ -514,8 +522,9 @@ export class BlockscoutProvider implements ChainProvider {
     }
 
     let linkedAddresses: LinkedAddress[] = [];
+    let fundingSources: FundingSource[] = [];
     if (this.findLinks) {
-      const found = await findLinkedAddresses({
+      const linkSearch: LinkSearch = {
         network,
         address,
         transfers,
@@ -547,9 +556,26 @@ export class BlockscoutProvider implements ChainProvider {
           const total = Number(counters.transactions_count ?? 0) + Number(counters.token_transfers_count ?? 0);
           return Number.isFinite(total) ? total : undefined;
         },
-      });
+      };
+      const found = await findLinkedAddresses(linkSearch);
       linkedAddresses = found.links;
       limitations.push(...found.limitations);
+      // Pochodzenie środków: te same zapytania o przelewy przychodzące, osobny budżet.
+      const funding = await traceFundingSources({
+        network,
+        address,
+        transfers,
+        txCount: transfers.length,
+        historyComplete: !truncated && !ranged,
+        labels,
+        sanctions: this.options.sanctions ?? getDefaultSanctions(),
+        sourceName: this.label,
+        budget: new RequestBudget(this.fundingBudget),
+        fetchIncoming: linkSearch.fetchIncoming,
+        signal: context.signal,
+      });
+      fundingSources = funding.sources;
+      limitations.push(...funding.limitations);
     }
 
     // Stan posiadania: salda bieżące (waluta natywna + zweryfikowane stablecoiny) i zmiany sald z pobranej historii.
@@ -594,6 +620,7 @@ export class BlockscoutProvider implements ChainProvider {
         network,
         address,
         linkedAddresses,
+        fundingSources,
         sourceName: this.label,
         isContract: party.isContract,
         label: party.label,

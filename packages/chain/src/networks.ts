@@ -28,11 +28,70 @@ export interface EvmNetwork {
   explorerUrl: string;
   /** Kontrakty stablecoinów potwierdzone na żywo. */
   stablecoins: { symbol: string; address: string; holders?: number }[];
+  /** Sieć dostępna tylko przez API Blockscout z kluczem; bez klucza jest pomijana. */
+  requiresKey?: boolean;
+  /** `false`: API z kluczem nie obsługuje tej sieci na planie darmowym — zawsze publiczna instancja. */
+  keyedApi?: boolean;
+  note?: string;
+}
+
+/** Adres wspólnego API Blockscout z kluczem: `https://api.blockscout.com/<chainId>/api/v2/…`. */
+export const BLOCKSCOUT_KEYED_API = 'https://api.blockscout.com';
+export const BLOCKSCOUT_KEYED_HOST = 'api.blockscout.com';
+
+/**
+ * Sieci do użycia przy danej konfiguracji: bez klucza — tylko publiczne instancje; z kluczem — wszystkie sieci,
+ * a te obsługiwane przez API z kluczem idą przez `api.blockscout.com/<chainId>`.
+ */
+export function resolveEvmNetworks(hasKey: boolean, networks: EvmNetwork[] = [...loadEvmNetworks().networks, ...loadEvmNetworks().keyed]): EvmNetwork[] {
+  return networks
+    .filter((chain) => hasKey || !chain.requiresKey)
+    .map((chain) => (hasKey && chain.keyedApi !== false ? { ...chain, apiUrl: `${BLOCKSCOUT_KEYED_API}/${chain.chainId}` } : chain));
+}
+
+/** Zużycie API z kluczem — do raportowania; nie zawiera klucza. */
+export interface KeyedApiUsage {
+  calls: number;
+  /** Ostatnia wartość nagłówka `x-credits-remaining`. */
+  creditsRemaining?: number;
+}
+
+/**
+ * Dokleja klucz API do żądań kierowanych do `api.blockscout.com` — w NAGŁÓWKU `authorization`, nigdy w adresie,
+ * żeby klucz nie trafił do komunikatów błędów, ograniczeń ani dzienników. Inne hosty dostają żądanie bez zmian.
+ */
+export function createKeyedFetch(fetchImpl: FetchLike, apiKey: string): { fetch: FetchLike; usage: KeyedApiUsage } {
+  const usage: KeyedApiUsage = { calls: 0 };
+  const mask = (text: string) => text.split(apiKey).join('***');
+  const keyed: FetchLike = async (input, init) => {
+    let host = '';
+    try {
+      host = new URL(input).host;
+    } catch {
+      // Adres niepoprawny — obsłuży go właściwy `fetch`.
+    }
+    if (host !== BLOCKSCOUT_KEYED_HOST) return fetchImpl(input, init);
+    usage.calls += 1;
+    try {
+      const response = await fetchImpl(input, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), authorization: `Bearer ${apiKey}` } });
+      const credits = Number(response.headers.get('x-credits-remaining'));
+      if (Number.isFinite(credits) && response.headers.get('x-credits-remaining') !== null) usage.creditsRemaining = credits;
+      return response;
+    } catch (error) {
+      // Na wszelki wypadek: komunikat błędu sieci nigdy nie może zawierać klucza.
+      if (error instanceof Error) error.message = mask(error.message);
+      throw error;
+    }
+  };
+  return { fetch: keyed, usage };
 }
 
 export interface EvmNetworkRegistry {
   verifiedAt?: string;
+  /** Sieci z publiczną instancją działającą bez klucza. */
   networks: EvmNetwork[];
+  /** Sieci dostępne wyłącznie przez API Blockscout z kluczem. */
+  keyed: EvmNetwork[];
   /** Sieci sprawdzone i niedostępne bez klucza — z powodem. */
   unavailable: { id: string; name: string; host: string; reason: string }[];
 }
@@ -46,12 +105,14 @@ export function loadEvmNetworks(): EvmNetworkRegistry {
   const networks = (parsed.networks ?? []).filter(
     (item) => typeof item.id === 'string' && typeof item.apiUrl === 'string' && typeof item.nativeAsset === 'string' && Array.isArray(item.stablecoins),
   );
-  registry = { ...(parsed.verifiedAt ? { verifiedAt: parsed.verifiedAt } : {}), networks, unavailable: parsed.unavailable ?? [] };
+  const keyed = (parsed.keyed ?? []).filter((item) => typeof item.id === 'string' && typeof item.nativeAsset === 'string' && Array.isArray(item.stablecoins));
+  registry = { ...(parsed.verifiedAt ? { verifiedAt: parsed.verifiedAt } : {}), networks, keyed, unavailable: parsed.unavailable ?? [] };
   return registry;
 }
 
 export function getEvmNetwork(id: string): EvmNetwork | undefined {
-  return loadEvmNetworks().networks.find((item) => item.id === id);
+  const all = loadEvmNetworks();
+  return all.networks.find((item) => item.id === id) ?? all.keyed.find((item) => item.id === id);
 }
 
 /**
@@ -110,7 +171,7 @@ export async function discoverNetworks(
   options: DiscoverOptions = {},
 ): Promise<{ networks: NetworkPresence[]; limitations: string[] }> {
   const fetchImpl = options.fetch ?? fetch;
-  const networks = options.networks ?? loadEvmNetworks().networks;
+  const networks = options.networks ?? resolveEvmNetworks(false);
   const deadline = AbortSignal.timeout(options.timeoutMs ?? DISCOVERY_TIMEOUT_MS);
   const signal = context.signal ? AbortSignal.any([context.signal, deadline]) : deadline;
   const failed: string[] = [];
@@ -155,11 +216,12 @@ export async function discoverNetworks(
   );
   const limitations: string[] = [];
   if (failed.length > 0) limitations.push(`Sieci EVM: nie udało się sprawdzić ${failed.length} z ${networks.length} sieci — ${failed.join(', ')}. Aktywność w tych sieciach pozostaje nieznana.`);
-  const unavailable = loadEvmNetworks().unavailable;
+  // Sieci niedostępne w tej konfiguracji: bez klucza cała lista, z kluczem — bez tych, które właśnie sprawdziliśmy.
+  const unavailable = loadEvmNetworks().unavailable.filter((item) => !networks.some((chain) => chain.id === item.id));
   if (unavailable.length > 0) {
     limitations.push(
-      `Sieci EVM: sprawdzono ${networks.length} sieci z publicznym API bez klucza. NIE sprawdzono: ${unavailable.map((item) => item.name).join(', ')} ` +
-        '— brak dostępu bez klucza lub blokada (szczegóły w data/evm-networks.json). Wypłaty przez te sieci pozostają niewidoczne.',
+      `Sieci EVM: sprawdzono ${networks.length} sieci dostępnych w tej konfiguracji. NIE sprawdzono: ${unavailable.map((item) => item.name).join(', ')} ` +
+        '— brak dostępu bez klucza, płatny plan API albo blokada (szczegóły w data/evm-networks.json). Wypłaty przez te sieci pozostają niewidoczne.',
     );
   }
   return { networks: found.filter((item): item is NetworkPresence => item !== undefined).sort((a, b) => b.txCount + b.tokenTransfers - (a.txCount + a.tokenTransfers)), limitations };
@@ -231,14 +293,17 @@ export class EvmMultiChainProvider implements ChainProvider {
   }
 
   async getActivity(network: Network, address: string, context: ConnectorContext): Promise<MultiChainActivity> {
-    const all = this.config.networks ?? loadEvmNetworks().networks;
+    const all = this.config.networks ?? resolveEvmNetworks(false);
     const others = all.filter((chain) => chain.id !== 'ethereum');
-    // Wykrywanie sieci biegnie równolegle z analizą Ethereum — nie wydłuża jej.
+    // Analiza Ethereum startuje pierwsza (jej żądania są pierwsze w kolejce ogranicznika tempa);
+    // wykrywanie sieci biegnie równolegle i nie wydłuża analizy.
+    const mainRun = this.config.main.getActivity(network, address, context);
+    mainRun.catch(() => undefined);
     const discovery = discoverNetworks(address, context, { fetch: this.config.fetch, networks: all, timeoutMs: this.config.discoveryTimeoutMs }).catch((error: unknown) => {
       if (context.signal?.aborted) throw error;
       return { networks: [] as NetworkPresence[], limitations: [`Sieci EVM: wykrywanie sieci nie powiodło się — ${error instanceof Error ? error.message : String(error)}`] };
     });
-    const main = (await this.config.main.getActivity(network, address, context)) as MultiChainActivity;
+    const main = (await mainRun) as MultiChainActivity;
     const everywhere = await discovery;
     // Liczniki Ethereum z eksploratora (cała historia); gdy ich brak — liczby z pobranych przelewów.
     const counted = everywhere.networks.find((item) => item.networkId === 'ethereum');

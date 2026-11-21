@@ -1,63 +1,259 @@
 {
-  "uwaga": "Rejestr sieci EVM z publicznymi eksploratorami o API Blockscout v2 (bez klucza). Wpisane są WYŁĄCZNIE sieci, które 2026-11-21 odpowiedziały poprawnie na zapytanie /api/v2/addresses/{adres} z nagłówkiem User-Agent „OLCyS-research/0.1”. `apiUrl` to adres końcowy (po przekierowaniach). Stablecoiny: tylko kontrakty potwierdzone na żywo w /api/v2/tokens/{kontrakt} — właściwy symbol, 6 miejsc po przecinku i duża liczba posiadaczy (podana w `holders`). Ten sam adres EVM działa na każdej z tych sieci.",
-  "verifiedAt": "2026-11-21",
-  "networks": [
+ "uwaga": "Rejestr sieci EVM z publicznymi eksploratorami o API Blockscout v2 (bez klucza). Wpisane są WYŁĄCZNIE sieci, które 2026-11-21 odpowiedziały poprawnie na zapytanie /api/v2/addresses/{adres} z nagłówkiem User-Agent „OLCyS-research/0.1”. `apiUrl` to adres końcowy (po przekierowaniach). Stablecoiny: tylko kontrakty potwierdzone na żywo w /api/v2/tokens/{kontrakt} — właściwy symbol, 6 miejsc po przecinku i duża liczba posiadaczy (podana w `holders`). Ten sam adres EVM działa na każdej z tych sieci. Pola opcjonalne: requiresKey (sieć dostępna tylko przez API Blockscout z kluczem — bez klucza jest pomijana), keyedApi: false (sieć, której API z kluczem nie obsługuje na planie darmowym — zawsze idzie przez publiczną instancję). Sekcja „keyed”: sieci dostępne wyłącznie przez API Blockscout z kluczem (https://api.blockscout.com/<chainId>), potwierdzone na żywo na planie darmowym. Sekcja „unavailable” opisuje sieci niedostępne BEZ klucza; te z nich, które działają z kluczem, są powtórzone w „keyed”.",
+ "verifiedAt": "2026-11-21",
+ "networks": [
+  {
+   "id": "ethereum",
+   "name": "Ethereum",
+   "chainId": 1,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://eth.blockscout.com",
+   "explorerUrl": "https://eth.blockscout.com",
+   "stablecoins": [
     {
-      "id": "ethereum", "name": "Ethereum", "chainId": 1, "nativeAsset": "ETH",
-      "apiUrl": "https://eth.blockscout.com", "explorerUrl": "https://eth.blockscout.com",
-      "stablecoins": [
-        { "symbol": "USDT", "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "holders": 17203723 },
-        { "symbol": "USDC", "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "holders": 9618291 }
-      ]
+     "symbol": "USDT",
+     "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+     "holders": 17203723
     },
     {
-      "id": "optimism", "name": "OP Mainnet (Optimism)", "chainId": 10, "nativeAsset": "ETH",
-      "apiUrl": "https://explorer.optimism.io", "explorerUrl": "https://explorer.optimism.io",
-      "stablecoins": [
-        { "symbol": "USDT", "address": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", "holders": 998472 },
-        { "symbol": "USDC", "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "holders": 671837 }
-      ]
+     "symbol": "USDC",
+     "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+     "holders": 9618291
+    }
+   ]
+  },
+  {
+   "id": "optimism",
+   "name": "OP Mainnet (Optimism)",
+   "chainId": 10,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://explorer.optimism.io",
+   "explorerUrl": "https://explorer.optimism.io",
+   "stablecoins": [
+    {
+     "symbol": "USDT",
+     "address": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+     "holders": 998472
     },
     {
-      "id": "zksync", "name": "ZKsync Era", "chainId": 324, "nativeAsset": "ETH",
-      "apiUrl": "https://zksync.blockscout.com", "explorerUrl": "https://zksync.blockscout.com",
-      "stablecoins": [
-        { "symbol": "USDT", "address": "0x493257fD37EDB34451f62EDf8D2a0C418852bA4C", "holders": 385059 },
-        { "symbol": "USDC", "address": "0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4", "holders": 68926 }
-      ]
+     "symbol": "USDC",
+     "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+     "holders": 671837
+    }
+   ]
+  },
+  {
+   "id": "zksync",
+   "name": "ZKsync Era",
+   "chainId": 324,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://zksync.blockscout.com",
+   "explorerUrl": "https://zksync.blockscout.com",
+   "stablecoins": [
+    {
+     "symbol": "USDT",
+     "address": "0x493257fD37EDB34451f62EDf8D2a0C418852bA4C",
+     "holders": 385059
     },
     {
-      "id": "scroll", "name": "Scroll", "chainId": 534352, "nativeAsset": "ETH",
-      "apiUrl": "https://scrollscan.com", "explorerUrl": "https://scrollscan.com",
-      "stablecoins": [
-        { "symbol": "USDT", "address": "0xf55BEC9cafDbE8730f096Aa55dad6D22d44099Df", "holders": 187080 },
-        { "symbol": "USDC", "address": "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4", "holders": 332612 }
-      ]
+     "symbol": "USDC",
+     "address": "0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4",
+     "holders": 68926
+    }
+   ],
+   "keyedApi": false,
+   "note": "API z kluczem odmawia tej sieci na planie darmowym (HTTP 402 „Featured chain … requires … Builder, Business, Pro”), dlatego zawsze używamy publicznej instancji."
+  },
+  {
+   "id": "scroll",
+   "name": "Scroll",
+   "chainId": 534352,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://scrollscan.com",
+   "explorerUrl": "https://scrollscan.com",
+   "stablecoins": [
+    {
+     "symbol": "USDT",
+     "address": "0xf55BEC9cafDbE8730f096Aa55dad6D22d44099Df",
+     "holders": 187080
     },
     {
-      "id": "celo", "name": "Celo", "chainId": 42220, "nativeAsset": "CELO",
-      "apiUrl": "https://celo.blockscout.com", "explorerUrl": "https://celo.blockscout.com",
-      "stablecoins": [
-        { "symbol": "USDT", "address": "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e", "holders": 22043782 },
-        { "symbol": "USDC", "address": "0xcebA9300f2b948710d2653dD7B07f33A8B32118C", "holders": 101234 }
-      ]
+     "symbol": "USDC",
+     "address": "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4",
+     "holders": 332612
+    }
+   ]
+  },
+  {
+   "id": "celo",
+   "name": "Celo",
+   "chainId": 42220,
+   "nativeAsset": "CELO",
+   "apiUrl": "https://celo.blockscout.com",
+   "explorerUrl": "https://celo.blockscout.com",
+   "stablecoins": [
+    {
+     "symbol": "USDT",
+     "address": "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e",
+     "holders": 22043782
     },
-    { "id": "unichain", "name": "Unichain", "chainId": 130, "nativeAsset": "ETH", "apiUrl": "https://unichain.blockscout.com", "explorerUrl": "https://unichain.blockscout.com", "stablecoins": [] },
-    { "id": "soneium", "name": "Soneium", "chainId": 1868, "nativeAsset": "ETH", "apiUrl": "https://soneium.blockscout.com", "explorerUrl": "https://soneium.blockscout.com", "stablecoins": [] },
-    { "id": "mode", "name": "Mode", "chainId": 34443, "nativeAsset": "ETH", "apiUrl": "https://explorer.mode.network", "explorerUrl": "https://explorer.mode.network", "stablecoins": [] },
-    { "id": "ink", "name": "Ink", "chainId": 57073, "nativeAsset": "ETH", "apiUrl": "https://explorer.inkonchain.com", "explorerUrl": "https://explorer.inkonchain.com", "stablecoins": [] },
-    { "id": "lisk", "name": "Lisk", "chainId": 1135, "nativeAsset": "ETH", "apiUrl": "https://blockscout.lisk.com", "explorerUrl": "https://blockscout.lisk.com", "stablecoins": [] },
-    { "id": "worldchain", "name": "World Chain", "chainId": 480, "nativeAsset": "ETH", "apiUrl": "https://worldchain-mainnet.explorer.alchemy.com", "explorerUrl": "https://worldchain-mainnet.explorer.alchemy.com", "stablecoins": [] }
-  ],
-  "unavailable": [
-    { "id": "base", "name": "Base", "host": "base.blockscout.com", "reason": "HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka User-Agent „OLCyS-research/0.1”; odpowiada 200 dopiero na nagłówek w postaci „Mozilla/5.0 (compatible; …)”. Warunki sprawdzone 2026-11-21: robots.txt nie zabrania /api/, ale dokumentacja Blockscout ogłasza wycofanie dostępu do API pojedynczych instancji i kieruje do API z kluczem (dev.blockscout.com), a regulamin zakazuje obchodzenia ograniczeń dostępu. Warunki są niejednoznaczne, więc nagłówka nie zmieniamy; właściwa droga to darmowy klucz API Blockscout." },
-    { "id": "arbitrum", "name": "Arbitrum One", "host": "arbitrum.blockscout.com", "reason": "jak Base: HTTP 403 dla naszego nagłówka User-Agent." },
-    { "id": "polygon", "name": "Polygon PoS", "host": "polygon.blockscout.com", "reason": "jak Base: HTTP 403 dla naszego nagłówka User-Agent." },
-    { "id": "gnosis", "name": "Gnosis", "host": "gnosis.blockscout.com", "reason": "przekierowanie 301 na gnosisscan.io, który odpowiada HTTP 403 (Cloudflare)." },
-    { "id": "bnb", "name": "BNB Smart Chain", "host": "—", "reason": "brak publicznego eksploratora z API bez klucza: instancje Blockscout nie istnieją (404), BscScan / Etherscan API v2 wymagają płatnego klucza dla tej sieci, Routescan zwraca „chain not supported”." },
-    { "id": "linea", "name": "Linea", "host": "explorer.linea.build", "reason": "zwraca stronę HTML zamiast API Blockscout; linea.blockscout.com nie istnieje (404)." },
-    { "id": "zora", "name": "Zora", "host": "explorer.zora.energy", "reason": "HTTP 500 „Only HTML requests are supported here”." },
-    { "id": "mantle", "name": "Mantle", "host": "explorer.mantle.xyz", "reason": "HTTP 502 w dniu sprawdzenia." },
-    { "id": "avalanche", "name": "Avalanche C-Chain", "host": "avalanche.blockscout.com", "reason": "instancja nie istnieje (404)." }
-  ]
+    {
+     "symbol": "USDC",
+     "address": "0xcebA9300f2b948710d2653dD7B07f33A8B32118C",
+     "holders": 101234
+    }
+   ]
+  },
+  {
+   "id": "unichain",
+   "name": "Unichain",
+   "chainId": 130,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://unichain.blockscout.com",
+   "explorerUrl": "https://unichain.blockscout.com",
+   "stablecoins": []
+  },
+  {
+   "id": "soneium",
+   "name": "Soneium",
+   "chainId": 1868,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://soneium.blockscout.com",
+   "explorerUrl": "https://soneium.blockscout.com",
+   "stablecoins": []
+  },
+  {
+   "id": "mode",
+   "name": "Mode",
+   "chainId": 34443,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://explorer.mode.network",
+   "explorerUrl": "https://explorer.mode.network",
+   "stablecoins": []
+  },
+  {
+   "id": "ink",
+   "name": "Ink",
+   "chainId": 57073,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://explorer.inkonchain.com",
+   "explorerUrl": "https://explorer.inkonchain.com",
+   "stablecoins": []
+  },
+  {
+   "id": "lisk",
+   "name": "Lisk",
+   "chainId": 1135,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://blockscout.lisk.com",
+   "explorerUrl": "https://blockscout.lisk.com",
+   "stablecoins": []
+  },
+  {
+   "id": "worldchain",
+   "name": "World Chain",
+   "chainId": 480,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://worldchain-mainnet.explorer.alchemy.com",
+   "explorerUrl": "https://worldchain-mainnet.explorer.alchemy.com",
+   "stablecoins": []
+  }
+ ],
+ "keyed": [
+  {
+   "id": "arbitrum",
+   "name": "Arbitrum One",
+   "chainId": 42161,
+   "nativeAsset": "ETH",
+   "apiUrl": "https://api.blockscout.com/42161",
+   "explorerUrl": "https://arbitrum.blockscout.com",
+   "requiresKey": true,
+   "stablecoins": [
+    {
+     "symbol": "USDC",
+     "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+     "holders": 5985540
+    }
+   ],
+   "note": "Dostępna tylko przez API Blockscout z kluczem (potwierdzone 2026-11-21 na planie darmowym). Kontrakt 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9 API opisuje symbolem USDT0, nie USDT — nie został wpisany jako stablecoin."
+  },
+  {
+   "id": "gnosis",
+   "name": "Gnosis",
+   "chainId": 100,
+   "nativeAsset": "XDAI",
+   "apiUrl": "https://api.blockscout.com/100",
+   "explorerUrl": "https://gnosis.blockscout.com",
+   "requiresKey": true,
+   "stablecoins": [
+    {
+     "symbol": "USDC",
+     "address": "0xDDAfbb505ad214D7b80b1f830fcCc89B60fb7A83",
+     "holders": 82530
+    },
+    {
+     "symbol": "USDT",
+     "address": "0x4ECaBa5870353805a9F068101A40E0f32ed605C6",
+     "holders": 30655
+    }
+   ],
+   "note": "Dostępna tylko przez API Blockscout z kluczem (potwierdzone 2026-11-21 na planie darmowym). Waluta natywna xDAI nie ma pary w Binance — nie jest wyceniana."
+  }
+ ],
+ "unavailable": [
+  {
+   "id": "arbitrum",
+   "name": "Arbitrum One",
+   "host": "arbitrum.blockscout.com",
+   "reason": "Bez klucza: HTTP 403 dla nagłówka „OLCyS-research/0.1”. Z kluczem API Blockscout (plan darmowy) sieć DZIAŁA — patrz sekcja „keyed”."
+  },
+  {
+   "id": "gnosis",
+   "name": "Gnosis",
+   "host": "gnosis.blockscout.com",
+   "reason": "Bez klucza: przekierowanie 301 na gnosisscan.io, który odpowiada HTTP 403. Z kluczem API Blockscout (plan darmowy) sieć DZIAŁA — patrz sekcja „keyed”."
+  },
+  {
+   "id": "base",
+   "name": "Base",
+   "host": "base.blockscout.com",
+   "reason": "Bez klucza: HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka „OLCyS-research/0.1”. Z kluczem API na planie darmowym: HTTP 402 „Featured chain … requires one of the following plans: Builder, Business, Pro” — sieć wymaga płatnego planu Blockscout (sprawdzone 2026-11-21)."
+  },
+  {
+   "id": "polygon",
+   "name": "Polygon PoS",
+   "host": "polygon.blockscout.com",
+   "reason": "Bez klucza: HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka „OLCyS-research/0.1”. Z kluczem API na planie darmowym: HTTP 402 „Featured chain … requires one of the following plans: Builder, Business, Pro” — sieć wymaga płatnego planu Blockscout (sprawdzone 2026-11-21)."
+  },
+  {
+   "id": "bnb",
+   "name": "BNB Smart Chain",
+   "host": "—",
+   "reason": "brak publicznego eksploratora z API bez klucza: instancje Blockscout nie istnieją (404), BscScan / Etherscan API v2 wymagają płatnego klucza dla tej sieci, Routescan zwraca „chain not supported”. API Blockscout z kluczem odpowiada dla sieci 56: HTTP 404 „Network not supported” (sprawdzone 2026-11-21)."
+  },
+  {
+   "id": "linea",
+   "name": "Linea",
+   "host": "explorer.linea.build",
+   "reason": "zwraca stronę HTML zamiast API Blockscout; linea.blockscout.com nie istnieje (404). API Blockscout z kluczem: HTTP 404 „Network not supported”."
+  },
+  {
+   "id": "zora",
+   "name": "Zora",
+   "host": "explorer.zora.energy",
+   "reason": "HTTP 500 „Only HTML requests are supported here”. API Blockscout z kluczem: HTTP 404 „Network not supported”."
+  },
+  {
+   "id": "mantle",
+   "name": "Mantle",
+   "host": "explorer.mantle.xyz",
+   "reason": "HTTP 502 w dniu sprawdzenia. API Blockscout z kluczem: HTTP 404 „Network not supported”."
+  },
+  {
+   "id": "avalanche",
+   "name": "Avalanche C-Chain",
+   "host": "avalanche.blockscout.com",
+   "reason": "instancja nie istnieje (404). API Blockscout z kluczem: HTTP 404 „Network not supported”."
+  }
+ ]
 }

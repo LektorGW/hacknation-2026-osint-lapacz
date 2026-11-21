@@ -15,7 +15,20 @@ export interface LabelEntry {
   kind?: CashOutKind;
   /** Symbol tokena emitowanego przez kontrakt — pozwala odróżnić prawdziwy USDT od podróbki. */
   asset?: string;
+  /**
+   * Kategoria ponad klasę adresu z core: `law_enforcement` — adres organu państwa lub zajętych środków
+   * (zapisywany z klasą `institutional`); `incident` — adres wymieniony w publicznym źródle jako związany
+   * z włamaniem lub oszustwem.
+   */
+  category?: LabelCategory;
+  /** Publiczne źródło wymieniające dokładny adres (URL i krótki opis). */
+  source?: string;
+  /** Data sprawdzenia źródła (RRRR-MM-DD). */
+  checkedAt?: string;
 }
+
+export type LabelCategory = 'law_enforcement' | 'incident';
+const CATEGORIES: LabelCategory[] = ['law_enforcement', 'incident'];
 
 export interface LabelSet {
   /** Nazwa zbioru, trafia do `classificationSource`. */
@@ -58,6 +71,9 @@ export function loadLabelFile(path: string): { name: string; entries: LabelEntry
       throw new Error(`${where}: nieznana klasa adresu "${raw.addressClass}".`);
     }
     if (raw.kind !== undefined && !KINDS.includes(raw.kind)) throw new Error(`${where}: nieznany rodzaj "${raw.kind}".`);
+    if (raw.category !== undefined && !CATEGORIES.includes(raw.category)) throw new Error(`${where}: nieznana kategoria "${raw.category}".`);
+    // Etykieta organu państwa lub incydentu bez wskazania źródła jest bezwartościowa dowodowo.
+    if (raw.category !== undefined && (typeof raw.source !== 'string' || raw.source === '')) throw new Error(`${where}: kategoria "${raw.category}" wymaga pola "source".`);
     return raw as LabelEntry;
   });
   return { name: typeof parsed.name === 'string' ? parsed.name : path, entries };
@@ -158,6 +174,10 @@ export interface Classification {
   label?: string;
   kind?: CashOutKind;
   classificationSource: string;
+  /** Kategoria ze zbioru etykiet: organ państwa / znany incydent. */
+  category?: LabelCategory;
+  /** Publiczne źródło etykiety ze zbioru (URL), jeśli wpis je podaje. */
+  source?: string;
 }
 
 /**
@@ -173,8 +193,11 @@ export function classify(network: Network, address: string, hints: ClassifyHints
     return {
       addressClass: entry.addressClass,
       label: entry.label,
-      kind: entry.kind ?? inferKind(entry.label, entry.addressClass),
+      // Adres organu państwa albo znanego incydentu nigdy nie jest usługą wymiany, cokolwiek sugerują słowa etykiety.
+      kind: entry.category ? undefined : (entry.kind ?? inferKind(entry.label, entry.addressClass)),
       classificationSource: labels.name,
+      ...(entry.category ? { category: entry.category } : {}),
+      ...(entry.source ? { source: `${entry.source}${entry.checkedAt ? ` — sprawdzono ${entry.checkedAt}` : ''}` } : {}),
     };
   }
 

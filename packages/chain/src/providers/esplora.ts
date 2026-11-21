@@ -15,7 +15,10 @@ import type { TracedTrail } from '../trace.ts';
 import { describeRange, inHistoryRange, linkBudgetLimit, planHistory, traceBudgetLimit } from '../history.ts';
 import type { HistoryOptions } from '../history.ts';
 import { DEFAULT_LINK_BUDGET, findLinkedAddresses } from '../links.ts';
-import type { LinkOptions, LinkedAddress } from '../links.ts';
+import type { LinkOptions, LinkSearch, LinkedAddress } from '../links.ts';
+import { DEFAULT_FUNDING_BUDGET, traceFundingSources } from '../funding.ts';
+import type { FundingSource } from '../funding.ts';
+import { getDefaultSanctions } from '../ofac.ts';
 import { ChainProviderError, RequestBudget, fetchJson } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -58,6 +61,8 @@ export interface EsploraProviderConfig extends ActivityOptions {
   /** Osobny budżet żądań na szukanie powiązań (domyślnie 12). */
   linkBudget?: number;
   links?: LinkOptions;
+  /** Osobny budżet żądań na pochodzenie środków (domyślnie 8). */
+  fundingBudget?: number;
   /** Domyślny zakres historii; kontekst wywołania może go zmienić dla pojedynczego adresu. */
   history?: HistoryOptions;
   /** Zapasowy eksplorator sieci głównej z tym samym API (np. `https://mempool.space`) — używany, gdy podstawowy zwróci błąd przy stronicowaniu. */
@@ -121,6 +126,8 @@ export class EsploraProvider implements ChainProvider {
   findLinks: boolean;
   linkBudget: number;
   linkOptions: LinkOptions | undefined;
+  /** Osobny budżet żądań na pochodzenie środków. */
+  fundingBudget: number;
   history: HistoryOptions;
   fallbackSiteUrl: string | undefined;
 
@@ -144,6 +151,7 @@ export class EsploraProvider implements ChainProvider {
     this.findLinks = config.findLinks ?? false;
     this.linkBudget = config.linkBudget ?? DEFAULT_LINK_BUDGET;
     this.linkOptions = config.links;
+    this.fundingBudget = config.fundingBudget ?? DEFAULT_FUNDING_BUDGET;
     this.history = config.history ?? {};
     this.fallbackSiteUrl = config.fallbackSiteUrl?.replace(/\/+$/, '');
   }
@@ -325,8 +333,9 @@ export class EsploraProvider implements ChainProvider {
 
     const cluster = mainnet ? { seed: address, network, addresses: clusterAddresses, method: CLUSTER_METHOD_UTXO } : undefined;
     let linkedAddresses: LinkedAddress[] = [];
+    let fundingSources: FundingSource[] = [];
     if (mainnet && this.findLinks) {
-      const found = await findLinkedAddresses({
+      const linkSearch: LinkSearch = {
         network,
         address,
         transfers,
@@ -353,9 +362,27 @@ export class EsploraProvider implements ChainProvider {
           const info = await fetchJson<EsploraAddress>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(other)}`, request);
           return info.chain_stats?.tx_count;
         },
-      });
+      };
+      const found = await findLinkedAddresses(linkSearch);
       linkedAddresses = found.links;
       limitations.push(...found.limitations);
+      // Pochodzenie środków: te same zapytania o przelewy przychodzące, osobny budżet.
+      const funding = await traceFundingSources({
+        network,
+        address,
+        transfers,
+        txCount: stats.tx_count,
+        historyComplete: complete,
+        labels,
+        sanctions: this.options.sanctions ?? getDefaultSanctions(),
+        sourceName: this.label,
+        budget: new RequestBudget(this.fundingBudget),
+        fetchIncoming: linkSearch.fetchIncoming,
+        signal: context.signal,
+        lookup,
+      });
+      fundingSources = funding.sources;
+      limitations.push(...funding.limitations);
     }
 
     return buildChainActivity(
@@ -365,6 +392,7 @@ export class EsploraProvider implements ChainProvider {
         sourceName: this.label,
         isContract: false,
         linkedAddresses,
+        fundingSources,
         ...(mainnet
           ? {
               balanceInputs: {

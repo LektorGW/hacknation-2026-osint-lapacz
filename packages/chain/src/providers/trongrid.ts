@@ -15,7 +15,10 @@ import type { ExpandedNode, TracedTrail } from '../trace.ts';
 import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, linkBudgetLimit, planHistory, traceBudgetLimit } from '../history.ts';
 import type { HistoryOptions } from '../history.ts';
 import { DEFAULT_LINK_BUDGET, findLinkedAddresses } from '../links.ts';
-import type { LinkOptions, LinkedAddress } from '../links.ts';
+import type { LinkOptions, LinkSearch, LinkedAddress } from '../links.ts';
+import { DEFAULT_FUNDING_BUDGET, traceFundingSources } from '../funding.ts';
+import type { FundingSource } from '../funding.ts';
+import { getDefaultSanctions } from '../ofac.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -119,6 +122,8 @@ export interface TronGridProviderConfig extends ActivityOptions {
   /** Osobny budżet żądań na szukanie powiązań (domyślnie 12). */
   linkBudget?: number;
   links?: LinkOptions;
+  /** Osobny budżet żądań na pochodzenie środków (domyślnie 8). */
+  fundingBudget?: number;
   /**
    * Adres API TronScan, np. `https://apilist.tronscanapi.com`. Gdy podany, transfery TRC-20
    * pochodzą z TronScan — razem z publicznymi znacznikami kontrahentów (bez dodatkowych żądań);
@@ -147,6 +152,8 @@ export class TronGridProvider implements ChainProvider {
   findLinks: boolean;
   linkBudget: number;
   linkOptions: LinkOptions | undefined;
+  /** Osobny budżet żądań na pochodzenie środków. */
+  fundingBudget: number;
   tronScanUrl: string | undefined;
   extraOutgoing: boolean;
   history: HistoryOptions;
@@ -171,6 +178,7 @@ export class TronGridProvider implements ChainProvider {
     this.findLinks = config.findLinks ?? false;
     this.linkBudget = config.linkBudget ?? DEFAULT_LINK_BUDGET;
     this.linkOptions = config.links;
+    this.fundingBudget = config.fundingBudget ?? DEFAULT_FUNDING_BUDGET;
     this.tronScanUrl = config.tronScanUrl?.replace(/\/+$/, '');
     this.extraOutgoing = config.extraOutgoing ?? false;
     this.history = config.history ?? {};
@@ -490,8 +498,9 @@ export class TronGridProvider implements ChainProvider {
     }
 
     let linkedAddresses: LinkedAddress[] = [];
+    let fundingSources: FundingSource[] = [];
     if (this.findLinks) {
-      const found = await findLinkedAddresses({
+      const linkSearch: LinkSearch = {
         network,
         address,
         transfers,
@@ -531,9 +540,27 @@ export class TronGridProvider implements ChainProvider {
               },
             }
           : {}),
-      });
+      };
+      const found = await findLinkedAddresses(linkSearch);
       linkedAddresses = found.links;
       limitations.push(...found.limitations);
+      // Pochodzenie środków: te same zapytania o przelewy przychodzące, osobny budżet.
+      const funding = await traceFundingSources({
+        network,
+        address,
+        transfers,
+        txCount: transfers.length,
+        historyComplete: !truncated && !ranged,
+        labels,
+        sanctions: this.options.sanctions ?? getDefaultSanctions(),
+        sourceName: this.label,
+        budget: new RequestBudget(this.fundingBudget),
+        fetchIncoming: linkSearch.fetchIncoming,
+        signal: context.signal,
+        lookup,
+      });
+      fundingSources = funding.sources;
+      limitations.push(...funding.limitations);
     }
 
     const info = account.data[0];
@@ -542,6 +569,7 @@ export class TronGridProvider implements ChainProvider {
         network,
         address,
         linkedAddresses,
+        fundingSources,
         sourceName: this.label,
         isContract: info?.type === 'Contract',
         label: subjectLabel,

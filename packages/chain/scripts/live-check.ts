@@ -23,7 +23,9 @@ for (const [asset, amount, time] of [
 }
 console.log(`żądania: ${requests.length}`);
 
-const providers = createChainProviders({ enableLive: true, fetch: countingFetch, politeFetch: true, rateCacheFile: false });
+const providers = createChainProviders({ enableLive: true, fetch: countingFetch, politeFetch: true,
+  // Klucz API Blockscout z otoczenia (`node --env-file=.env …`); jego wartość nie jest nigdzie wypisywana.
+  ...(process.env.BLOCKSCOUT_API_KEY ? { blockscoutApiKey: process.env.BLOCKSCOUT_API_KEY } : {}), rateCacheFile: false });
 for (const [network, address] of [
   ['ethereum', '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'],
   ['bitcoin', '34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo'],
