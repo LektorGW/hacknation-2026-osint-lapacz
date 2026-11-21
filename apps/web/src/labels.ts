@@ -65,6 +65,16 @@ export const CATEGORY_LABEL: Record<SourceCategory, string> = {
   mass_comment: 'Masowy komentarz',
 };
 
+/** Rodzaj źródła jednym, dwoma słowami — nagłówek śladu na karcie adresu. */
+export const CATEGORY_SHORT: Record<SourceCategory, string> = {
+  cryptographic_proof: 'dowód kryptograficzny',
+  own_profile: 'własny profil',
+  sale_offer: 'ogłoszenie',
+  settlement_message: 'wiadomość o rozliczeniu',
+  forum_post: 'wpis na forum',
+  mass_comment: 'masowy komentarz',
+};
+
 export const IDENTITY_LABEL: Record<IdentityMatch, string> = {
   verified_link: 'Tożsamość profilu potwierdzona',
   exact_identifier: 'Unikalny lub potwierdzony identyfikator',

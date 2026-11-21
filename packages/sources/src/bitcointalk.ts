@@ -3,8 +3,8 @@
 //
 // Podstawa (sprawdzone 21.11.2026):
 //   • https://bitcointalk.org/robots.txt zawiera wyłącznie wiersz „Sitemap: …" — żadnych zakazów dla robotów;
-//   • zasada administratora forum (theymos, wątek „Scraping policy?", topic=5240891): „The rules are the same as
-//     for humans. […] No one is allowed to access the site more often than once per second on average." —
+//   • zasada administratora forum (wpis theymos z 12.02.2015, przytoczony w wątku topic=5240891): „The rules are the same
+//     as for humans. […] No one is allowed to access the site more often than once per second on average." —
 //     łącznik wysyła jedno żądanie na identyfikator i zachowuje odstęp co najmniej 1,5 s między żądaniami;
 //   • strona profilu po numerze i po nazwie odpowiada gościom kodem 200.
 // Świadomie NIE są używane: lista i wyszukiwarka użytkowników (action=mlist — wymagają logowania),

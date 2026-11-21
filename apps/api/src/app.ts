@@ -590,6 +590,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerServiceReplyRoutes(app, context);
   registerSweepRoutes(app, context);
   registerMonitorRoutes(app, context);
+  (await import('./export-routes.ts')).registerExportRoutes(app, context);
 
   return app;
 }

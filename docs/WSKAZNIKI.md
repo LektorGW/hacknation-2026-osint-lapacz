@@ -155,6 +155,39 @@ Adres kontrahenta, giełdy ani kontraktu nie jest przypisywany badanej osobie. D
 korzystające z tej samej giełdy nie są przez to powiązane — powiązaniem (i to tylko hipotezą) jest
 dopiero wspólny indywidualny adres wpłat.
 
+## Odpowiedź usługi
+
+Kto jest klientem giełdy i czy wypłacono pieniądze na rachunek, wie tylko usługa (dane KYC). Analityk
+wprowadza jej odpowiedź na zapytanie uprawnionego organu w karcie usługi („Giełdy i portfele” →
+„Wczytaj odpowiedź usługi”). To **dokument spoza OSINT** — osobna warstwa, nigdy „znalezisko w
+źródłach publicznych”; narzędzie nie weryfikuje jego autentyczności. Kod: `apps/api/src/service-reply.ts`.
+
+- **Dopasowanie.** Odpowiedź dotyczy adresu sprawy tylko wtedy, gdy wskazany w niej adres wpłat /
+  adres usługi albo identyfikator transakcji występuje w przelewach lub ścieżkach tego adresu (z
+  uwzględnieniem sieci). Niedopasowana jest zapisana i pokazana jako „nie dopasowano do danych
+  sprawy”, ale niczego nie zmienia. Adres wykluczony albo odrzucony przez analityka — tak samo.
+- **Wskaźnik C.** Szczebel `documented_fiat_exit` (składnik `cashout.documented_service_reply`,
+  dowód `reply:<id>` z sygnaturą) — **wyłącznie** gdy odpowiedź zawiera co najmniej jedną wypłatę na
+  rachunek (`fiatPayouts`). Samo potwierdzenie właściciela konta nie dokumentuje wypłaty.
+- **Tożsamość.** Imię i nazwisko (bez względu na kolejność i znaki diakrytyczne), e-mail i telefon
+  klienta porównywane z kandydatem głównym:
+  - zgodne → kandydat `confirmed` z przesłanką „potwierdzone odpowiedzią usługi X, sygn. Y”, a
+    własność dopasowanych adresów liczona jak potwierdzona przez analityka;
+  - **inna osoba** → kandydat NIE jest potwierdzony; jawna sprzeczność „konto w usłudze należy do
+    innej osoby” (w teczce, kluczowych ustaleniach i raporcie), z informacją, czy to imię nosi
+    powiązana tożsamość ze sprawy (np. ta sama rodzina nazwisk: Kowalski / Kowalska). Wypłata jest
+    wtedy udokumentowana z zastrzeżeniem, że otrzymał ją właściciel konta;
+  - brak danych klienta → ustalenie osoby bez zmian.
+- **Dane wrażliwe.** Identyfikator klienta (PESEL, NIP, numer dokumentu) i numer rachunku serwer
+  maskuje (ostatnie 4 znaki) przed zapisem — pełna wartość nigdy nie trafia do bazy. Z treści
+  dokumentu zapisywany jest tylko skrót SHA-256.
+- **Wycofanie** (`DELETE`) przywraca dokładnie wynik sprzed odpowiedzi; wpis zostaje w rejestrze z
+  czasem i autorem wycofania, a raport wymienia go w części „Odpowiedzi wycofane”.
+
+Trasy: `GET|POST /api/cases/:id/service-replies`, `DELETE /api/cases/:id/service-replies/:replyId`,
+`GET /api/cases/:id/service-replies/sandbox-sample?service=…&variant=inna-osoba` (tylko przy
+skonfigurowanej piaskownicy; przyjmowana wyłącznie odpowiedź z `"syntetyczne": true`).
+
 ## Decyzje analityka
 
 Cele decyzji: `profile`, `address`, `evidence`, `link` (para kont, klucz `konto-a<->konto-b`).

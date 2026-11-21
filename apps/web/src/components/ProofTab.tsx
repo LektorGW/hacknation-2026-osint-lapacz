@@ -1,14 +1,21 @@
 // „Dowód spieniężenia”: udokumentowane ścieżki środków od adresu osoby do giełdy lub usługi.
+// Przekazania z tego samego adresu do tej samej usługi tworzą jedną kartę z jednym wyjaśnieniem.
 import { api, serviceRequestUrl } from '../api.ts';
 import { cashOutRows } from '../dossier.ts';
-import { fmtAmount, fmtDateTime, fmtPln, scoreLevel, shorten, sum } from '../format.ts';
+import { fmtAmount, fmtDate, fmtDateTime, fmtPln, fmtPlnCompact, shorten, sum } from '../format.ts';
 import { CASH_OUT_LABEL, CLASS_LABEL, NETWORK_SHORT } from '../labels.ts';
 import { buildChain, proofSummary, splitProofs } from '../proof.ts';
+import { countText, groupProofs, plainComponent } from '../ux.ts';
+import type { ProofGroup } from '../ux.ts';
 import { Explanations } from './Explanations.tsx';
 import type { CashOutProof, ChainNode } from '../proof.ts';
 import { useAsync } from '../useAsync.ts';
-import { CopyButton, EmptyState, ExternalDocTag, ExternalLink, Gauge, LayerTag, ShortAddress, toLayer } from './common.tsx';
+import { CopyButton, EmptyState, ExternalLink, LayerTag, ShortAddress } from './common.tsx';
+import { ExternalDocTag } from './ServiceReplies.tsx';
 import { useDossier } from './DossierContext.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 
 const BASIS_TEXT: Record<CashOutProof['addressBasis'], string> = {
   confirmed: 'adres potwierdzony przez analityka',
@@ -56,143 +63,211 @@ function Chain({ proof }: { proof: CashOutProof }) {
   );
 }
 
-function Steps({ proof }: { proof: CashOutProof }) {
+function StepsTable({ proof }: { proof: CashOutProof }) {
   return (
-    <details className="fold">
-      <summary>Tabela kroków ({proof.trail.hops.length})</summary>
-      <div className="table-scroll">
-        <table className="table table-dense">
-          <thead>
-            <tr>
-              <th scope="col">Krok</th>
-              <th scope="col">Data</th>
-              <th scope="col">Z adresu</th>
-              <th scope="col">Na adres</th>
-              <th scope="col" className="num">Kwota</th>
-              <th scope="col">Etykieta adresu docelowego</th>
-              <th scope="col">Podstawa kroku</th>
-              <th scope="col">Weryfikacja</th>
+    <div className="table-scroll">
+      <table className="table table-dense">
+        <thead>
+          <tr>
+            <th scope="col">Krok</th>
+            <th scope="col">Data</th>
+            <th scope="col">Z adresu</th>
+            <th scope="col">Na adres</th>
+            <th scope="col" className="num">Kwota</th>
+            <th scope="col">Etykieta adresu docelowego</th>
+            <th scope="col">Podstawa kroku</th>
+            <th scope="col">Weryfikacja</th>
+          </tr>
+        </thead>
+        <tbody>
+          {proof.trail.hops.map((hop, index) => (
+            <tr key={`${hop.txid}-${index}`}>
+              <td className="num">{index + 1}</td>
+              <td>{fmtDateTime(hop.time)}</td>
+              <td>
+                <ShortAddress value={hop.from} />
+              </td>
+              <td>
+                <ShortAddress value={hop.to} />
+              </td>
+              <td className="num">{fmtAmount(hop.amount, hop.asset)}</td>
+              <td>
+                {hop.toLabel ?? '—'}
+                {hop.toClass && <span className="cell-note">{CLASS_LABEL[hop.toClass] ?? hop.toClass}</span>}
+              </td>
+              <td>
+                <LayerTag layer={hop.inferred ? 'inference' : 'fact'} />
+                {hop.reason && <span className="cell-note">{hop.reason}</span>}
+              </td>
+              <td>
+                <ExternalLink url={hop.explorerUrl}>eksplorator</ExternalLink>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {proof.trail.hops.map((hop, index) => (
-              <tr key={`${hop.txid}-${index}`}>
-                <td className="num">{index + 1}</td>
-                <td>{fmtDateTime(hop.time)}</td>
-                <td>
-                  <ShortAddress value={hop.from} />
-                </td>
-                <td>
-                  <ShortAddress value={hop.to} />
-                </td>
-                <td className="num">{fmtAmount(hop.amount, hop.asset)}</td>
-                <td>
-                  {hop.toLabel ?? '—'}
-                  {hop.toClass && <span className="cell-note">{CLASS_LABEL[hop.toClass] ?? hop.toClass}</span>}
-                </td>
-                <td>
-                  <LayerTag layer={hop.inferred ? 'inference' : 'fact'} />
-                  {hop.reason && <span className="cell-note">{hop.reason}</span>}
-                </td>
-                <td>
-                  <ExternalLink url={hop.explorerUrl}>eksplorator</ExternalLink>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </details>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function ProofCard({ proof }: { proof: CashOutProof }) {
-  const { dossier } = useDossier();
-  const service = dossier.serviceLinks.find((link) => link.name === proof.serviceName);
-  const available = useAsync(async () => (service ? api.hasServiceRequest(dossier.runId, service.id) : false), `${dossier.runId}|${service?.id ?? ''}`);
+/** Jedno przekazanie na liście w karcie: linia z datą, kwotą i pewnością; ścieżka i wycena po rozwinięciu. */
+function TransferItem({ proof, open }: { proof: CashOutProof; open: boolean }) {
   const { trail } = proof;
+  const last = trail.hops.at(-1);
   return (
-    <article className={`card proof level-${scoreLevel(proof.combinedConfidence)}`}>
-      <div className="proof-head">
-        <Gauge value={proof.combinedConfidence} label="łączna pewność ustalenia" size={104} />
-        <div>
-          <p className="proof-statement">{proof.statement}</p>
-          <p className="proof-meta">
-            <LayerTag layer={toLayer(proof.layer)} />
-            <span className="chip">poziom: {proof.tier}</span>
-            <span className="chip chip-network">{NETWORK_SHORT[proof.network] ?? proof.network}</span>
-            <span className="chip">{CASH_OUT_LABEL[trail.serviceKind] ?? trail.serviceKind}</span>
-            <span className="chip">{BASIS_TEXT[proof.addressBasis]}</span>
-          </p>
-          {proof.serviceReply && (
-            <p className={`reply-note ${proof.serviceReply.outcome === 'other_person' ? 'is-contradiction' : ''}`}>
-              <ExternalDocTag short /> {proof.serviceReply.outcome === 'other_person' && <strong>Sprzeczność do rozstrzygnięcia. </strong>}
-              {proof.serviceReply.note}
-            </p>
-          )}
-          <p className="proof-formula">
-            osoba–adres <strong>{proof.personAddressProbability}%</strong> × ścieżka <strong>{proof.trailConfidence}%</strong> ={' '}
-            <strong>{proof.combinedConfidence}%</strong>
-            {proof.ownerUnconfirmed && proof.confidenceIfConfirmed !== undefined && (
-              <span className="chip chip-inference"> po potwierdzeniu własności adresu: {proof.confidenceIfConfirmed}%</span>
-            )}
-            {proof.person && (
-              <span className="muted">
-                {' '}
-                · osoba: {proof.person.fullName ?? 'nie ustalono'} ({proof.person.probability}%)
-              </span>
-            )}
-          </p>
-        </div>
+    <li className="pt-item">
+      <Disclosure
+        defaultOpen={open}
+        title={
+          <span className="pt-line">
+            <span className="pt-date">{last ? fmtDate(last.time) : '—'}</span>
+            <span className="pt-amount tabular">{fmtAmount(trail.amount, trail.asset)}</span>
+            <span className="pt-pln tabular">{trail.valuePln == null ? 'bez wyceny' : `ok. ${fmtPln(trail.valuePln)}`}</span>
+            <span className="pt-hops muted">{countText(trail.hops.length, 'krok', 'kroki', 'kroków')}</span>
+          </span>
+        }
+        meta={<Score value={proof.combinedConfidence} kind="proof" size="sm" plain />}
+      >
+        <Chain proof={proof} />
+        {proof.ownerUnconfirmed && proof.confidenceIfConfirmed !== undefined && (
+          <p className="status status-inference">po potwierdzeniu własności adresu: {proof.confidenceIfConfirmed}</p>
+        )}
+        <Disclosure title="Jak wyceniono" meta={trail.valuePln == null ? 'brak kursu' : fmtPln(trail.valuePln)}>
+          {trail.valuation ? <p className="muted small prose">{trail.valuation}</p> : <p className="muted small">Brak kursu z dnia transakcji — kwota tylko w walucie krypto.</p>}
+        </Disclosure>
+        <Disclosure title="Tabela kroków" meta={countText(trail.hops.length, 'krok', 'kroki', 'kroków')}>
+          <StepsTable proof={proof} />
+        </Disclosure>
+      </Disclosure>
+    </li>
+  );
+}
+
+/** Wynik łączny pokazany jako dwa czynniki i wynik — bez notacji wzorów. */
+function WhyScore({ proof }: { proof: CashOutProof }) {
+  const reasons = proof.components.map(plainComponent).filter(Boolean);
+  return (
+    <div className="pt-why">
+      <div className="pt-factors" aria-label="Z czego składa się łączna pewność">
+        <Score value={proof.personAddressProbability} kind="joint" caption={<Term id="osoba-adres">adres należy do osoby</Term>} />
+        <span className="pt-op" aria-hidden="true">
+          ×
+        </span>
+        <Score value={proof.trailConfidence} kind="trail" reasons={proof.trail.reasons} caption={<Term id="pewnosc-sciezki">środki dotarły do usługi</Term>} />
+        <span className="pt-op" aria-hidden="true">
+          =
+        </span>
+        <Score value={proof.combinedConfidence} kind="proof" reasons={reasons} caption={<Term id="laczna-pewnosc">łączna pewność</Term>} />
       </div>
-
-      <Chain proof={proof} />
-
-      {proof.cluster && (
-        <p className="proof-cluster">
-          <LayerTag layer="inference" /> Adres początkowy należy do tego samego portfela co <ShortAddress value={proof.cluster.seed} />: {proof.cluster.reason}
-        </p>
-      )}
-
-      <div className="proof-grid">
-        <div>
-          <h4>Skąd te liczby</h4>
+      {reasons.length > 0 && (
+        <Disclosure title="Skąd te liczby" meta={countText(reasons.length, 'przesłanka', 'przesłanki', 'przesłanek')}>
           <ul className="reasons">
-            {proof.components.map((item) => (
+            {reasons.map((item) => (
               <li key={item}>{item}</li>
             ))}
           </ul>
-          <p>
-            <LayerTag layer="calc" /> Wycena:{' '}
-            {trail.valuePln == null ? <span className="muted">brak kursu — kwota tylko w walucie krypto</span> : <strong>{fmtPln(trail.valuePln)}</strong>}
-            {trail.valuation && <span className="cell-note">{trail.valuation}</span>}
+          {proof.person && (
+            <p className="muted small">
+              Osoba: {proof.person.fullName ?? 'nie ustalono'} · pewność ustalenia osoby {proof.person.probability}.
+            </p>
+          )}
+        </Disclosure>
+      )}
+    </div>
+  );
+}
+
+/** Pytania do usługi jako lista kontrolna z kopiowaniem. */
+function Questions({ group }: { group: ProofGroup<CashOutProof> }) {
+  const { dossier } = useDossier();
+  const service = dossier.serviceLinks.find((link) => link.name === group.serviceName);
+  const available = useAsync(async () => (service ? api.hasServiceRequest(dossier.runId, service.id) : false), `${dossier.runId}|${service?.id ?? ''}`);
+  const questions = [...new Set(group.items.flatMap((proof) => proof.trail.openQuestions))];
+  if (questions.length === 0) return null;
+  return (
+    <section className="pt-questions" aria-label={`Co potwierdzi ${group.serviceName}`}>
+      <header>
+        <h4>Co potwierdzi giełda lub usługa</h4>
+        <div className="actions">
+          <CopyButton value={questions.join('\n')} label={`Kopiuj pytania do ${group.serviceName}`} text="Kopiuj wszystkie" />
+          {service && available.data && (
+            <a className="button button-small button-primary" href={serviceRequestUrl(dossier.runId, service.id)} target="_blank" rel="noopener noreferrer">
+              Materiał do zapytania
+            </a>
+          )}
+        </div>
+      </header>
+      <ol className="checklist">
+        {questions.map((question) => (
+          <li key={question}>
+            <span className="checklist-box" aria-hidden="true" />
+            <span className="checklist-text">{question}</span>
+            <CopyButton value={question} label="Kopiuj to pytanie" />
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ProofGroupCard({ group }: { group: ProofGroup<CashOutProof> }) {
+  const { best, items } = group;
+  const replies = [...new Map(items.flatMap((proof) => (proof.serviceReply ? [[proof.serviceReply.note, proof.serviceReply] as const] : []))).values()];
+  const cluster = items.find((proof) => proof.cluster)?.cluster;
+  return (
+    <article className="card proof-group">
+      <header className="pg-head">
+        <div className="pg-title">
+          <p className="eyebrow">{CASH_OUT_LABEL[best.trail.serviceKind] ?? best.trail.serviceKind}</p>
+          <h3>
+            {countText(items.length, 'przekazanie', 'przekazania', 'przekazań')} do usługi {group.serviceName}
+          </h3>
+          <p className="pg-sub">
+            {group.totalPln > 0 && (
+              <>
+                łącznie <strong className="tabular">ok. {fmtPlnCompact(group.totalPln)}</strong>
+              </>
+            )}
+            {group.unvalued > 0 && <span className="muted"> · bez wyceny: {group.unvalued}</span>}
+            {group.years && <> · {group.years}</>}
+            {' · z adresu '}
+            <ShortAddress value={group.address} />
+          </p>
+          <p className="pg-tags">
+            <span className="chip chip-network">{NETWORK_SHORT[best.network] ?? best.network}</span>
+            <span className="chip">{BASIS_TEXT[best.addressBasis]}</span>
+            <LayerTag layer={best.layer === 'calculation' ? 'calc' : 'inference'} />
           </p>
         </div>
-        {trail.openQuestions.length > 0 && (
-          <section className="request">
-            <header>
-              <h4>Co potwierdzi giełda lub usługa</h4>
-              <div className="actions">
-                <CopyButton value={trail.openQuestions.join('\n')} label={`Kopiuj pytania do ${proof.serviceName}`} text="Kopiuj wszystko" />
-                {service && available.data && (
-                  <a className="button button-small" href={serviceRequestUrl(dossier.runId, service.id)} target="_blank" rel="noopener noreferrer">
-                    Materiał do zapytania
-                  </a>
-                )}
-              </div>
-            </header>
-            <ul>
-              {trail.openQuestions.map((question) => (
-                <li key={question}>
-                  <span>{question}</span>
-                  <CopyButton value={question} label="Kopiuj to pytanie" />
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-      </div>
-      <Steps proof={proof} />
+        <Score value={best.combinedConfidence} kind="proof" size="lg" caption={items.length > 1 ? 'najmocniejsze przekazanie' : 'łączna pewność ustalenia'} reasons={best.components.map(plainComponent).filter(Boolean)} />
+      </header>
+
+      {replies.map((reply) => (
+        <p key={reply.note} className={`reply-banner ${reply.outcome === 'other_person' ? 'is-contradiction' : reply.outcome === 'confirmed' ? 'is-confirmed' : ''}`} role="note">
+          <ExternalDocTag short />{' '}
+          <strong>
+            {reply.outcome === 'confirmed' ? 'Usługa potwierdziła właściciela konta.' : reply.outcome === 'other_person' ? 'Usługa wskazała inną osobę — sprzeczność do rozstrzygnięcia.' : 'Usługa odpowiedziała, właściciel niezweryfikowany.'}
+          </strong>{' '}
+          {reply.note}
+        </p>
+      ))}
+
+      <WhyScore proof={best} />
+
+      {cluster && (
+        <p className="proof-cluster">
+          <LayerTag layer="inference" /> Adres początkowy należy do tego samego <Term id="klaster-portfela">portfela</Term> co <ShortAddress value={cluster.seed} />: {cluster.reason}
+        </p>
+      )}
+
+      <h4 className="pt-list-title">{items.length > 1 ? 'Przekazania' : 'Przekazanie'}</h4>
+      <ul className="pt-list">
+        {items.map((proof, index) => (
+          <TransferItem key={proof.id} proof={proof} open={items.length === 1 && index === 0} />
+        ))}
+      </ul>
+
+      <Questions group={group} />
     </article>
   );
 }
@@ -203,14 +278,14 @@ function IndicatorsOnly() {
   const rows = cashOutRows(dossier.findings);
   if (rows.length === 0) {
     return (
-      <EmptyState title="Brak udokumentowanej ścieżki spieniężenia">
+      <EmptyState title="Brak udokumentowanej ścieżki spieniężenia" action={<a className="button" href={tabHref('analizy')}>Ponów analizę w trybie głębokim</a>}>
         Analiza nie znalazła przelewów z adresów osoby do giełd ani usług wymiany. Spróbuj trybu głębokiego albo dodaj kolejne identyfikatory.
       </EmptyState>
     );
   }
   return (
     <div className="card">
-      <p className="notice" role="note">
+      <p className="notice notice-quiet" role="note">
         Nie ma udokumentowanej ścieżki krok po kroku. Poniżej wskaźniki możliwych wypłat z danych blockchain — słabsza podstawa, wymagająca weryfikacji.
       </p>
       <ul className="plain-list">
@@ -228,70 +303,72 @@ function IndicatorsOnly() {
   );
 }
 
-/** Najwyżej tyle ustaleń widać od razu; reszta pod rozwinięciem. */
+/** Najwyżej tyle kart widać od razu; reszta pod rozwinięciem. */
 const VISIBLE = 4;
 
 export function ProofTab() {
   const { dossier, tabHref } = useDossier();
   const { firm, conditional } = splitProofs(dossier.cashOutProof ?? []);
-  const proofs = firm;
-  const summary = proofSummary(proofs);
+  const summary = proofSummary(firm);
+  const groups = groupProofs(firm);
+  const conditionalGroups = groupProofs(conditional);
   const explained = (dossier.explanations ?? []).length > 0;
   return (
     <section aria-labelledby="dowod">
       <header className="section-head">
         <div>
-          <h2 id="dowod">Dowód spieniężenia</h2>
-          <p className="muted">
-            Ustalenie dotyczy przekazania środków do usługi, w której krypto można zamienić na waluty tradycyjne. Samą sprzedaż potwierdza dopiero giełda lub usługa.
+          <h2 id="dowod">
+            <Term id="dowod-spienienia">Dowód spieniężenia</Term>
+          </h2>
+          <p className="muted small prose">
+            Droga środków od adresu osoby do usługi, w której krypto można zamienić na złotówki. Samą sprzedaż i wypłatę potwierdza dopiero giełda lub usługa.
           </p>
         </div>
       </header>
-      {proofs.length === 0 && conditional.length === 0 && (explained ? <Explanations /> : <IndicatorsOnly />)}
-      {conditional.length > 0 && (
-        <section className="conditional" aria-labelledby="warunkowe">
-          <h3 id="warunkowe">Warunkowe — po potwierdzeniu własności adresu ({conditional.length})</h3>
-          <p className="muted">
-            Ścieżka środków jest udokumentowana, ale adres nie jest przypisany osobie. <a href={tabHref('adresy')}>Potwierdź albo odrzuć adres</a>.
-          </p>
-          {conditional.map((proof) => (
-            <ProofCard key={proof.id} proof={proof} />
-          ))}
-        </section>
-      )}
-      {proofs.length > 0 && (
+      {firm.length === 0 && conditional.length === 0 && (explained ? <Explanations /> : <IndicatorsOnly />)}
+      {firm.length > 0 && (
         <>
           <div className="tiles">
             <div className="stat">
               <span className="stat-value">{fmtPln(summary.totalPln)}</span>
               <span className="stat-label">
-                łączna szacunkowa wartość udokumentowanych przekazań{summary.unvalued > 0 && ` (${summary.unvalued} bez wyceny)`}
+                łączna szacunkowa wartość przekazań{summary.unvalued > 0 && ` (${summary.unvalued} bez wyceny)`}
               </span>
               <LayerTag layer="calc" />
             </div>
             <div className="stat">
               <span className="stat-value">{summary.services.length}</span>
-              <span className="stat-label">usługi: {summary.services.join(', ')}</span>
+              <span className="stat-label">{summary.services.join(', ')}</span>
               <LayerTag layer="fact" />
             </div>
             <div className="stat">
-              <span className="stat-value">{summary.topConfidence}%</span>
-              <span className="stat-label">najwyższa łączna pewność ustalenia · ustaleń: {proofs.length}</span>
+              <span className="stat-value">{firm.length}</span>
+              <span className="stat-label">{countText(firm.length, 'udokumentowane przekazanie', 'udokumentowane przekazania', 'udokumentowanych przekazań')}</span>
               <LayerTag layer="calc" />
             </div>
           </div>
-          {proofs.slice(0, VISIBLE).map((proof) => (
-            <ProofCard key={proof.id} proof={proof} />
+          {groups.slice(0, VISIBLE).map((group) => (
+            <ProofGroupCard key={group.key} group={group} />
           ))}
-          {proofs.length > VISIBLE && (
-            <details className="fold">
-              <summary>Pozostałe ustalenia ({proofs.length - VISIBLE})</summary>
-              {proofs.slice(VISIBLE).map((proof) => (
-                <ProofCard key={proof.id} proof={proof} />
+          {groups.length > VISIBLE && (
+            <Disclosure title="Pozostałe usługi i adresy" meta={groups.length - VISIBLE}>
+              {groups.slice(VISIBLE).map((group) => (
+                <ProofGroupCard key={group.key} group={group} />
               ))}
-            </details>
+            </Disclosure>
           )}
         </>
+      )}
+      {conditional.length > 0 && (
+        <section className="conditional" aria-labelledby="warunkowe">
+          <h3 id="warunkowe">Warunkowe — po potwierdzeniu własności adresu ({conditional.length})</h3>
+          <p className="muted small">
+            Ścieżka środków jest udokumentowana, ale adres nie jest przypisany osobie. <a href={tabHref('adresy')}>Potwierdź albo odrzuć adres</a>.
+          </p>
+          {conditionalGroups.map((group) => (
+            <ProofGroupCard key={group.key} group={group} />
+          ))}
+        </section>
       )}
     </section>
   );

@@ -449,6 +449,106 @@ describe('live-krs', () => {
   });
 });
 
+// ---------- CEIDG (tylko z tokenem) ----------
+
+describe('live-ceidg', () => {
+  // Kształt odpowiedzi wg „Dokumentacji dla integratorów API v3 Hurtowni danych" v1.4 (przykład metody /firma); dane fikcyjne.
+  const url = 'https://dane.biznes.gov.pl/api/ceidg/v3/firma?nip=5260250274';
+  const firm = {
+    id: '31F87519-9395-4FCF-8E19-6D5C0522FA7A',
+    nazwa: 'Kacper Wrzosek Serwis Koparek',
+    adresDzialalnosci: { ulica: 'ul. Fikcyjna', budynek: '12', lokal: '3', miasto: 'Bydgoszcz', wojewodztwo: 'KUJAWSKO-POMORSKIE', kraj: 'PL', kod: '85-001' },
+    wlasciciel: { imie: 'Kacper', nazwisko: 'Wrzosek', nip: '5260250274', regon: '000002217' },
+    pkdGlowny: { kod: '3312Z', nazwa: 'Naprawa i konserwacja maszyn' },
+    dataRozpoczecia: '2019-06-03',
+    status: 'AKTYWNY',
+    numerStatusu: 1,
+    telefon: '500 000 001',
+    email: 'Biuro@Koparki.example',
+    www: 'koparki.example',
+    link: 'https://dane.biznes.gov.pl/api/ceidg/v3/firma/31F87519-9395-4FCF-8E19-6D5C0522FA7A',
+  };
+
+  test('bez tokenu łącznik nie powstaje', () => {
+    const { connectors } = setup({}, { ceidgToken: '' });
+    assert.equal(connectors.some((connector) => connector.id === 'live-ceidg'), false);
+  });
+
+  test('NIP → wpis przedsiębiorcy; token tylko w nagłówku Authorization, nigdy w dzienniku ani treści', async () => {
+    const headers: Record<string, string>[] = [];
+    const logs: string[] = [];
+    const connectors = createConnectors({
+      enableLive: true,
+      minRequestIntervalMs: 0,
+      allowPrivateHosts: true,
+      monitorSources: [],
+      nostrRelays: [],
+      ceidgToken: 'tajny-token-jwt',
+      fetcher: async (target, init) => {
+        headers.push(init.headers);
+        return target === url
+          ? new Response(JSON.stringify({ firma: [firm], properties: { 'dc:title': 'firma' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+          : new Response('nie ma', { status: 404, headers: { 'content-type': 'text/plain' } });
+      },
+    });
+    const ceidg = connectors.find((connector) => connector.id === 'live-ceidg')!;
+    const [document, ...rest] = await ceidg.search({ type: 'login', value: 'NIP 526-025-02-74' }, { log: (message) => void logs.push(message) });
+    assert.equal(rest.length, 0);
+    assert.equal(headers.length, 1);
+    assert.equal(headers[0]!.Authorization, 'Bearer tajny-token-jwt');
+    assert.deepEqual([document!.service, document!.url, document!.title], ['dane.biznes.gov.pl', firm.link, 'CEIDG: Kacper Wrzosek Serwis Koparek (NIP 5260250274)']);
+    assert.match(document!.text, /Przedsiębiorca: Kacper Wrzosek/);
+    assert.match(document!.text, /Status: AKTYWNY/);
+    assert.match(document!.text, /Adres działalności: ul\. Fikcyjna 12\/3, 85-001 Bydgoszcz/);
+    assert.match(document!.text, /Główny PKD: 3312Z — Naprawa i konserwacja maszyn/);
+    assert.deepEqual(document!.profile, {
+      handle: 'NIP 5260250274',
+      displayName: 'Kacper Wrzosek',
+      organization: 'Kacper Wrzosek Serwis Koparek',
+      registryEntries: ['NIP 5260250274 (CEIDG: AKTYWNY)', 'REGON 000002217'],
+      location: 'Bydgoszcz',
+      urls: ['https://koparki.example/'],
+      emails: ['biuro@koparki.example'],
+      phones: ['500 000 001'],
+    });
+    assert.deepEqual(document!.discoveredIdentifiers, [
+      { type: 'profile_url', value: 'https://koparki.example/' },
+      { type: 'email', value: 'biuro@koparki.example' },
+    ]);
+    assert.ok(!JSON.stringify(document).includes('tajny-token-jwt') && !logs.join('\n').includes('tajny-token-jwt'));
+    assert.deepEqual(addressesOf(document!), []);
+  });
+
+  test('brak wpisu (204), odrzucony token (401) i identyfikator inny niż NIP', async () => {
+    const statuses: Record<string, number> = { [url]: 204, 'https://dane.biznes.gov.pl/api/ceidg/v3/firma?nip=1234563218': 401 };
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const connectors = createConnectors({
+      enableLive: true,
+      minRequestIntervalMs: 0,
+      allowPrivateHosts: true,
+      monitorSources: [],
+      nostrRelays: [],
+      ceidgToken: 'tajny-token-jwt',
+      fetcher: async (target) => {
+        calls.push(target);
+        return new Response(null, { status: statuses[target] ?? 404 });
+      },
+    });
+    const ceidg = connectors.find((connector) => connector.id === 'live-ceidg')!;
+    const context = { log: (message: string) => void logs.push(message) };
+    assert.deepEqual(await ceidg.search({ type: 'login', value: 'NIP 5260250274' }, context), []);
+    assert.match(logs.join('\n'), /brak wpisu w CEIDG/);
+    assert.deepEqual(await ceidg.search({ type: 'login', value: 'NIP 1234563218' }, context), []);
+    assert.match(logs.join('\n'), /token odrzucony \(kod 401\)/);
+    const before = calls.length;
+    assert.deepEqual(await ceidg.search({ type: 'login', value: 'KRS 0000019193' }, context), []);
+    assert.deepEqual(await ceidg.search({ type: 'nick', value: 'kwrzosek_dev' }, context), []);
+    assert.equal(calls.length, before);
+    assert.ok(!logs.join('\n').includes('tajny-token-jwt'));
+  });
+});
+
 // ---------- Bitcointalk po nicku ----------
 
 describe('live-bitcointalk — profil po nicku', () => {

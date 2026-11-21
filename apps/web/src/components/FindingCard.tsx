@@ -1,149 +1,146 @@
-import type { Finding, LedgerEntry } from '@olcys/core';
-import { fmtDelta, fmtPln } from '../format.ts';
-import { CLASS_LABEL, NETWORK_LABEL, ruleLabel } from '../labels.ts';
+import type { Finding } from '@olcys/core';
+import { fmtPln, sum } from '../format.ts';
+import { CLASS_LABEL, NETWORK_LABEL } from '../labels.ts';
 import { CashOutTable, ChainProfile, FlowTimeline } from './ChainSections.tsx';
-import { CopyButton, DualScore, ExternalLink, LayerSection, ScoreMeter } from './common.tsx';
-import { SyntheticTag } from './Mode.tsx';
+import { CopyButton } from './common.tsx';
 import { isSyntheticChain } from '../mode.ts';
 import { DecisionControls, useDossier } from './DossierContext.tsx';
 import { addressKey, jointProbability } from '../dossier.ts';
 import type { DossierFinding } from '../proof.ts';
+import { countText } from '../ux.ts';
 import { EvidenceList } from './EvidenceList.tsx';
 import { RelatedAddresses } from './FundsOrigin.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Score, ScoreSteps } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 
 export const findingAnchor = (address: string) => `adres-${address}`;
 
+/** Nagłówek karty: adres, sieć, znaczniki i oba wyniki w jednolitym wyglądzie. */
 function AddressHeader({ finding, index }: { finding: Finding; index: number }) {
   const { dossier } = useDossier();
+  const extra = finding as DossierFinding;
+  const joint = jointProbability(dossier, finding);
+  const { confidence } = finding;
   return (
-    <header className="finding-head">
-      <h3>
-        <span className="finding-index">Adres {index + 1}</span>
-        <code className={`mono address ${finding.confidence.excluded ? 'address-rejected' : ''}`}>{finding.address}</code>
-      </h3>
-      <div className="finding-chips">
-        <CopyButton value={finding.address} label={`Kopiuj adres ${finding.address}`} />
-        <span className="chip">{NETWORK_LABEL[finding.network] ?? finding.network}</span>
-        {isSyntheticChain(finding.chain, finding.network) && (
-          <span className="chip chip-synthetic" title="Dane blockchain tego adresu pochodzą z eksploratora piaskownicy albo sieci laboratoryjnej.">
-            blockchain: dane syntetyczne
-          </span>
-        )}
-        {finding.checksumVerified ? (
-          <span className="chip chip-ok">✓ suma kontrolna zweryfikowana</span>
-        ) : (
-          <span className="chip chip-warn">suma kontrolna niezweryfikowana</span>
-        )}
-        {(finding as DossierFinding).widelyCited && <span className="chip chip-warn">adres powszechnie cytowany — nieprzypisany</span>}
-        {(finding as DossierFinding).chainSkipped && <span className="chip chip-inference">nie analizowano łańcucha (limit)</span>}
-        <DualScore joint={jointProbability(dossier, finding)} score={finding.confidence.score} excluded={finding.confidence.excluded} />
+    <header className="fc-head">
+      <div className="fc-id">
+        <p className="finding-index">Adres {index + 1}</p>
+        <h3 className="fc-address">
+          <code className="mono address">{finding.address}</code>
+          <CopyButton value={finding.address} label={`Kopiuj adres ${finding.address}`} />
+        </h3>
+        <div className="fc-tags">
+          <span className="chip">{NETWORK_LABEL[finding.network] ?? finding.network}</span>
+          {isSyntheticChain(finding.chain, finding.network) && (
+            <span className="chip chip-synthetic" title="Dane blockchain tego adresu pochodzą z eksploratora piaskownicy albo sieci laboratoryjnej.">
+              blockchain: dane syntetyczne
+            </span>
+          )}
+          {finding.checksumVerified ? (
+            <span className="chip chip-ok-soft">
+              ✓ <Term id="suma-kontrolna">suma kontrolna</Term> poprawna
+            </span>
+          ) : (
+            <span className="chip chip-warn-soft">
+              <Term id="suma-kontrolna">suma kontrolna</Term> niesprawdzona
+            </span>
+          )}
+          {extra.widelyCited && (
+            <span className="chip chip-warn-soft">
+              <Term id="adres-powszechnie-cytowany">adres powszechnie cytowany</Term> — nieprzypisany
+            </span>
+          )}
+          {extra.chainSkipped && <span className="chip chip-inference">nie analizowano blockchainu (limit)</span>}
+        </div>
       </div>
-      <DecisionControls target="address" decisionKey={addressKey(finding)} confirmLabel="To adres tej osoby" rejectLabel="To nie jest adres tej osoby" />
+      <div className="fc-scores">
+        {confidence.excluded ? (
+          <Score value={confidence.score} kind="publication" excluded ledger={confidence.ledger} caption="adres odrzucony — nie wlicza się do sprawy" />
+        ) : (
+          <>
+            {joint !== undefined && (
+              <Score
+                value={joint}
+                kind="joint"
+                caption={<Term id="osoba-adres">powiązanie z osobą ze sprawy</Term>}
+                extra={
+                  <p className="score-pop-sub-text">
+                    Łączy pewność ustalenia osoby z Wskaźnikiem Pewności publikacji ({confidence.score}). Kroki publikacji — przy drugim wyniku.
+                  </p>
+                }
+              />
+            )}
+            <Score value={confidence.score} kind="publication" ledger={confidence.ledger} caption={<Term id="wskaznik-pewnosci">publikacja adresu</Term>} />
+          </>
+        )}
+      </div>
     </header>
   );
 }
 
-/** Księga reguł: każdy krok obliczenia wyniku z wartością narastającą. */
-function Ledger({ entries }: { entries: LedgerEntry[] }) {
-  if (entries.length === 0) return <p className="muted">Brak kroków — nie znaleziono śladów do wyceny.</p>;
+/** Jedna linia „w skrócie”: gdzie opublikowano, ile przelewów do usług, ile pieniędzy. */
+function FindingSummary({ finding }: { finding: Finding }) {
+  const services = [...new Set(finding.evidence.map((item) => item.service))];
+  const cashOuts = finding.chain?.cashOuts ?? [];
+  const pln = sum(Object.values(finding.chain?.cashOutPlnByYear ?? {}));
+  const groups = finding.confidence.independentSources ?? finding.confidence.provenance?.length;
   return (
-    <ol className="ledger">
-      {entries.map((entry, index) => (
-        <li key={`${entry.rule}-${index}`} className="ledger-step">
-          <span className={`ledger-delta ${entry.delta < 0 ? 'negative' : entry.delta > 0 ? 'positive' : ''}`}>
-            {fmtDelta(entry.delta)}
-          </span>
-          <div className="ledger-body">
-            <p className="ledger-rule">
-              {ruleLabel(entry.rule)} <code className="mono rule-id">{entry.rule}</code>
-            </p>
-            <p>{entry.explanation}</p>
-            {(entry.weight !== undefined || entry.independence || (entry.sources ?? []).length > 0 || (entry.limitations ?? []).length > 0) && (
-              <dl className="ledger-extra">
-                {entry.weight !== undefined && entry.weight !== entry.delta && (
-                  <div>
-                    <dt>Waga reguły</dt>
-                    <dd>
-                      {fmtDelta(entry.weight)} (zastosowano {fmtDelta(entry.delta)})
-                    </dd>
-                  </div>
-                )}
-                {entry.independence && (
-                  <div>
-                    <dt>Niezależność</dt>
-                    <dd>{entry.independence}</dd>
-                  </div>
-                )}
-                {(entry.sources ?? []).length > 0 && (
-                  <div>
-                    <dt>Źródła kroku</dt>
-                    <dd>
-                      {entry.sources!.map((url) => (
-                        <span key={url} className="ledger-source">
-                          <ExternalLink url={url} /> <SyntheticTag source={{ url }} />
-                        </span>
-                      ))}
-                    </dd>
-                  </div>
-                )}
-                {(entry.limitations ?? []).length > 0 && (
-                  <div>
-                    <dt>Czego ten krok nie dowodzi</dt>
-                    <dd>{entry.limitations!.join(' ')}</dd>
-                  </div>
-                )}
-              </dl>
-            )}
-          </div>
-          <span className="ledger-running">
-            <span className="ledger-running-label">po kroku</span> {entry.running}%
-          </span>
-        </li>
-      ))}
-    </ol>
+    <p className="fc-summary">
+      <span>
+        opublikowany w <strong>{countText(services.length, 'serwisie', 'serwisach', 'serwisach')}</strong>
+        {services.length > 0 && <span className="muted">({services.slice(0, 3).join(', ')})</span>}
+      </span>
+      {groups !== undefined && (
+        <span>
+          <strong>{groups}</strong> <Term id="niezalezne-pochodzenie">{groups === 1 ? 'niezależne pochodzenie' : 'niezależne pochodzenia'}</Term>
+        </span>
+      )}
+      {finding.chain && (
+        <span>
+          <strong>{countText(cashOuts.length, 'możliwa wypłata', 'możliwe wypłaty', 'możliwych wypłat')}</strong>
+          {pln > 0 && <> · ok. <strong>{fmtPln(pln)}</strong></>}
+        </span>
+      )}
+      {finding.unrelatedPublishers > 0 && (
+        <span className="muted">publikuje go też {countText(finding.unrelatedPublishers, 'inna osoba', 'inne osoby', 'innych osób')}</span>
+      )}
+    </p>
   );
 }
 
-/** Niezależność pochodzenia śladów: liczba niezależnych pochodzeń i grupy kopii liczone jako jedno potwierdzenie. */
+/** Niezależność pochodzenia śladów: grupy kopii liczone jako jedno potwierdzenie. */
 function Provenance({ finding }: { finding: Finding }) {
   const { confidence } = finding;
   const groups = confidence.provenance ?? [];
   const copies = groups.filter((group) => group.evidenceIds.length > 1);
-  const independent = confidence.independentSources ?? (groups.length > 0 ? groups.length : undefined);
-  if (independent === undefined && !confidence.interpretation) return null;
+  if (copies.length === 0 && !confidence.interpretation) return null;
   const title = (id: string) => {
     const item = finding.evidence.find((entry) => entry.id === id);
     return item ? item.title || item.url : id;
   };
   return (
     <div className="provenance">
-      {independent !== undefined && (
-        <p>
-          <strong>niezależnych pochodzeń: {independent}</strong>
-          <span className="muted">
-            {' '}
-            · śladów łącznie: {finding.evidence.length}
-            {copies.length > 0 ? ' · kopie, przedruki i wersje archiwalne liczą się jako jedno potwierdzenie' : ''}
-          </span>
-        </p>
-      )}
       {copies.length > 0 && (
-        <ul className="plain-list provenance-groups">
-          {copies.map((group, index) => (
-            <li key={index}>
-              <span className="chip chip-archive">jedno pochodzenie · {group.evidenceIds.length} ślady</span>
-              {group.services.length > 0 && <span className="muted"> {group.services.join(', ')}</span>}
-              <ul>
-                {group.evidenceIds.map((id) => (
-                  <li key={id}>{title(id)}</li>
-                ))}
-              </ul>
-              {group.reasons.length > 0 && <p className="muted">Dlaczego razem: {group.reasons.join(' ')}</p>}
-            </li>
-          ))}
-        </ul>
+        <>
+          <p className="muted small">Kopie, przedruki i wersje archiwalne tej samej publikacji liczą się jako jedno potwierdzenie:</p>
+          <ul className="plain-list provenance-groups">
+            {copies.map((group, index) => (
+              <li key={index}>
+                <span className="chip chip-archive">jedno pochodzenie · {group.evidenceIds.length} ślady</span>
+                {group.services.length > 0 && <span className="muted"> {group.services.join(', ')}</span>}
+                <ul>
+                  {group.evidenceIds.map((id) => (
+                    <li key={id}>{title(id)}</li>
+                  ))}
+                </ul>
+                {group.reasons.length > 0 && <p className="muted">Dlaczego razem: {group.reasons.join(' ')}</p>}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
-      {confidence.interpretation && <p className="muted scale-inline">{confidence.interpretation}</p>}
+      {confidence.interpretation && <p className="muted small">{confidence.interpretation}</p>}
     </div>
   );
 }
@@ -166,14 +163,13 @@ function CashOutYears({ byYear }: { byYear: Record<string, number> }) {
 function Limitations({ items }: { items: string[] }) {
   if (items.length === 0) return null;
   return (
-    <aside className="limitations">
-      <h4>Ograniczenia danych</h4>
+    <Disclosure title="Ograniczenia danych" meta={countText(items.length, 'uwaga', 'uwagi', 'uwag')}>
       <ul>
         {items.map((item) => (
           <li key={item}>{item}</li>
         ))}
       </ul>
-    </aside>
+    </Disclosure>
   );
 }
 
@@ -182,112 +178,122 @@ function ExcludedEvidence({ finding }: { finding: DossierFinding }) {
   const { annotations = [], excludedEvidence = [] } = finding;
   if (annotations.length === 0 && excludedEvidence.length === 0) return null;
   return (
-    <LayerSection layer={excludedEvidence.length > 0 ? 'inference' : 'calc'} title={excludedEvidence.length > 0 ? `Ślady niewliczone do wyniku (${excludedEvidence.length})` : 'Adnotacje do wyniku i zakresu historii'}>
+    <Disclosure
+      layer={excludedEvidence.length > 0 ? 'inference' : 'calc'}
+      title={excludedEvidence.length > 0 ? 'Ślady niewliczone do wyniku' : 'Adnotacje do wyniku i zakresu historii'}
+      meta={excludedEvidence.length > 0 ? excludedEvidence.length : undefined}
+    >
       {annotations.map((note) => (
         <p key={note}>{note}</p>
       ))}
       {excludedEvidence.length > 0 && <EvidenceList evidence={excludedEvidence} address={finding.address} />}
-    </LayerSection>
+    </Disclosure>
   );
 }
 
-/** Pełna karta adresu powiązanego z podmiotem. */
+/** Stopka karty: opcjonalna decyzja analityka. */
+function DecisionFoot({ finding }: { finding: Finding }) {
+  return (
+    <footer className="fc-foot">
+      <p className="fc-foot-label">
+        Czy to adres tej osoby? <Term id="korekta-analityka">Twoja decyzja</Term> przeliczy teczkę.
+      </p>
+      <DecisionControls target="address" decisionKey={addressKey(finding)} confirmLabel="To adres tej osoby" rejectLabel="To nie jest adres tej osoby" summary="Potwierdź albo odrzuć (opcjonalnie)" />
+    </footer>
+  );
+}
+
+/** Pełna karta adresu powiązanego z podmiotem: odpowiedź u góry, szczegóły o jedno kliknięcie dalej. */
 export function FindingCard({ finding, index }: { finding: Finding; index: number }) {
   const { confidence, chain } = finding;
   return (
     <article className="card finding" id={findingAnchor(finding.address)} tabIndex={-1}>
       <AddressHeader finding={finding} index={index} />
+      <FindingSummary finding={finding} />
       <RelatedAddresses items={(finding as DossierFinding).relatedAddresses} />
 
-      <LayerSection layer="inference" title="Ocena powiązania z podmiotem">
-        <ScoreMeter score={confidence.score} tier={confidence.tier} excluded={confidence.excluded} />
-        {finding.unrelatedPublishers > 0 && (
-          <p className="muted">Ten sam adres publikuje także {finding.unrelatedPublishers} innych, niepowiązanych tożsamości.</p>
+      <div className="fc-body">
+        <Disclosure layer="fact" title="Gdzie opublikowano adres" meta={countText(finding.evidence.length, 'ślad', 'ślady', 'śladów')} defaultOpen={index === 0}>
+          <EvidenceList evidence={finding.evidence} address={finding.address} />
+        </Disclosure>
+
+        <Disclosure layer="calc" title="Skąd wziął się wynik — krok po kroku" meta={countText(confidence.ledger.length, 'krok', 'kroki', 'kroków')}>
+          <ScoreSteps ledger={confidence.ledger} />
+          <Provenance finding={finding} />
+        </Disclosure>
+
+        {confidence.nextSteps.length > 0 && (
+          <Disclosure layer="inference" title="Co podniosłoby wynik" meta={countText(confidence.nextSteps.length, 'propozycja', 'propozycje', 'propozycji')}>
+            <ul>
+              {confidence.nextSteps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ul>
+          </Disclosure>
         )}
-      </LayerSection>
 
-      <LayerSection layer="calc" title="Księga reguł — skąd wziął się wynik">
-        <Provenance finding={finding} />
-        <Ledger entries={confidence.ledger} />
-      </LayerSection>
+        <ExcludedEvidence finding={finding as DossierFinding} />
 
-      {confidence.nextSteps.length > 0 && (
-        <section className="next-steps">
-          <h4>Co podniosłoby wynik</h4>
-          <ul>
-            {confidence.nextSteps.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <LayerSection layer="fact" title={`Ślady w źródłach publicznych (${finding.evidence.length})`}>
-        <EvidenceList evidence={finding.evidence} address={finding.address} />
-      </LayerSection>
-
-      <ExcludedEvidence finding={finding} />
-
-      {chain ? (
-        <>
-          <LayerSection layer="fact" title="Profil adresu w blockchainie">
-            <ChainProfile profile={chain.profile} />
-          </LayerSection>
-          <LayerSection layer="inference" title="Wskaźniki wypłat na waluty tradycyjne">
-            <CashOutTable cashOuts={chain.cashOuts} />
-            <CashOutYears byYear={chain.cashOutPlnByYear} />
-          </LayerSection>
-          <LayerSection layer="fact" title="Oś czasu przepływów">
-            <FlowTimeline transfers={chain.transfers} cashOuts={chain.cashOuts} />
-          </LayerSection>
-          <Limitations items={chain.limitations} />
-        </>
-      ) : (
-        <p className="muted">Brak danych blockchain dla tego adresu.</p>
-      )}
+        {chain ? (
+          <>
+            <Disclosure layer="fact" title={<><Term id="blockchain">Blockchain</Term>: profil adresu</>} meta={`${chain.profile.txCount.toLocaleString('pl-PL')} transakcji`}>
+              <ChainProfile profile={chain.profile} />
+            </Disclosure>
+            <Disclosure layer="inference" title={<>Możliwe wypłaty na waluty tradycyjne</>} meta={countText(chain.cashOuts.length, 'operacja', 'operacje', 'operacji')}>
+              <CashOutTable cashOuts={chain.cashOuts} />
+              <CashOutYears byYear={chain.cashOutPlnByYear} />
+            </Disclosure>
+            <Disclosure layer="fact" title="Oś czasu przepływów" meta={countText(chain.transfers.length, 'przelew', 'przelewy', 'przelewów')}>
+              <FlowTimeline transfers={chain.transfers} cashOuts={chain.cashOuts} />
+            </Disclosure>
+            <Limitations items={chain.limitations} />
+          </>
+        ) : (
+          <p className="muted small">Brak danych z blockchaina dla tego adresu.</p>
+        )}
+      </div>
+      <DecisionFoot finding={finding} />
     </article>
   );
 }
 
-/** Skrócona karta adresu wykluczonego: powód i miejsce publikacji, bez przypisania do podmiotu. */
+/** Skrócona karta adresu wykluczonego: powód w jednym zdaniu, reszta po rozwinięciu. */
 export function RejectedCard({ finding, index }: { finding: Finding; index: number }) {
   const { confidence, chain } = finding;
   const reasons = confidence.ledger.filter((entry) => entry.rule.startsWith('exclusion.'));
+  const main = (reasons.length > 0 ? reasons : confidence.ledger)[0];
   return (
     <article className="card finding finding-rejected" id={findingAnchor(finding.address)} tabIndex={-1}>
       <AddressHeader finding={finding} index={index} />
-      <RelatedAddresses items={(finding as DossierFinding).relatedAddresses} />
-
-      <LayerSection layer="calc" title="Powód wykluczenia">
-        {(reasons.length > 0 ? reasons : confidence.ledger).map((entry, position) => (
-          <p key={`${entry.rule}-${position}`}>
-            {entry.explanation} <code className="mono rule-id">{entry.rule}</code>
-          </p>
-        ))}
-        {confidence.ledger.length === 0 && <p>Adres oznaczony jako wykluczony ({confidence.tier}).</p>}
-      </LayerSection>
-
-      {chain && (
-        <LayerSection layer="fact" title="Klasyfikacja adresu">
-          <p>
-            <strong>{chain.profile.label ?? CLASS_LABEL[chain.profile.addressClass] ?? chain.profile.addressClass}</strong>
-            {' — '}
-            {CLASS_LABEL[chain.profile.addressClass] ?? chain.profile.addressClass}. Źródło klasyfikacji:{' '}
-            {chain.profile.classificationSource}. Liczba transakcji: {chain.profile.txCount.toLocaleString('pl-PL')}.
-          </p>
-          {finding.unrelatedPublishers > 0 && (
-            <p className="muted">Adres publikuje także {finding.unrelatedPublishers} innych, niepowiązanych tożsamości.</p>
-          )}
-        </LayerSection>
-      )}
-
-      <LayerSection layer="fact" title={`Gdzie adres został opublikowany (${finding.evidence.length})`}>
-        <EvidenceList evidence={finding.evidence} address={finding.address} />
-      </LayerSection>
-
-      <ExcludedEvidence finding={finding} />
-
-      {chain && <Limitations items={chain.limitations} />}
+      <p className="fc-summary">
+        <span>
+          <span className="status status-rejected">odrzucony</span> {main ? main.explanation : `Adres oznaczony jako wykluczony (${confidence.tier}).`}
+        </span>
+      </p>
+      <div className="fc-body">
+        {(reasons.length > 1 || confidence.ledger.length > 1) && (
+          <Disclosure layer="calc" title="Powód wykluczenia — wszystkie kroki">
+            <ScoreSteps ledger={reasons.length > 0 ? reasons : confidence.ledger} />
+          </Disclosure>
+        )}
+        {chain && (
+          <Disclosure layer="fact" title="Czym jest ten adres" meta={chain.profile.label ?? CLASS_LABEL[chain.profile.addressClass] ?? chain.profile.addressClass}>
+            <p>
+              <strong>{chain.profile.label ?? CLASS_LABEL[chain.profile.addressClass] ?? chain.profile.addressClass}</strong>
+              {' — '}
+              {CLASS_LABEL[chain.profile.addressClass] ?? chain.profile.addressClass}. Źródło klasyfikacji: {chain.profile.classificationSource}. Liczba
+              transakcji: {chain.profile.txCount.toLocaleString('pl-PL')}.
+            </p>
+            {finding.unrelatedPublishers > 0 && <p className="muted">Adres publikuje także {countText(finding.unrelatedPublishers, 'inna osoba', 'inne osoby', 'innych osób')}.</p>}
+          </Disclosure>
+        )}
+        <Disclosure layer="fact" title="Gdzie adres został opublikowany" meta={countText(finding.evidence.length, 'ślad', 'ślady', 'śladów')}>
+          <EvidenceList evidence={finding.evidence} address={finding.address} />
+        </Disclosure>
+        <ExcludedEvidence finding={finding as DossierFinding} />
+        {chain && <Limitations items={chain.limitations} />}
+      </div>
+      <DecisionFoot finding={finding} />
     </article>
   );
 }

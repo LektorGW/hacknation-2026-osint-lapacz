@@ -3,8 +3,8 @@
 // Podstawa (sprawdzone 21.11.2026):
 //   • https://public.api.bsky.app/robots.txt: „Crawling the public parts of the API is allowed. HTTP 429 ("backoff")
 //     status codes are used for rate-limiting. Up to a handful concurrent requests should be ok." + „User-agent: * / Allow: /";
-//   • dokumentacja Bluesky (bsky-docs, advanced-guides/rate-limits): „These direct endpoints do not support authentication.
-//     The public.api.bsky.app endpoint is cached, and we request developers use that for "public web" use cases."
+//   • dokumentacja Bluesky (bsky-docs, advanced-guides/rate-limits) kieruje zapytania „public web" do public.api.bsky.app;
+//     strony dokumentacji nie dało się ponownie odczytać 21.11.2026 (pusta treść) — rozstrzyga robots.txt hosta API.
 // Zapytania: app.bsky.actor.getProfile (profil) i app.bsky.feed.getAuthorFeed (ostatnie wpisy konta) — dwa żądania
 // na identyfikator, jedno po drugim; po kodzie 429 łącznik rezygnuje (wspólny klient HTTP nie ponawia odmów).
 // Wyszukiwarka kont (searchActors) nie jest używana: nick sprawdzamy tylko jako dokładną nazwę konta.

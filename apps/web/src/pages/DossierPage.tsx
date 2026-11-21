@@ -1,5 +1,5 @@
 // Teczka podmiotu: ustalenie osoby, powiązania z giełdami i portfelami oraz sekcje szczegółowe.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { Dossier } from '@olcys/core';
 import { api, isDemo, loadDossier, runPeriod, reportHtmlUrl, reportJsonUrl } from '../api.ts';
@@ -26,9 +26,15 @@ import { GraphView } from '../graph/GraphView.tsx';
 import { UniverseView } from '../graph/UniverseView.tsx';
 import { LinkMap } from '../components/LinkMap.tsx';
 import { IDENTIFIER_LABEL } from '../labels.ts';
-import { DOSSIER_TABS, href, navigate } from '../router.ts';
+import { DOSSIER_SECTIONS, DOSSIER_TABS, href, navigate, sectionOf, tabLabel } from '../router.ts';
 import type { DossierTab } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
+import { ExportPanel } from '../components/ExportPanel.tsx';
+import { Floating } from '../components/ui/Floating.tsx';
+import { Hint } from '../components/ui/Hint.tsx';
+import { Term } from '../components/ui/Term.tsx';
+import { Tour } from '../components/ui/Tour.tsx';
+import { CaseHero, KeyFindings, SummaryHint } from './dossier/CaseSummary.tsx';
 
 type Source = { caseId: string } | { runId: string };
 
@@ -148,8 +154,85 @@ function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Fu
   );
 }
 
-function TabContent({ tab, summary, dossier, onChanged }: { tab: DossierTab; summary: CaseSummary; dossier: Dossier; onChanged: () => void }) {
+/** Przycisk „Eksport danych” w nagłówku teczki: panel plików CSV/JSON w warstwie pływającej. */
+function ExportMenu({ caseId, demoDossier }: { caseId: string; demoDossier?: unknown }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  return (
+    <>
+      <button ref={anchor} type="button" className="button" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
+        Eksport danych <span aria-hidden="true">▾</span>
+      </button>
+      <Floating anchor={anchor} open={open} onClose={close} id="eksport-danych" role="dialog" label="Eksport danych" className="export-pop">
+        <ExportPanel caseId={caseId} demoDossier={demoDossier} />
+      </Floating>
+    </>
+  );
+}
+
+/** „Podsumowanie”: odpowiedź w skrócie, ustalenia w grupach i to, czego brakuje. */
+function SummarySection({ empty }: { empty: boolean }) {
+  return (
+    <>
+      <SummaryHint />
+      {!empty && <CaseHero />}
+      <KeyFindings />
+      <Explanations />
+      <Seizures />
+      <FundingSources />
+    </>
+  );
+}
+
+/** „Ustalenie osoby”: pełna karta kandydata, identyfikatory i ślady innych osób. */
+function PersonSection({ dossier, empty }: { dossier: Dossier; empty: boolean }) {
+  return (
+    <>
+      {!empty && (
+        <div className="determination-wrap">
+          <Determination />
+        </div>
+      )}
+      <section className="card identifiers-card" aria-labelledby="identyfikatory-tytul">
+        <h2 id="identyfikatory-tytul">
+          <Term id="identyfikator">Identyfikatory</Term> w sprawie
+        </h2>
+        <p className="muted small">
+          <span aria-hidden="true">✎</span> podany przez analityka · <span aria-hidden="true">⌕</span> odkryty w źródłach
+        </p>
+        <Identifiers dossier={dossier} />
+      </section>
+      {!empty && <OtherCandidates />}
+    </>
+  );
+}
+
+const SECTION_HINT: Partial<Record<string, { id: string; text: string }>> = {
+  adresy: {
+    id: 'sekcja-adresy',
+    text: 'Każda karta to jeden adres. Na górze: jak mocno łączy się z osobą i gdzie go opublikowano. Ślady w źródłach i dane z blockchaina rozwiniesz kliknięciem.',
+  },
+  pieniadze: {
+    id: 'sekcja-pieniadze',
+    text: 'Dowód spieniężenia pokazuje drogę środków od adresu osoby do giełdy. Giełdy i portfele to gotowy materiał do zapytania; przepływy — wszystkie przelewy w tabeli.',
+  },
+  osoba: {
+    id: 'sekcja-osoba',
+    text: 'Program sam łączy profile w osobę. Jeśli coś się nie zgadza, popraw to przyciskiem na karcie profilu — teczka przeliczy się od razu.',
+  },
+  graf: {
+    id: 'sekcja-graf',
+    text: 'Kliknij węzeł, aby zobaczyć szczegóły. Linia przerywana to hipoteza, ciągła — fakt lub obliczenie.',
+  },
+};
+
+function TabContent({ tab, summary, dossier, onChanged, empty }: { tab: DossierTab; summary: CaseSummary; dossier: Dossier; onChanged: () => void; empty: boolean }) {
   switch (tab) {
+    case 'podsumowanie':
+      return <SummarySection empty={empty} />;
+    case 'osoba':
+      return <PersonSection dossier={dossier} empty={empty} />;
     case 'graf':
       return <GraphView />;
     case 'profile':
@@ -190,22 +273,29 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
   const [printAll, setPrintAll] = useState(false);
   const tabHref = (target: DossierTab) => ('runId' in source ? href.run(source.runId, target) : href.case(source.caseId, target));
 
-  // Cyfry 1–9 przełączają sekcje teczki.
+  // Cyfry 1–6 przełączają sekcje teczki.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (event.ctrlKey || event.metaKey || event.altKey || target.closest('input, textarea, select, [contenteditable]')) return;
-      const picked = DOSSIER_TABS[Number(event.key) - 1];
-      if (picked) navigate(tabHref(picked.id));
+      if (event.ctrlKey || event.metaKey || event.altKey || target.closest('input, textarea, select, [contenteditable], dialog')) return;
+      const picked = DOSSIER_SECTIONS[Number(event.key) - 1];
+      if (picked) navigate(tabHref(picked.tabs[0]!));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  // Zmiana sekcji przez odnośnik w treści (np. „Co dalej?”): nawigacja sekcji wraca do widoku.
+  const first = useRef(true);
   useEffect(() => {
-    document.querySelector('.tabs a[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
-  }, [tab, loaded.data]);
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const nav = document.querySelector<HTMLElement>('.sections');
+    if (nav && nav.getBoundingClientRect().top < 0) nav.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }, [tab]);
 
   const data = loaded.data;
   const context = useMemo<DossierContextValue | null>(() => {
@@ -264,16 +354,36 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
     setPrintAll(false);
   }
 
+  const section = sectionOf(tab);
+  const sectionHint = SECTION_HINT[section.id];
+  const linkedCount = dossier.findings.filter((finding) => !finding.confidence.excluded).length;
+  const counts: Partial<Record<DossierTab, number>> = {
+    adresy: linkedCount + (dossier.unconfirmedAddresses ?? []).length,
+    tozsamosci: (dossier.linkedIdentities ?? []).length,
+    dowod: (dossier.cashOutProof ?? []).length,
+    profile: dossier.profiles.length,
+  };
+  const sectionCount = (tabs: readonly DossierTab[]) => (tabs.length === 1 ? counts[tabs[0]!] : undefined);
+
   return (
     <DossierContext.Provider value={context}>
       <div className={`page dossier ${loaded.loading ? 'is-refreshing' : ''}`}>
-        <Crumbs items={[{ label: 'Pulpit', href: href.dashboard() }, { label: summary.name, href: href.case(summary.id) }, { label: DOSSIER_TABS.find((item) => item.id === tab)!.label }]} />
-        <header className="page-head">
+        <Crumbs
+          items={[
+            { label: 'Pulpit', href: href.dashboard() },
+            { label: summary.name, href: href.case(summary.id) },
+            ...(tab === 'podsumowanie' ? [] : [{ label: section.label, href: tabHref(section.tabs[0]!) }]),
+            ...(section.tabs.length > 1 ? [{ label: tabLabel(tab) }] : []),
+          ]}
+        />
+        <header className="page-head dossier-head">
           <div>
-            <p className="eyebrow">Teczka podmiotu</p>
+            <p className="eyebrow">
+              <Term id="teczka">Teczka sprawy</Term>
+            </p>
             <h1>{summary.name}</h1>
-            <p className="muted">
-              Stan na {fmtDateTime(dossier.generatedAt)} · adresy powiązane: {dossier.totals.linkedAddresses}, odrzucone: {dossier.totals.excludedAddresses}
+            <p className="muted dossier-meta">
+              Stan na {fmtDateTime(dossier.generatedAt)}
               <RunPeriod runId={dossier.runId} />
             </p>
           </div>
@@ -283,7 +393,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                 <button type="button" className="button" onClick={print}>
                   Raport do druku
                 </button>
-                <button type="button" className="button" onClick={() => downloadJson(`teczka-${isDemo ? 'DEMO-' : ''}${dossier.caseId}.json`, isDemo ? { uwaga: DEMO_NOTICE, ...dossier } : dossier)}>
+                <button type="button" className="button button-quiet" onClick={() => downloadJson(`teczka-${isDemo ? 'DEMO-' : ''}${dossier.caseId}.json`, isDemo ? { uwaga: DEMO_NOTICE, ...dossier } : dossier)}>
                   Pakiet JSON
                 </button>
               </>
@@ -292,64 +402,93 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                 <a className="button" href={reportHtmlUrl(dossier.runId)} target="_blank" rel="noopener noreferrer">
                   Raport do druku
                 </a>
-                <a className="button" href={reportJsonUrl(dossier.runId)} download={`analiza-${dossier.runId}.json`}>
+                <a className="button button-quiet" href={reportJsonUrl(dossier.runId)} download={`analiza-${dossier.runId}.json`}>
                   Pakiet JSON
                 </a>
               </>
             )}
+            <ExportMenu caseId={summary.id} demoDossier={isDemo ? dossier : undefined} />
           </div>
         </header>
 
         <DemoWatermark />
         {loaded.error && <ErrorBox message={loaded.error} onRetry={loaded.reload} />}
         {dossier.partial && (
-          <p className="notice notice-strong" role="alert">
-            <strong>Wynik częściowy.</strong> Analizę przerwał limit czasu — część źródeł lub adresów nie została sprawdzona. Ponów analizę (sekcja „Historia
-            analiz”), najlepiej w trybie głębokim.
-          </p>
+          <div className="status-box status-box-warn" role="alert">
+            <p>
+              <strong>
+                <Term id="wynik-czesciowy">Wynik częściowy</Term>
+              </strong>{' '}
+              — analizę przerwał limit czasu, więc część źródeł lub adresów nie została sprawdzona. To, co widać, jest poprawne, ale może być niepełne.
+            </p>
+            <a className="button button-small" href={tabHref('analizy')}>
+              Ponów analizę
+            </a>
+          </div>
         )}
         {simplified && (
-          <p className="notice" role="note">
+          <p className="notice notice-quiet" role="note">
             Teczka uproszczona: ta wersja usługi analizy nie udostępnia teczki, więc złożono ją w interfejsie z samej analizy. Decyzje analityka,
             osoby powiązane i pełne ustalenie osoby są niedostępne.
           </p>
         )}
         {historic && (
-          <p className="notice" role="note">
+          <p className="notice notice-quiet" role="note">
             Oglądasz stan z wcześniejszej analizy. <a href={href.case(summary.id)}>Przejdź do bieżącej teczki</a>.
           </p>
         )}
 
-        {/* Bez osoby i adresów puste sekcje zastępuje wyjaśnienie, czego brakuje. */}
-        {!empty && <Determination />}
-        <Explanations />
-        <Seizures />
-        <FundingSources />
-        <Identifiers dossier={dossier} />
-        {!empty && <OtherCandidates />}
-
-        <nav className="tabs no-print" aria-label="Sekcje teczki">
-          {DOSSIER_TABS.map((item, index) => (
-            <a key={item.id} href={tabHref(item.id)} aria-current={item.id === tab ? 'page' : undefined} title={`Skrót: ${index + 1}`}>
-              {item.label}
-              {item.id === 'tozsamosci' && ` (${(dossier.linkedIdentities ?? []).length})`}
-            </a>
-          ))}
+        <nav className="sections no-print" aria-label="Sekcje teczki" data-tour="sections">
+          <ul className="sections-main">
+            {DOSSIER_SECTIONS.map((item, index) => {
+              const count = sectionCount(item.tabs);
+              return (
+                <li key={item.id}>
+                  <a
+                    href={tabHref(item.tabs[0]!)}
+                    aria-current={item.id === section.id ? 'page' : undefined}
+                    title={`${item.description} · skrót klawiszowy: ${index + 1}`}
+                  >
+                    {item.label}
+                    {count !== undefined && count > 0 && <span className="sections-count">{count}</span>}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+          {section.tabs.length > 1 && (
+            <ul className="sections-sub" aria-label={`Widoki sekcji „${section.label}”`}>
+              {section.tabs.map((item) => (
+                <li key={item}>
+                  <a href={tabHref(item)} aria-current={item === tab ? 'page' : undefined}>
+                    {tabLabel(item)}
+                    {counts[item] !== undefined && counts[item]! > 0 && <span className="sections-count">{counts[item]}</span>}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
         </nav>
 
         {printAll ? (
           DOSSIER_TABS.filter((item) => item.id !== 'graf').map((item) => (
             <div key={item.id} className="print-section">
-              <TabContent tab={item.id} summary={summary} dossier={dossier} onChanged={loaded.reload} />
+              <TabContent tab={item.id} summary={summary} dossier={dossier} onChanged={loaded.reload} empty={empty} />
             </div>
           ))
         ) : (
-          <div className="tab-panel">
-            <TabContent tab={tab} summary={summary} dossier={dossier} onChanged={loaded.reload} />
+          <div className="tab-panel" key={tab}>
+            {sectionHint && (
+              <Hint id={sectionHint.id} title="Jak czytać tę sekcję">
+                {sectionHint.text}
+              </Hint>
+            )}
+            <TabContent tab={tab} summary={summary} dossier={dossier} onChanged={loaded.reload} empty={empty} />
           </div>
         )}
         <LayerLegend />
       </div>
+      <Tour chapter="dossier" ready={tab === 'podsumowanie'} />
     </DossierContext.Provider>
   );
 }

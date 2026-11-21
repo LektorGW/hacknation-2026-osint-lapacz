@@ -5,6 +5,8 @@ import { fetchHealth, isDemo } from '../api.ts';
 import { isSyntheticSource, modeText, resolveMode, syntheticConnectorIds } from '../mode.ts';
 import type { ModeInfo, SourceRef } from '../mode.ts';
 import { useAsync } from '../useAsync.ts';
+import type { GlossaryId } from '../glossary.ts';
+import { Term } from './ui/Term.tsx';
 
 interface ModeValue {
   info: ModeInfo;
@@ -29,14 +31,24 @@ export function ModeProvider({ children }: { children: ReactNode }) {
 
 export const useMode = (): ModeValue => useContext(ModeContext);
 
-/** Stały, jednoznaczny pasek trybu nad treścią każdego ekranu (także na wydruku). */
+const MODE_TERM: Record<ModeInfo['mode'], GlossaryId> = {
+  live: 'tryb-live',
+  sandbox: 'tryb-sandbox',
+  demo: 'tryb-demo',
+  unknown: 'tryb-nieustalony',
+};
+
+/** Stały, jednoznaczny pasek trybu nad treścią każdego ekranu (także na wydruku). Spokojny, ale zawsze widoczny. */
 export function ModeBadge() {
   const { info } = useMode();
   return (
-    <p className={`mode-badge mode-${info.mode}`} role="note" aria-label={`Tryb pracy: ${modeText(info)}`}>
+    <div className={`mode-badge mode-${info.mode}`} role="note" aria-label={`Tryb pracy: ${modeText(info)}`}>
       <strong>{info.mode === 'unknown' ? 'TRYB NIEUSTALONY' : info.short}</strong>
       <span>{info.mode === 'unknown' ? 'usługa analizy nie podała, skąd pochodzą dane — traktuj wyniki jak niezweryfikowane' : info.description}</span>
-    </p>
+      <span className="mode-what no-print">
+        <Term id={MODE_TERM[info.mode]}>co to znaczy?</Term>
+      </span>
+    </div>
   );
 }
 
@@ -46,7 +58,7 @@ export function SyntheticTag({ source }: { source: SourceRef }) {
   if (!isSyntheticSource(source, synthetic)) return null;
   return (
     <span className="chip chip-synthetic" title="Ślad pochodzi z łącznika piaskownicy lub laboratorium — dane wygenerowane do testów, nie z publicznego źródła.">
-      dane syntetyczne
+      <Term id="dane-syntetyczne">dane syntetyczne</Term>
     </span>
   );
 }

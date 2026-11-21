@@ -36,18 +36,6 @@ export function LayerTag({ layer }: { layer: Layer }) {
   );
 }
 
-/** Znacznik czwartej warstwy: informacja z odpowiedzi usługi wprowadzonej przez analityka — nie ze źródeł publicznych. */
-export function ExternalDocTag({ short = false }: { short?: boolean }) {
-  return (
-    <span
-      className="layer-tag layer-external"
-      title="Dokument spoza OSINT: odpowiedź usługi (giełdy) wprowadzona do sprawy przez analityka. Nie pochodzi ze źródeł publicznych ani z blockchaina; narzędzie nie weryfikuje jej autentyczności."
-    >
-      {short ? 'Dokument spoza OSINT' : 'Dokument spoza OSINT (odpowiedź usługi)'}
-    </span>
-  );
-}
-
 export function LayerLegend() {
   return (
     <details className="legend">
@@ -162,12 +150,17 @@ export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () =
   );
 }
 
-/** Pusty stan z podpowiedzią, co zrobić dalej. */
-export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
+/** Pusty stan: co się stało, podpowiedź i (opcjonalnie) jedno główne działanie. */
+export function EmptyState({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="empty">
+      <svg className="empty-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="m16 16 4.5 4.5M8.5 11h5" />
+      </svg>
       <p className="empty-title">{title}</p>
       {children && <div className="empty-hint">{children}</div>}
+      {action && <div className="empty-action">{action}</div>}
     </div>
   );
 }

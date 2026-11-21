@@ -14,7 +14,11 @@ import {
   TIMELINE_KIND_LABEL,
 } from '../labels.ts';
 import { href, navigate } from '../router.ts';
-import { Bar, EmptyState, ExternalLink, Initial, LAYER_KEYS, LayerTag, ShortAddress, layerLabel, toLayer } from './common.tsx';
+import { EmptyState, ExternalLink, Initial, LAYER_KEYS, LayerTag, ShortAddress, layerLabel, toLayer } from './common.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
+import { countText } from '../ux.ts';
 import type { Layer } from './common.tsx';
 import { DecisionControls, DecisionHistory, useDossier } from './DossierContext.tsx';
 import { isWithdrawn } from '../decisions.ts';
@@ -82,18 +86,19 @@ function ProfileItem({ profile }: { profile: ProfileCard }) {
         </span>
       </header>
       <div className="profile-identity">
-        <span className="muted">pewność, że profil należy do podmiotu</span>
-        <Bar value={profile.identityScore} label="Pewność tożsamości profilu" wide />
-        <strong>{IDENTITY_LABEL[profile.identityMatch] ?? profile.identityMatch}</strong>
+        <Score value={profile.identityScore} kind="person" reasons={profile.identityReasons} caption="pewność, że profil należy do osoby ze sprawy" />
+        <span className="status status-calc">{IDENTITY_LABEL[profile.identityMatch] ?? profile.identityMatch}</span>
       </div>
-      {profile.identityReasons.length > 0 && (
-        <ul className="reasons">
-          {profile.identityReasons.map((reason) => (
-            <li key={reason}>{reason}</li>
-          ))}
-        </ul>
-      )}
-      <ProfileAttributesList profile={profile} />
+      <Disclosure title="Co zawiera profil" meta={profile.identityReasons.length > 0 ? countText(profile.identityReasons.length, 'przesłanka', 'przesłanki', 'przesłanek') : undefined}>
+        {profile.identityReasons.length > 0 && (
+          <ul className="reasons">
+            {profile.identityReasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        )}
+        <ProfileAttributesList profile={profile} />
+      </Disclosure>
       <p className="profile-addresses">
         <strong>Opublikowane adresy ({profile.addresses.length}):</strong>{' '}
         {profile.addresses.length === 0
@@ -146,18 +151,27 @@ export function AddressesTab() {
     <>
       <UnconfirmedAddresses />
       <section aria-labelledby="powiazane">
-        <h2 id="powiazane">Adresy powiązane ({linked.length})</h2>
+        <header className="section-head">
+          <div>
+            <h2 id="powiazane">Adresy powiązane ({linked.length})</h2>
+            <p className="muted small">
+              Od najmocniej powiązanego. Każdy <Term id="adres-krypto">adres</Term> ma ocenę, gdzie go opublikowano i co pokazuje blockchain.
+            </p>
+          </div>
+        </header>
+        {linked.length === 0 && <EmptyState title="Żaden adres nie jest przypisany osobie">Znalezione adresy zostały odrzucone albo czekają na potwierdzenie (wyżej).</EmptyState>}
         {linked.map((finding, index) => (
           <FindingCard key={finding.address} finding={finding} index={index} />
         ))}
       </section>
       {rejected.length > 0 && (
-        <section aria-labelledby="odrzucone">
-          <h2 id="odrzucone">Adresy odrzucone ({rejected.length})</h2>
-          <p className="muted">Adresy znalezione w źródłach, których nie przypisuje się podmiotowi. Nie wchodzą do szacunku wypłat.</p>
-          {rejected.map((finding, index) => (
-            <RejectedCard key={finding.address} finding={finding} index={linked.length + index} />
-          ))}
+        <section aria-labelledby="odrzucone" className="rejected-section">
+          <Disclosure title={<span id="odrzucone">Adresy odrzucone ({rejected.length})</span>} meta="nie wchodzą do szacunku wypłat">
+            <p className="muted small">Adresy znalezione w źródłach, których nie przypisuje się osobie — np. adres giełdy albo adres publikowany przez wiele osób.</p>
+            {rejected.map((finding, index) => (
+              <RejectedCard key={finding.address} finding={finding} index={linked.length + index} />
+            ))}
+          </Disclosure>
         </section>
       )}
     </>
@@ -245,7 +259,12 @@ export function FlowsTab() {
                   <td className="num">{fmtAmount(row.amount, row.asset)}</td>
                   <td className="num">
                     {row.valuePln === undefined ? <span className="muted">brak kursu</span> : <strong>{fmtPln(row.valuePln)}</strong>}
-                    {row.valuation && <span className="cell-note">{row.valuation}</span>}
+                    {row.valuation && (
+                      <details className="why">
+                        <summary>jak wyceniono</summary>
+                        <span className="cell-note">{row.valuation}</span>
+                      </details>
+                    )}
                   </td>
                   <td>
                     <ExternalLink url={row.explorerUrl}>eksplorator</ExternalLink>
@@ -394,8 +413,7 @@ function PersonItem({ person }: { person: RelatedPerson & { caseId?: string } })
           <p className="muted">{person.services.join(', ')}</p>
         </div>
         <div className="service-strength">
-          <span className="muted">siła powiązania</span>
-          <Bar value={person.strength} label={`Siła powiązania z ${person.handle}`} wide />
+          <Score value={person.strength} kind="strength" caption="siła powiązania" />
         </div>
       </header>
       <ul className="plain-list">

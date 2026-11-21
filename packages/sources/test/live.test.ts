@@ -275,6 +275,10 @@ describe('łączniki live — konfiguracja', () => {
       'live-bitcoinwhoswho',
       'live-github-search',
       'deep-search',
+      // Katalog search/: lokalne rejestry, Farcaster i wyszukiwarka internetowa (bez klucza wyłączona).
+      'rejestry-publiczne',
+      'live-farcaster',
+      'web-search',
     ]);
     assert.equal(new Set(ids).size, ids.length);
     for (const connector of connectors) {

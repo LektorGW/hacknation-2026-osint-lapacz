@@ -9,7 +9,9 @@ import { IDENTIFIER_LABEL, IDENTIFIER_TYPES, NETWORK_LABEL, NETWORK_SHORT } from
 import { suggestionAction } from '../proof.ts';
 import type { Depth, Explanation, RunProgress, UnconfirmedAddress } from '../proof.ts';
 import { href, navigate } from '../router.ts';
-import { ExternalLink, LayerTag, ScoreBadge, ShortAddress } from './common.tsx';
+import { ExternalLink, LayerTag, ShortAddress } from './common.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { FUNDING_ANCHOR, SEIZURES_ANCHOR } from './FundsOrigin.tsx';
 import { AnalysisProgress } from './Progress.tsx';
@@ -23,7 +25,7 @@ const KIND_TITLE: Record<Explanation['kind'], string> = {
   only_unconfirmed: 'Znalezione adresy nie są potwierdzone',
   widely_cited: 'Adres jest powszechnie cytowany',
   chain_skipped: 'Nie przeanalizowano blockchainu',
-  partial: 'Wynik częściowy',
+  partial: 'Wynik częściowy — nie wszystko sprawdzono',
   source_errors: 'Część źródeł nie odpowiedziała — wynik częściowy',
   no_cash_out: 'Brak udokumentowanego spieniężenia',
   seized: 'Środki zajęte przez organ państwa — to nie spieniężenie',
@@ -218,9 +220,8 @@ function UnconfirmedItem({ item }: { item: UnconfirmedAddress }) {
       <header>
         <span className="chip chip-network">{NETWORK_SHORT[item.network] ?? item.network}</span>
         <code className="mono address">{item.address}</code>
-        <span title="Prawdopodobieństwo, że adres należy do osoby ze sprawy">
-          <ScoreBadge score={item.personAddressProbability} />
-        </span>
+        <Score value={item.personAddressProbability} kind="joint" reasons={item.reasons} caption="powiązanie z osobą ze sprawy" />
+
       </header>
       <p className="muted">
         {NETWORK_LABEL[item.network] ?? item.network} · źródła:{' '}
@@ -290,9 +291,9 @@ export function UnconfirmedAddresses({ compact = false }: { compact?: boolean })
   return (
     <section className="card unconfirmed-section" id={UNCONFIRMED_ANCHOR} aria-labelledby="do-potwierdzenia">
       <h2 id="do-potwierdzenia">
-        Adresy do potwierdzenia ({items.length}) <LayerTag layer="inference" />
+        <Term id="adres-do-potwierdzenia">Adresy do potwierdzenia</Term> ({items.length}) <LayerTag layer="inference" />
       </h2>
-      <p className="muted">Znalezione w źródłach, ale nieprzypisane osobie. Potwierdzenie od razu przelicza teczkę i dowody spieniężenia.</p>
+      <p className="muted">Znalezione w źródłach, ale przesłanki są za słabe, by przypisać je osobie. Jedno kliknięcie rozstrzyga — teczka przeliczy się od razu.</p>
       {items.map((item) => (
         <UnconfirmedItem key={`${item.network}:${item.address}`} item={item} />
       ))}

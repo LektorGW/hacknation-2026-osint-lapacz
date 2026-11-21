@@ -2,18 +2,23 @@ import { useState } from 'react';
 import type { TextInsight } from '@olcys/core';
 import type { EvidenceWithInsight } from '../proof.ts';
 import { useDossier } from './DossierContext.tsx';
-import { fmtDateTime, shorten } from '../format.ts';
-import { CATEGORY_LABEL, IDENTIFIER_LABEL, IDENTITY_LABEL } from '../labels.ts';
+import { fmtDate, fmtDateTime, shorten } from '../format.ts';
+import { CATEGORY_LABEL, CATEGORY_SHORT, IDENTIFIER_LABEL, IDENTITY_LABEL } from '../labels.ts';
 import { ExternalLink, LayerTag } from './common.tsx';
 import { SyntheticTag } from './Mode.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Term } from './ui/Term.tsx';
 import { currentDecision } from '../decisions.ts';
 import type { DecisionRecord } from '../decisions.ts';
 
 /** Cytat ze źródła jako zwykły tekst, z wyróżnionym adresem. */
 function Excerpt({ text, address }: { text: string; address: string }) {
   const parts = text.split(address);
+  // Cytat wycięty ze środka zdania zaczyna się wielokropkiem — nie wygląda jak literówka.
+  const cut = /^\p{Ll}/u.test(text.trim());
   return (
     <blockquote className="excerpt">
+      {cut && '…'}
       {parts.map((part, index) => (
         <span key={index}>
           {index > 0 && <mark>{address}</mark>}
@@ -67,7 +72,10 @@ function Insight({ evidenceId, insight }: { evidenceId: string; insight: TextIns
   return (
     <aside className="insight">
       <p className="insight-head">
-        <strong>Sugestia modelu</strong> <LayerTag layer="inference" />
+        <strong>
+          <Term id="sugestia-modelu">Sugestia modelu</Term>
+        </strong>{' '}
+        <LayerTag layer="inference" />
         <span className="muted">
           {insight.model} · wersja polecenia {insight.promptVersion}
         </span>
@@ -112,60 +120,61 @@ function Insight({ evidenceId, insight }: { evidenceId: string; insight: TextIns
   );
 }
 
+/** Ślad: czym jest i skąd (w słowach), cytat z wyróżnionym adresem, data. Reszta — w „Szczegółach źródła”. */
 function EvidenceItem({ item, address }: { item: EvidenceWithInsight; address: string }) {
+  const { dossier } = useDossier();
+  const overridden = currentDecision(dossier.decisions as DecisionRecord[], 'evidence', item.id) !== undefined;
+  const excludedByModel = item.insight !== undefined && EXCLUDING.includes(item.insight.ownership) && !overridden;
   return (
     <li className="evidence">
-      <p className="evidence-title">
-        <ExternalLink url={item.url}>{item.title || item.url}</ExternalLink>
+      <p className="ev-head">
+        <span className="ev-kind">{CATEGORY_SHORT[item.category] ?? CATEGORY_LABEL[item.category] ?? item.category}</span>
+        <span className="muted" aria-hidden="true">
+          ·
+        </span>
+        <span className="ev-source">{item.service}</span>
+        <span className="ev-date">{item.publishedAt ? fmtDate(item.publishedAt) : 'data publikacji nieznana'}</span>
         <SyntheticTag source={{ connectorId: item.connectorId, service: item.service, url: item.url }} />
-        {item.archivedAt && (
-          <span className="chip chip-archive">wersja archiwalna z {fmtDateTime(item.archivedAt)}</span>
-        )}
+        {item.archivedAt && <span className="chip chip-archive">wersja archiwalna z {fmtDate(item.archivedAt)}</span>}
       </p>
+      <ExternalLink url={item.url}>
+        <span className="ev-title">{item.title || item.url}</span>
+      </ExternalLink>
       <Excerpt text={item.excerpt} address={address} />
-      {item.insight && <Insight evidenceId={item.id} insight={item.insight} />}
-      <dl className="meta">
-        <div>
-          <dt>Usługa</dt>
-          <dd>{item.service}</dd>
-        </div>
-        <div>
+      {excludedByModel && (
+        <p className="ev-note">
+          <span className="status status-inference">nie wliczono do wyniku</span> <Term id="sugestia-modelu">model językowy</Term> uznał:{' '}
+          {OWNERSHIP_LABEL[item.insight!.ownership]}. Możesz to cofnąć w szczegółach.
+        </p>
+      )}
+      <Disclosure title="Szczegóły źródła" className="ev-details">
+        <dl className="ev-meta">
           <dt>Autor</dt>
           <dd>{item.author ?? 'nie podano'}</dd>
-        </div>
-        <div>
           <dt>Opublikowano</dt>
           <dd>{item.publishedAt ? fmtDateTime(item.publishedAt) : 'źródło nie podaje'}</dd>
-        </div>
-        <div>
           <dt>Pozyskano</dt>
           <dd>{fmtDateTime(item.capturedAt)}</dd>
-        </div>
-        <div>
           <dt>Rodzaj źródła</dt>
           <dd>{CATEGORY_LABEL[item.category] ?? item.category}</dd>
-        </div>
-        <div>
           <dt>Odnaleziono przez</dt>
           <dd>
-            {IDENTIFIER_LABEL[item.matchedIdentifier.type] ?? item.matchedIdentifier.type}:{' '}
-            {item.matchedIdentifier.value}
+            {IDENTIFIER_LABEL[item.matchedIdentifier.type] ?? item.matchedIdentifier.type}: {item.matchedIdentifier.value}
           </dd>
-        </div>
-        <div className="meta-wide">
-          <dt>Czy to profil badanego podmiotu</dt>
+          <dt>Czy to profil tej osoby</dt>
           <dd>
             {IDENTITY_LABEL[item.identityMatch] ?? item.identityMatch}
-            {item.identityReasons?.length ? ` — ${item.identityReasons.join(' ')}` : ''}
+            {item.identityReasons?.length ? <span className="muted"> — {item.identityReasons.join(' ')}</span> : ''}
           </dd>
-        </div>
-        <div className="meta-wide">
-          <dt>SHA-256 treści</dt>
+          <dt>
+            <Term id="sha256">Skrót treści</Term>
+          </dt>
           <dd>
             <ContentHash hash={item.contentHash} />
           </dd>
-        </div>
-      </dl>
+        </dl>
+        {item.insight && <Insight evidenceId={item.id} insight={item.insight} />}
+      </Disclosure>
     </li>
   );
 }

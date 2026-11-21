@@ -13,8 +13,13 @@
 //     brak pliku robots.txt (404) i brak opublikowanego limitu; wyszukiwanie WYŁĄCZNIE po numerze KRS.
 //     Łącznik wysyła najwyżej 2 żądania na numer (rejestr przedsiębiorców, potem stowarzyszeń) z odstępem 2 s.
 //     Imiona i nazwiska członków organów API zwraca zamaskowane („A***") — łącznik niczego nie odtwarza.
-//   • CEIDG (dane.biznes.gov.pl/api/ceidg/v3) wymaga tokenu wydawanego po rejestracji (bez niego kod 401) —
-//     NIE jest zaimplementowany: bez tokenu nie da się zweryfikować kształtu odpowiedzi.
+//   • CEIDG — API v3 Hurtowni danych CEIDG i Biznes.gov.pl (https://dane.biznes.gov.pl/api/ceidg/v3/firma?nip=<NIP>):
+//     https://www.biznes.gov.pl/pl/uwagi-prawne, część „Hurtownia Danych CEIDG i Biznes.gov.pl": „API pozwala innym
+//     systemom, na korzystanie z zasobów Hurtowni danych w sposób zautomatyzowany."; „Dostęp do Hurtowni danych będą
+//     mieli wyłącznie Użytkownicy, których tożsamość została zweryfikowana." Token JWT (nagłówek `Authorization: Bearer`)
+//     wydaje portal po rejestracji Profilem Zaufanym. Kształt odpowiedzi i limit („ograniczenie do 1000 żądań w okresie
+//     60 minut") — „Dokumentacja dla integratorów API v3 Hurtowni danych" v1.4 (akademia.biznes.gov.pl, 22.04.2026).
+//     Łącznik powstaje WYŁĄCZNIE, gdy operator poda token (zmienna CEIDG_API_TOKEN); bez tokenu nie ma żadnych zapytań.
 //
 // Identyfikator wpisuje się jako login lub nick w postaci „NIP 1234567890", „KRS 0000012345" albo
 // „rachunek <26 cyfr>" (typy identyfikatorów w @olcys/core nie mają osobnego rodzaju „numer rejestrowy").
@@ -363,6 +368,168 @@ export function createKrsConnector(http: HttpClient): SourceConnector {
       };
       context.log(`${KRS_LABEL}: „${identifier.value}" — ${entity.nazwa}${website ? `, strona ${website}` : ''}.`);
       return [document];
+    },
+  };
+}
+
+// ---------- CEIDG (jednoosobowa działalność gospodarcza) — tylko z tokenem ----------
+
+const CEIDG_ID = 'live-ceidg';
+const CEIDG_SERVICE = 'dane.biznes.gov.pl';
+const CEIDG_LABEL = 'CEIDG (Hurtownia danych Biznes.gov.pl)';
+const CEIDG_API = 'https://dane.biznes.gov.pl/api/ceidg/v3';
+/** Urzędowy limit to 1000 żądań na 60 minut na token; łącznik zużywa najwyżej tyle, resztę zostawia analitykom. */
+export const CEIDG_HOURLY_LIMIT = 200;
+
+interface CeidgAddress {
+  ulica?: string | null;
+  budynek?: string | null;
+  lokal?: string | null;
+  miasto?: string | null;
+  kod?: string | null;
+  kraj?: string | null;
+}
+
+interface CeidgFirm {
+  id?: string;
+  nazwa?: string | null;
+  adresDzialalnosci?: CeidgAddress | null;
+  wlasciciel?: { imie?: string | null; nazwisko?: string | null; nip?: string | null; regon?: string | null } | null;
+  pkdGlowny?: { kod?: string | null; nazwa?: string | null } | null;
+  spolki?: { nip?: string | null; regon?: string | null }[] | null;
+  dataRozpoczecia?: string | null;
+  dataZawieszenia?: string | null;
+  dataZakonczenia?: string | null;
+  dataWykreslenia?: string | null;
+  dataWznowienia?: string | null;
+  status?: string | null;
+  telefon?: string | null;
+  email?: string | null;
+  www?: string | null;
+  link?: string | null;
+}
+
+const ceidgAddressLine = (address: CeidgAddress | null | undefined): string =>
+  address
+    ? [[address.ulica, address.budynek].filter(Boolean).join(' ') + (address.lokal ? `/${address.lokal}` : ''), [address.kod, address.miasto].filter(Boolean).join(' ')]
+        .filter(Boolean)
+        .join(', ')
+    : '';
+
+export interface CeidgOptions {
+  /** Token JWT z Hurtowni danych CEIDG; trafia wyłącznie w nagłówku Authorization do dane.biznes.gov.pl. */
+  token: string;
+}
+
+/**
+ * NIP → wpis jednoosobowej działalności gospodarczej w CEIDG (nazwa firmy, przedsiębiorca, status, adres,
+ * kontakt podany do ewidencji). Bez tokenu łącznik nie powstaje — patrz `createConnectors`.
+ */
+export function createCeidgConnector(http: HttpClient, options: CeidgOptions): SourceConnector {
+  const token = options.token.trim();
+  let countedHour = '';
+  let usedThisHour = 0;
+
+  return {
+    id: CEIDG_ID,
+    service: CEIDG_SERVICE,
+    label: CEIDG_LABEL,
+    description:
+      'Centralna Ewidencja i Informacja o Działalności Gospodarczej — API v3 Hurtowni danych (dane.biznes.gov.pl/api/ceidg/v3/firma?nip=<NIP>), ' +
+      'dostępne po rejestracji Profilem Zaufanym, z tokenem w zmiennej CEIDG_API_TOKEN. Wpisz identyfikator jako „NIP 1234567890" — wynik: ' +
+      'nazwa firmy, imię i nazwisko przedsiębiorcy, status, adres działalności, główny PKD oraz e-mail, telefon i strona podane do ewidencji. ' +
+      `Jedno żądanie na identyfikator, odstęp 1 s; urzędowy limit 1000 żądań na godzinę, łącznik zużywa najwyżej ${CEIDG_HOURLY_LIMIT}.`,
+    accepts: ['login', 'nick'],
+    enabledByDefault: true,
+
+    async search(identifier, context) {
+      const number = registryNumber(identifier);
+      if (number?.kind !== 'nip') return [];
+      const hour = new Date().toISOString().slice(0, 13);
+      if (hour !== countedHour) {
+        countedHour = hour;
+        usedThisHour = 0;
+      }
+      if (usedThisHour >= CEIDG_HOURLY_LIMIT) {
+        context.log(`${CEIDG_LABEL}: wyczerpano godzinny limit ${CEIDG_HOURLY_LIMIT} zapytań łącznika — pomijam „${identifier.value}".`);
+        return [];
+      }
+      usedThisHour++;
+      const url = `${CEIDG_API}/firma?nip=${number.value}`;
+      const session = http.session(context, {
+        label: CEIDG_LABEL,
+        limit: 1,
+        refusalMessage: (status) => `${CEIDG_LABEL}: odmowa lub limit żądań (kod ${status}) — token bez uprawnień albo wyczerpany limit godzinny; pomijam to źródło.`,
+      });
+      const response = await session.get(url, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, minIntervalMs: 1000, quietMissing: true });
+      if (session.lastStatus === 401) context.log(`${CEIDG_LABEL}: token odrzucony (kod 401) — sprawdź CEIDG_API_TOKEN.`);
+      const body = response ? parseJson<{ firma?: CeidgFirm[] | null }>(response.text) : null;
+      const firms = (body?.firma ?? []).filter((firm) => firm?.nazwa).slice(0, 3);
+      if (firms.length === 0) {
+        if (response) context.log(`${CEIDG_LABEL}: „${identifier.value}" — brak wpisu w CEIDG.`);
+        return [];
+      }
+
+      const documents = firms.map((firm): SourceDocument => {
+        const owner = firm.wlasciciel;
+        const ownerName = [owner?.imie, owner?.nazwisko].filter(Boolean).join(' ').trim();
+        const nip = owner?.nip && isValidNip(owner.nip) ? owner.nip : number.value;
+        const website = websiteUrl(firm.www ?? undefined);
+        const email = firm.email?.trim().toLowerCase();
+        const validEmail = email && /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email) ? email : undefined;
+        const phone = firm.telefon?.trim() || undefined;
+        const addressLine = ceidgAddressLine(firm.adresDzialalnosci);
+        const discovered: Identifier[] = [];
+        if (website) discovered.push({ type: 'profile_url', value: website });
+        if (validEmail) discovered.push({ type: 'email', value: validEmail });
+        return {
+          connectorId: CEIDG_ID,
+          service: CEIDG_SERVICE,
+          // Adres rekordu w API (wymaga tokenu); bez niego — zapytanie, którym każdy uprawniony powtórzy sprawdzenie.
+          url: firm.link?.startsWith(`${CEIDG_API}/`) ? firm.link : url,
+          title: `CEIDG: ${firm.nazwa} (NIP ${nip})`,
+          text: [
+            'Wpis w Centralnej Ewidencji i Informacji o Działalności Gospodarczej',
+            `Nazwa firmy: ${firm.nazwa}`,
+            ownerName && `Przedsiębiorca: ${ownerName}`,
+            `NIP: ${nip}`,
+            owner?.regon && `REGON: ${owner.regon}`,
+            `Status: ${firm.status ?? 'brak danych'}`,
+            firm.dataRozpoczecia && `Data rozpoczęcia działalności: ${firm.dataRozpoczecia}`,
+            firm.dataZawieszenia && `Data zawieszenia: ${firm.dataZawieszenia}`,
+            firm.dataWznowienia && `Data wznowienia: ${firm.dataWznowienia}`,
+            firm.dataZakonczenia && `Data zakończenia: ${firm.dataZakonczenia}`,
+            firm.dataWykreslenia && `Data wykreślenia: ${firm.dataWykreslenia}`,
+            addressLine && `Adres działalności: ${addressLine}`,
+            firm.pkdGlowny?.kod && `Główny PKD: ${firm.pkdGlowny.kod}${firm.pkdGlowny.nazwa ? ` — ${firm.pkdGlowny.nazwa}` : ''}`,
+            firm.spolki?.length ? `Spółki cywilne (NIP): ${firm.spolki.map((item) => item.nip).filter(Boolean).join(', ')}` : undefined,
+            website && `Strona internetowa podana do ewidencji: ${website}`,
+            validEmail && `E-mail podany do ewidencji: ${validEmail}`,
+            phone && `Telefon podany do ewidencji: ${phone}`,
+            'Uwaga: wpis dotyczy przedsiębiorcy zarejestrowanego pod tym numerem; nie dowodzi, kto faktycznie posługiwał się numerem w publikacji.',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          fetchedAt: new Date().toISOString(),
+          // Dane urzędowe o przedsiębiorcy, bez adresów kryptowalutowych; kategoria nie wpływa na żaden wskaźnik.
+          category: 'forum_post',
+          identityMatch: 'exact_identifier',
+          matchedIdentifier: identifier,
+          profile: {
+            handle: `NIP ${nip}`,
+            ...(ownerName ? { displayName: ownerName } : {}),
+            organization: firm.nazwa!,
+            registryEntries: [`NIP ${nip} (CEIDG: ${firm.status ?? 'status nieznany'})`, ...(owner?.regon ? [`REGON ${owner.regon}`] : [])],
+            ...(firm.adresDzialalnosci?.miasto ? { location: firm.adresDzialalnosci.miasto } : {}),
+            ...(website ? { urls: [website] } : {}),
+            ...(validEmail ? { emails: [validEmail] } : {}),
+            ...(phone ? { phones: [phone] } : {}),
+          },
+          ...discoveredField(dedupeIdentifiers(discovered, identifier)),
+        };
+      });
+      context.log(`${CEIDG_LABEL}: „${identifier.value}" — wpisów: ${documents.length}; zapytań w tej godzinie: ${usedThisHour}/${CEIDG_HOURLY_LIMIT}.`);
+      return documents;
     },
   };
 }

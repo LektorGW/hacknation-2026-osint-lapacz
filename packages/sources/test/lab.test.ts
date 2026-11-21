@@ -93,8 +93,9 @@ describe('łączniki laboratorium tożsamości', () => {
   });
 
   test('łączniki powstają tylko po podaniu labUrl', () => {
-    assert.equal(createConnectors({}).length, 0);
-    const created = createConnectors({ labUrl: LAB, fetcher: mockLab().fetcher });
+    // Bez konfiguracji powstaje tylko lokalny łącznik rejestrów publicznych (bez zapytań do sieci).
+    assert.deepEqual(createConnectors({}).map((connector) => connector.id), ['rejestry-publiczne']);
+    const created = createConnectors({ labUrl: LAB, fetcher: mockLab().fetcher }).filter((connector) => connector.id !== 'rejestry-publiczne');
     assert.equal(created.length, 27);
     assert.ok(created.every((connector) => connector.id.startsWith('lab-')));
   });

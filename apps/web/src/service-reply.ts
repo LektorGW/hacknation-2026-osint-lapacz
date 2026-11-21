@@ -464,7 +464,8 @@ export function sampleFromDossier(dossier: Dossier, link: ServiceLink, variant?:
   return {
     syntetyczne: true,
     serviceName: link.name,
-    reference: `DEMO/KYC/${last.slice(0, 4)}/${String(own.length).padStart(4, '0')}`,
+    // Wariant ma własną sygnaturę, żeby obie odpowiedzi dało się zapisać obok siebie.
+    reference: `DEMO/KYC/${last.slice(0, 4)}/${String(own.length).padStart(4, '0')}${variant === 'inna-osoba' ? '-B' : ''}`,
     receivedAt: new Date(new Date(last).getTime() + 15 * 86_400_000).toISOString(),
     payload: {
       syntetyczne: true,
@@ -618,12 +619,17 @@ export function applyServiceReplies<T extends Dossier>(dossier: T, replies: Serv
     }
     const nodeId = `reply:${reply.id}`;
     nodes.push({ id: nodeId, kind: 'source', label: `Odpowiedź usługi ${reply.serviceName}`, sublabel: `dokument spoza OSINT — sygn. ${reply.reference}`, status: 'confirmed' });
-    const edge = (from: string, label: string): void => {
-      if (nodes.some((node) => node.id === from)) edges.push({ id: `documented_by:${from}>${nodeId}`, from, to: nodeId, kind: 'documented_by', label, status: 'confirmed', layer: 'identity', evidence: [{ kind: 'decision', value: nodeId }] });
+    // Identyfikatory węzłów różnią się między grafem usługi analizy (`svc:`, `addr:`) a grafem demo (`kontrahent:`, `adres:`) — bierzemy pierwszy istniejący.
+    const edge = (candidates: string[], label: string): void => {
+      const from = candidates.find((id) => nodes.some((node) => node.id === id));
+      if (from && !edges.some((item) => item.from === from && item.to === nodeId)) {
+        edges.push({ id: `documented_by:${from}>${nodeId}`, from, to: nodeId, kind: 'documented_by', label, status: 'confirmed', layer: 'identity', evidence: [{ kind: 'decision', value: nodeId }] });
+      }
     };
-    edge(`svc:${reply.serviceId}`, 'odpowiedź usługi (dokument spoza OSINT)');
-    for (const match of addresses) edge(`addr:${match.key}`, documented ? 'wpłaty i wypłata na rachunek potwierdzone odpowiedzią usługi' : 'wpłaty potwierdzone odpowiedzią usługi');
-    if (outcome === 'confirmed') edge('subject', 'tożsamość potwierdzona odpowiedzią usługi');
+    const serviceAddresses = dossier.serviceLinks.filter((link) => link.id === reply.serviceId).flatMap((link) => link.transfers.map((transfer) => transfer.serviceAddress));
+    edge([`svc:${reply.serviceId}`, ...serviceAddresses.map((address) => `kontrahent:${address}`)], 'odpowiedź usługi (dokument spoza OSINT)');
+    for (const match of addresses) edge([`addr:${match.key}`, `adres:${match.key}`], documented ? 'wpłaty i wypłata na rachunek potwierdzone odpowiedzią usługi' : 'wpłaty potwierdzone odpowiedzią usługi');
+    if (outcome === 'confirmed') edge(['subject', ...nodes.filter((node) => node.kind === 'subject').map((node) => node.id)], 'tożsamość potwierdzona odpowiedzią usługi');
     keyFindings.splice(Math.min(1, keyFindings.length), 0, {
       layer: 'fact',
       text: `Dokument spoza OSINT — odpowiedź ${cite}: ${contradiction ?? identityText} ${fiatText}`,

@@ -8,10 +8,23 @@ import { fmtDate, fmtDateTime } from '../format.ts';
 import { NETWORK_LABEL } from '../labels.ts';
 import { CUSTOMER_IDENTIFIER_KINDS, IDENTITY_OUTCOME_LABEL, bodyFromForm, emptyReplyForm, formFromSample, formHints, parseReplyJson } from '../service-reply.ts';
 import type { CustomerIdentifierKind, ReplyForm, ServiceReplyView } from '../service-reply.ts';
-import { ExternalDocTag, ShortAddress } from './common.tsx';
+import { ShortAddress } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { useMode } from './Mode.tsx';
 import { useToast } from './Toast.tsx';
+import '../service-reply.css';
+
+/** Znacznik czwartej warstwy: informacja z odpowiedzi usługi wprowadzonej przez analityka — nie ze źródeł publicznych. */
+export function ExternalDocTag({ short = false }: { short?: boolean }) {
+  return (
+    <span
+      className="layer-tag layer-external"
+      title="Dokument spoza OSINT: odpowiedź usługi (giełdy) wprowadzona do sprawy przez analityka. Nie pochodzi ze źródeł publicznych ani z blockchaina; narzędzie nie weryfikuje jej autentyczności."
+    >
+      {short ? 'Dokument spoza OSINT' : 'Dokument spoza OSINT (odpowiedź usługi)'}
+    </span>
+  );
+}
 
 const today = () => new Date().toISOString().slice(0, 10);
 const fiat = (amount: number, currency: string) => `${amount.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;

@@ -100,6 +100,19 @@ Dane w `data/related.ts`. Wyniki scenariuszy a–h i części rynkowej pozostaj�
 
 Wyszukiwanie po telefonie i e-mailu opiera się na indeksie publikacji: `GET /<serwis>/api/recent` (metoda `discover` łączników piaskownicy) zwraca wszystkie powyższe ogłoszenia i profile z polami `profile.phones` / `profile.emails`.
 
+### Dowody i ich podróbki
+
+Dane w `data/proofs.ts`; wyniki wcześniejszych części pozostają bez zmian (na Targu doszły dwa ogłoszenia). Podpisy sprawdza lokalnie `verifySignedMessage` z `@olcys/core` (Bitcoin: BIP-137, Ethereum: EIP-191) — bez żadnej usługi zewnętrznej. Adresy Norberta Szpaka pochodzą z klucza wylosowanego przez `scripts/generate-signed-proofs.ts`; klucz istniał tylko w pamięci skryptu, w repozytorium są wyłącznie adres, wiadomość i podpis.
+
+| Przypadek | Identyfikator do wpisania | Oczekiwany wynik |
+|---|---|---|
+| i) **Norbert Szpak** — ważna podpisana wiadomość | e-mail `norbert@szpak-nody.example` (albo login `szpak_nody`) | Profil `/gitpub/szpak_nody` zawiera blok `BEGIN BITCOIN SIGNED MESSAGE` dla `bc1qyyrk…zvfce` i JSON w stylu Etherscan dla `0x812B…38c7`; obie wiadomości wymieniają konto `szpak_nody`. Narzędzie dodaje dokument `…/gitpub/szpak_nody?podpis=<adres>` kategorii `cryptographic_proof` → oba adresy **95%** (reguła `base.cryptographic_proof`). Po samym loginie: 95 − 10 za zgodny tylko nick = **85%**, przy osobie 95%. |
+| ii) **Borys Kania** — sfałszowany „dowód" | nick `krypto_baron` | Na profilu `/spolecznosc/u/krypto_baron` wiadomość przerobiona na jego nick i adres `bc1q78n2…tpac`, ale podpis skopiowany od Norberta → podpis nie weryfikuje się. Kategoria bez zmian (`own_profile`, **85%**; po samym nicku 75%), w treści śladu uwaga „UWAGA: podpis nie weryfikuje się dla tego adresu … możliwa podróbka". |
+| iii) **Filip Jaskuła** — ta sama oferta w trzech serwisach | nick `fjaskula_usdt` | Identyczny akapit z adresem `TTfeaf…eKtx` w ogłoszeniu `/targ/oferta/3101`, w poście `/forum/watek/31` i w wiadomości kanału `/komunikator/kanal/p2p-podkarpacie` → jedna grupa pochodzenia (`independence.copies_merged`), jedno niezależne źródło: **70%** (po samym nicku 60%) zamiast 90% za trzy serwisy. |
+| iv) **Adam Wilczek** i **Beata Wilczyńska** — ten sam nick, dwie osoby | nick `wilczek_x9` | Targ (`/targ/oferta/3102`): Adam Wilczek, Gdynia, `adam@wilczek-rowery.example`, BTC `1HMMp2…4d62`. Forum (`/forum/watek/32`): Beata Wilczyńska, Przemyśl, `beata.w@przemysl-net.example`, USDT `TBnxxb…YjXu`. Inne nazwisko, e-mail, miejscowość, sieć i adres → **dwie osobne osoby** w teczce, bez łączenia; adres drugiej osoby nie zasila wyniku pierwszej (adnotacja „zaliczonego do innego kandydata"). |
+
+Nowe dane wymagają restartu piaskownicy. Podpisy i oczekiwane wyniki sprawdzają testy `packages/sources/test/sandbox.test.ts` (część „dowody i ich podróbki").
+
 ### Podmiana adresu między analizami
 
 Strona `/_demo` przełącza fazę scenariusza Dominika:

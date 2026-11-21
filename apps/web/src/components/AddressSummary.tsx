@@ -5,7 +5,8 @@ import { mentionServices } from '../funds.ts';
 import { proofSummary } from '../proof.ts';
 import type { FullDossier } from '../proof.ts';
 import { isExternalDocumentText } from '../service-reply.ts';
-import { CopyButton, ExternalDocTag, Gauge, LayerTag, toLayer } from './common.tsx';
+import { CopyButton, Gauge, LayerTag, toLayer } from './common.tsx';
+import { ExternalDocTag } from './ServiceReplies.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { ServiceChips } from './ServiceCards.tsx';
 

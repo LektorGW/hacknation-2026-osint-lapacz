@@ -22,7 +22,15 @@ const storage = createStorage(await createDriverFromEnv(env));
 await storage.migrate();
 
 // Token służy tylko do podniesienia limitu zapytań publicznego API; nie jest logowany ani zapisywany.
-const connectors = sources.createConnectors({ sandboxUrl, labUrl, enableLive, torProxyUrl, githubToken: env.GITHUB_TOKEN || undefined });
+const connectors = sources.createConnectors({
+  sandboxUrl,
+  labUrl,
+  enableLive,
+  torProxyUrl,
+  githubToken: env.GITHUB_TOKEN || undefined,
+  ceidgToken: env.CEIDG_API_TOKEN || undefined,
+  search: sources.searchConfigFromEnv(env),
+});
 // Rejestr źródeł monitoringu jest w module źródeł; starsza wersja modułu go nie ma —
 // wtedy monitoring obejmuje wszystkie łączniki z metodą `discover`.
 const listMonitorConnectors = (sources as { listMonitorConnectors?: (all: typeof connectors) => typeof connectors }).listMonitorConnectors;

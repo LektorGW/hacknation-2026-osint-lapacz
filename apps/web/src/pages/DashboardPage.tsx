@@ -8,7 +8,10 @@ import { BarChart } from '../charts/Charts.tsx';
 import { AnalysisProgress, DepthSwitch, PeriodFields } from '../components/Progress.tsx';
 import { cleanPeriod } from '../proof.ts';
 import type { CorpusStats, Depth, RunProgress } from '../proof.ts';
-import { Bar, EmptyState, ErrorBox, LayerTag, ScoreBadge, Skeleton } from '../components/common.tsx';
+import { EmptyState, ErrorBox, LayerTag, Skeleton } from '../components/common.tsx';
+import { Score } from '../components/ui/Score.tsx';
+import { Term } from '../components/ui/Term.tsx';
+import { Tour } from '../components/ui/Tour.tsx';
 import { fmtDate, fmtDateTime, fmtPln, sum } from '../format.ts';
 import { detectIdentifierType } from '../identify.ts';
 import { IDENTIFIER_LABEL, IDENTIFIER_TYPES } from '../labels.ts';
@@ -63,11 +66,14 @@ function QuickCheck() {
   if (pending) return <AnalysisProgress title={`Ustalam, kim jest „${pending}”…`} progress={progress} depth={depth} />;
 
   return (
-    <form className="card quick" onSubmit={submit} noValidate>
+    <form className="card quick" onSubmit={submit} noValidate data-tour="search">
       <label htmlFor={fieldId} className="quick-label">
         Kogo sprawdzić?
       </label>
-      <p className="muted">Jeden identyfikator wystarczy — narzędzie samo znajdzie profile, ustali osobę z prawdopodobieństwem i wskaże giełdy.</p>
+      <p className="muted">
+        Jeden <Term id="identyfikator">identyfikator</Term> wystarczy — program sam znajdzie profile i adresy krypto, oceni powiązanie z osobą i wskaże giełdy,
+        do których trafiły pieniądze.
+      </p>
       <div className="quick-row">
         <input
           id={fieldId}
@@ -105,7 +111,7 @@ function QuickCheck() {
         )}
       </p>
       <details className="quick-options" open={depth === 'deep' || range.from !== '' || range.to !== '' || undefined}>
-        <summary>Opcje: tryb głęboki, okres analizy</summary>
+        <summary>Opcje: tryb głęboki, okres analizy (nieobowiązkowe)</summary>
         <DepthSwitch depth={depth} onChange={setDepth} />
         <PeriodFields from={range.from} to={range.to} onChange={setRange} />
       </details>
@@ -120,6 +126,12 @@ function QuickCheck() {
         </p>
       )}
       {error && <ErrorBox message={error} />}
+      <ol className="how-it-works" aria-label="Jak to działa">
+        <li>Wpisujesz jedną daną o osobie</li>
+        <li>Program szuka adresów krypto w źródłach publicznych</li>
+        <li>Ocenia powiązanie i śledzi pieniądze w blockchainie</li>
+        <li>Teczka pokazuje, która giełda je przyjęła</li>
+      </ol>
     </form>
   );
 }
@@ -175,8 +187,16 @@ function CaseTable({ cases, overview }: { cases: CaseSummary[]; overview: Overvi
         <thead>
           <tr>
             <th scope="col">Sprawa</th>
-            <th scope="col">Priorytet</th>
-            <th scope="col" className="num">Najwyższy Wskaźnik Pewności</th>
+            <th scope="col">
+              <Term id="priorytet-sprawy" icon>
+                Priorytet
+              </Term>
+            </th>
+            <th scope="col" className="num">
+              <Term id="wskaznik-pewnosci" icon>
+                Najmocniejsze powiązanie
+              </Term>
+            </th>
             <th scope="col" className="num">Szacowane wypłaty</th>
             {withServices && <th scope="col">Powiązane giełdy</th>}
             <th scope="col" className="num">Analizy</th>
@@ -189,8 +209,8 @@ function CaseTable({ cases, overview }: { cases: CaseSummary[]; overview: Overvi
               <th scope="row">
                 <a href={href.case(item.id)}>{item.name}</a>
               </th>
-              <td>{top ? <Bar value={top.priority} label={`Priorytet sprawy ${item.name}`} /> : <span className="muted">brak analizy</span>}</td>
-              <td className="num">{top ? <ScoreBadge score={top.topScore} /> : '—'}</td>
+              <td>{top ? <Score value={top.priority} kind="priority" size="sm" plain /> : <span className="muted">brak analizy</span>}</td>
+              <td className="num">{top ? <Score value={top.topScore} kind="publication" size="sm" plain /> : '—'}</td>
               <td className="num">{top && top.cashOutPlnTotal > 0 ? fmtPln(top.cashOutPlnTotal) : '—'}</td>
               {withServices && (
                 <td>
@@ -234,8 +254,9 @@ export function DashboardPage() {
             </p>
           )}
           <div className="dashboard-grid">
-            <section className="card" aria-labelledby="lista-spraw">
+            <section className="card" aria-labelledby="lista-spraw" data-tour="cases">
               <h2 id="lista-spraw">Sprawy według priorytetu</h2>
+              <p className="muted small">Najpilniejsze na górze. Kliknij nazwę, aby otworzyć teczkę.</p>
               <CaseTable cases={loaded.data.cases} overview={loaded.data.overview} />
             </section>
             <section className="card" aria-labelledby="wyplaty-lata">
@@ -256,6 +277,7 @@ export function DashboardPage() {
           </div>
         </>
       )}
+      <Tour chapter="dashboard" ready={loaded.data !== undefined} />
     </div>
   );
 }

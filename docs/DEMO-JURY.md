@@ -47,6 +47,26 @@ Zakładka „Wskaźniki”, karta C: drabina czterech szczebli. Dla `rkowalski_b
 „potencjalny sygnał wypłaty” (wskaźnik 69). Ostatni szczebel — „udokumentowane wyjście” — wymaga
 dokumentu spoza blockchaina; narzędzie samo go nie nadaje.
 
+## 5. Odpowiedź giełdy zamyka łańcuch (1 min)
+
+Ta sama sprawa `rkowalski_btc`, tryb **SANDBOX** (piaskownica i API uruchomione po ostatnich zmianach).
+
+1. Zakładka **„Giełdy i portfele”** → karta „Giełda Bursztyn” → rozwiń **„Wczytaj odpowiedź usługi”**.
+2. Kliknij **„Pobierz przykładową odpowiedź z piaskownicy”** — formularz wypełnia się danymi
+   syntetycznymi (klient „Rafał Kowalski”, PESEL zamaskowany, 3 transakcje, 3 wypłaty w PLN).
+3. Kliknij **„Zapisz odpowiedź usługi”**. Teczka się przelicza: na karcie usługi odpowiedź z
+   oznaczeniem „Dokument spoza OSINT”; w „Ustaleniu” osoba **potwierdzona odpowiedzią usługi**
+   (100, z sygnaturą); karta C na szczeblu **„udokumentowane wyjście”** z odpowiedzią jako dowodem;
+   w grafie węzeł „Odpowiedź usługi Giełda Bursztyn”; w raporcie sekcja „Odpowiedzi usług”.
+4. Kliknij **„Wycofaj”** przy odpowiedzi — wynik wraca dokładnie do stanu sprzed niej (wskaźnik C
+   znów „potencjalny sygnał wypłaty”), wpis zostaje w rejestrze jako wycofany.
+5. Kliknij **„Wariant: konto należy do innej osoby”**, potem „Zapisz”. Właścicielką konta jest
+   „Julia Kowalska” — osoba **nie** zostaje potwierdzona; czerwona sprzeczność „konto w usłudze należy
+   do innej osoby”, ze wskazaniem, że to powiązana tożsamość z tej sprawy. Na koniec „Wycofaj”.
+
+Puenta: OSINT wskazuje adres i giełdę; tożsamość klienta i wypłatę potwierdza dopiero dokument od
+usługi — wprowadzony jawnie, oznaczony, odwracalny i nigdy nie mylony ze źródłami publicznymi.
+
 ## Pytania, na które warto mieć odpowiedź
 
 - **Czy 90 to 90% pewności?** Nie. To wskaźnik porządkowy z jawnych reguł, nieskalibrowany —

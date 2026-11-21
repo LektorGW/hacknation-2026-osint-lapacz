@@ -21,8 +21,10 @@ import { createNostrConnector } from './nostr.ts';
 import type { NostrRelayQuery } from './nostr.ts';
 import { createOpenPgpConnector } from './openpgp.ts';
 import { applyOwnershipProofsToAll } from './proof-text.ts';
-import { createKrsConnector, createVatWhitelistConnector, withRegistryIdentifiers } from './registry.ts';
+import { createCeidgConnector, createKrsConnector, createVatWhitelistConnector, withRegistryIdentifiers } from './registry.ts';
 import { createSandboxConnectors } from './sandbox.ts';
+import { createSearchConnectors } from './search/index.ts';
+import type { SearchConfig } from './search/index.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
 import { createWaybackConnector } from './wayback.ts';
@@ -33,7 +35,9 @@ export { addressFromHref, findEnsNames, normalizeAddressText } from './address-t
 export { applyOwnershipProofs, applyOwnershipProofsToAll, findOwnershipProofs, publisherNamedIn, proofUrl, PROOF_NOTE_PREFIX, PROOF_URL_PARAM } from './proof-text.ts';
 export type { OwnershipProof, ProofFormat } from './proof-text.ts';
 export { findRegistryNumbers, isValidNip, isValidNrb, registryIdentifier, registryNumber, withRegistryIdentifiers } from './registry.ts';
-export type { RegistryNumber } from './registry.ts';
+export type { CeidgOptions, RegistryNumber } from './registry.ts';
+export { createSearchConnectors, searchConfigFromEnv } from './search/index.ts';
+export type { SearchConfig, WebSearchProvider } from './search/index.ts';
 export { deepTargets } from './deep/search.ts';
 export type { DeepSearchOptions, DeepTarget } from './deep/search.ts';
 export type { Fetcher } from './http.ts';
@@ -118,6 +122,13 @@ export interface SourcesConfig {
    * nigdy nie uruchamiają zapytań do prawdziwych rejestrów.
    */
   discoverRegistryNumbers?: boolean;
+  /**
+   * Token JWT API v3 Hurtowni danych CEIDG (dane.biznes.gov.pl), wydawany po rejestracji Profilem Zaufanym.
+   * Domyślnie ze zmiennej CEIDG_API_TOKEN; bez tokenu łącznik `live-ceidg` nie powstaje.
+   */
+  ceidgToken?: string;
+  /** Łączniki katalogu search/: wyszukiwarka internetowa (klucze), Farcaster, rejestry publiczne. */
+  search?: SearchConfig;
 }
 
 export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
@@ -130,6 +141,8 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
   const instances = config.fediverseInstances ?? loadFediverseInstances().instances;
   const registry = registrySources(config);
   const nostrRelays = config.nostrRelays ?? (process.env.NOSTR_RELAYS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  // Token CEIDG nigdy nie trafia do dziennika ani do treści śladu — tylko w nagłówku Authorization.
+  const ceidgToken = (config.ceidgToken ?? process.env.CEIDG_API_TOKEN ?? '').trim() || undefined;
   const connectors: SourceConnector[] = [
     createKeybaseConnector(http),
     createEnsConnector(http),
@@ -145,6 +158,7 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createOpenPgpConnector(http),
     createVatWhitelistConnector(http),
     createKrsConnector(http),
+    ...(ceidgToken ? [createCeidgConnector(http, { token: ceidgToken })] : []),
     createWwwConnector(http, { skipHosts: instances }),
     createWaybackConnector(http),
     createWaybackTwitterConnector(http),
@@ -207,5 +221,15 @@ export function createConnectors(config: SourcesConfig): SourceConnector[] {
   if (config.labUrl) connectors.push(...createLabConnectors(config.labUrl, config.fetcher ? { fetcher: config.fetcher } : {}));
   if (config.enableLive) connectors.push(...createLiveConnectors(config));
   if (config.torProxyUrl) connectors.push(createTorConnector(config.torProxyUrl));
+  // Katalog search/: rejestry publiczne (lokalnie, zawsze), Farcaster i wyszukiwarka internetowa (tylko z `enableLive`).
+  connectors.push(
+    ...createSearchConnectors(config.search ?? {}, {
+      enableLive: config.enableLive,
+      fetcher: config.fetcher,
+      minRequestIntervalMs: config.minRequestIntervalMs,
+      allowPrivateHosts: config.allowPrivateHosts,
+      log: config.log,
+    }),
+  );
   return connectors.map(withOwnershipProofs);
 }

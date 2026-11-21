@@ -153,6 +153,11 @@ curl -X POST http://127.0.0.1:4000/api/admin/shutdown
 | `OLCYS_DATA_DIR` | katalog danych wbudowanej bazy PGlite; migawka w `<katalog>.migawka.tar.gz` | nie | `./data/pg` |
 | `DATABASE_URL` | zewnętrzny PostgreSQL; gdy podana, PGlite nie jest używany | nie | — |
 | `SANDBOX_URL` | adres piaskownicy dla łączników i dostawcy danych syntetycznych | nie | `http://localhost:4100` |
+| `CEIDG_API_TOKEN` | token JWT API v3 Hurtowni danych CEIDG; tworzy łącznik `live-ceidg`; trafia tylko w nagłówku do `dane.biznes.gov.pl` | nie | wyłączone |
+| `NOSTR_RELAYS` | przekaźniki Nostr (`wss://…`, po przecinku), których zasady operator zaakceptował; bez nich `live-nostr` używa tylko NIP-05 | nie | — |
+| `MARGINALIA_API_KEY` | klucz Marginalia Search (`public` = klucz wspólny); włącza `web-search` | nie | — |
+| `MOJEEK_API_KEY`, `MOJEEK_STORAGE_RIGHTS` | klucz Mojeek; dostawca powstaje tylko z `MOJEEK_STORAGE_RIGHTS=1` (plan z prawem przechowywania wyników) | nie | — |
+| `FARCASTER_HUB_URL` | własny węzeł Snapchain dla `live-farcaster` | nie | — |
 | `ENABLE_LIVE` | `1`, `true` lub `yes` włącza źródła i eksploratory w prawdziwym internecie | nie | wyłączone |
 | `GITHUB_TOKEN` | token GitHub bez uprawnień — wyższy limit zapytań i wyszukiwarka GitHuba; trafia tylko w nagłówku do `api.github.com` | nie | — |
 | `BLOCKSCOUT_API_KEY` | klucz API Blockscout — dostęp do sieci niedostępnych bez klucza (Arbitrum, Gnosis) i zapasowa droga dla Ethereum | nie | — |
@@ -191,7 +196,18 @@ Gdy ustawione są oba klucze (`OPENAI_API_KEY` i `ANTHROPIC_API_KEY`), a `AI_PRO
 | Gravatar (`live-gravatar`) | `gravatar.com` — wysyłany jest sam skrót e-maila | `ENABLE_LIVE` | — |
 | Fediwersum (`live-fediverse`) | instancje Mastodona z `config/fediverse-instances.json` (mastodon.social, mstdn.social, fosstodon.org, 101010.pl) | `ENABLE_LIVE` | — |
 | Telegram (`live-telegram`) | publiczny podgląd kanału `t.me/s/<nazwa>` | `ENABLE_LIVE` | — |
-| Bitcointalk (`live-bitcointalk`) | strona profilu `bitcointalk.org` | `ENABLE_LIVE` | — |
+| Bitcointalk (`live-bitcointalk`) | strona profilu `bitcointalk.org` — po adresie profilu albo po nicku (`action=profile;user=`), ≥ 1,5 s odstępu | `ENABLE_LIVE` | — |
+| Bluesky (`live-bluesky`) | `public.api.bsky.app` — profil i ostatnie własne wpisy | `ENABLE_LIVE` | — |
+| Nostr (`live-nostr`) | NIP-05 `https://<domena>/.well-known/nostr.json`; profil z przekaźników tylko z listy operatora | `ENABLE_LIVE`; przekaźniki: `NOSTR_RELAYS` | — |
+| Serwer kluczy OpenPGP (`live-openpgp`) | `keys.openpgp.org` — e-mail → klucz opublikowany za zgodą właściciela, potwierdzone adresy | `ENABLE_LIVE` | — |
+| Wykaz podatników VAT (`live-vat-whitelist`) | `wykazpodatnikowvat.mf.gov.pl` — NIP / rachunek → podmiot (≤ 80 zapytań/dobę) | `ENABLE_LIVE` | — |
+| KRS (`live-krs`) | `api-krs.ms.gov.pl` — numer KRS → odpis aktualny | `ENABLE_LIVE` | — |
+| CEIDG (`live-ceidg`) | `dane.biznes.gov.pl/api/ceidg/v3` — NIP → wpis przedsiębiorcy (≤ 200/h) | `ENABLE_LIVE` | **wymaga `CEIDG_API_TOKEN`** |
+| Rejestry publiczne (`rejestry-publiczne`) | migawki lokalne: rejestr działalności w zakresie walut wirtualnych (IAS Katowice), ostrzeżenia publiczne KNF, rejestr MiCA ESMA — zapytanie nie opuszcza systemu | zawsze (bez sieci) | — |
+| Farcaster (`live-farcaster`) | udokumentowane API Farcaster — nazwa konta → zweryfikowany adres ETH/SOL i zweryfikowane konto X/GitHub | `ENABLE_LIVE` | opcjonalny `FARCASTER_HUB_URL` |
+| Wyszukiwarka (`web-search`) | API Marginalia i/lub Mojeek — **treść zapytania trafia do dostawcy**; tylko fragmenty wyników, stron nie pobiera; 3 zapytania na identyfikator | `ENABLE_LIVE` + klucz; bez klucza wyłączona | `MARGINALIA_API_KEY` / `MOJEEK_API_KEY` + `MOJEEK_STORAGE_RIGHTS=1` |
+
+Podstawa prawna każdego źródła (z cytatem regulaminu) oraz źródła sprawdzone i odrzucone: [docs/ZRODLA-PODSTAWA-PRAWNA.md](docs/ZRODLA-PODSTAWA-PRAWNA.md). Podpisane wiadomości (BIP-137, EIP-191, TIP-191) w publikacjach są weryfikowane lokalnie: poprawny podpis, którego treść wskazuje publikujące konto, daje śladowi kategorię „dowód kryptograficzny”; podpis niepoprawny albo niewskazujący publikującego tylko dodaje adnotację.
 | Strona WWW (`live-www`) | jedna strona pod adresem podanym przez analityka, po sprawdzeniu `robots.txt` | `ENABLE_LIVE` | — |
 | Wayback Machine (`live-wayback`, `live-wayback-twitter`) | `web.archive.org` — CDX i do 3 kopii archiwalnych | `ENABLE_LIVE` | — |
 | WalletExplorer, BitcoinWhosWho | `walletexplorer.com`, `bitcoinwhoswho.com` — strony adresu Bitcoin | `ENABLE_LIVE` | — |

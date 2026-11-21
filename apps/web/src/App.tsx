@@ -11,6 +11,11 @@ import { SweepPage } from './pages/SweepPage.tsx';
 import { href, navigate, parseRoute, useHash } from './router.ts';
 import type { Route } from './router.ts';
 import { toggleScheme, useScheme } from './theme.ts';
+import { TOUR_EVENT, resetTour } from './tour.ts';
+import { usePrintExpand } from './components/ui/Disclosure.tsx';
+import { GlossaryDrawer } from './components/ui/GlossaryDrawer.tsx';
+import { resetHints } from './components/ui/Hint.tsx';
+import { openGlossary } from './components/ui/Term.tsx';
 
 function Page({ route }: { route: Route }) {
   switch (route.page) {
@@ -36,7 +41,7 @@ const SHORTCUTS: [string, string][] = [
   ['g, potem t', 'typowanie'],
   ['g, potem m', 'monitoring'],
   ['g, potem z', 'zasady punktacji'],
-  ['1–9', 'kolejne sekcje otwartej teczki'],
+  ['1–6', 'kolejne sekcje otwartej teczki'],
   ['m', 'przełączenie motywu jasny / ciemny'],
   ['strzałki, + − 0', 'przesuwanie, powiększenie i dopasowanie grafu (gdy graf ma fokus)'],
   ['Enter / spacja', 'szczegóły węzła lub krawędzi grafu'],
@@ -63,6 +68,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const ai = useAsync(() => api.getAi().catch(() => null), 'ai');
   const screen = `${route.page}:${'caseId' in route ? route.caseId : 'runId' in route ? route.runId : ''}`;
+  usePrintExpand();
 
   // Nowy ekran zaczyna się od góry; przełączanie sekcji teczki nie zmienia przewinięcia.
   useEffect(() => {
@@ -134,7 +140,10 @@ export function App() {
             <button type="button" className="sidebar-button" onClick={toggleScheme}>
               {scheme === 'dark' ? '☀ Motyw jasny' : '☾ Motyw ciemny'}
             </button>
-            <button type="button" className="sidebar-button" onClick={() => help.current?.showModal()}>
+            <button type="button" className="sidebar-button" onClick={() => openGlossary()}>
+              ≡ Słownik pojęć
+            </button>
+            <button type="button" className="sidebar-button" data-tour="help" onClick={() => help.current?.showModal()}>
               ? Pomoc i skróty
             </button>
           </div>
@@ -151,27 +160,55 @@ export function App() {
       </div>
 
       <dialog ref={help} className="help" aria-labelledby="pomoc-tytul" {...{ closedby: 'any' }}>
-        <h2 id="pomoc-tytul">Pomoc i skróty klawiaturowe</h2>
-        <p>
-          Wpisz jeden identyfikator w polu „Kogo sprawdzić?”. Teczka pokazuje ustalenie osoby z prawdopodobieństwem, powiązania z giełdami i portfelami
-          oraz gotowe punkty zapytania do usług. Korekty analityka są opcjonalne.
-        </p>
-        <dl className="shortcuts">
-          {SHORTCUTS.map(([keys, description]) => (
-            <div key={keys}>
-              <dt>
-                <kbd>{keys}</kbd>
-              </dt>
-              <dd>{description}</dd>
-            </div>
-          ))}
-        </dl>
+        <h2 id="pomoc-tytul">Pomoc</h2>
+        <p className="help-intro">Program działa w czterech krokach:</p>
+        <ol className="help-steps">
+          <li>
+            Wpisujesz jedną znaną daną o osobie w polu „Kogo sprawdzić?” — nick, e-mail, imię i nazwisko albo adres krypto.
+          </li>
+          <li>Program szuka w źródłach publicznych adresów kryptowalutowych, które ta osoba opublikowała.</li>
+          <li>Ocenia, jak mocno każdy adres łączy się z osobą, i sprawdza w blockchainie, dokąd płynęły środki.</li>
+          <li>Teczka pokazuje, która giełda przyjęła pieniądze — z gotowym materiałem do zapytania. Twoje korekty są opcjonalne.</li>
+        </ol>
+        <div className="help-actions">
+          <button type="button" className="button button-primary" onClick={() => openGlossary()}>
+            Słownik pojęć
+          </button>
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              help.current?.close();
+              resetTour();
+              window.dispatchEvent(new Event(TOUR_EVENT));
+            }}
+          >
+            Uruchom przewodnik od nowa
+          </button>
+          <button type="button" className="button" onClick={resetHints}>
+            Przywróć ukryte wskazówki
+          </button>
+        </div>
+        <details>
+          <summary>Skróty klawiaturowe</summary>
+          <dl className="shortcuts">
+            {SHORTCUTS.map(([keys, description]) => (
+              <div key={keys}>
+                <dt>
+                  <kbd>{keys}</kbd>
+                </dt>
+                <dd>{description}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
         <form method="dialog">
-          <button className="button button-primary" autoFocus>
+          <button className="button" autoFocus>
             Zamknij
           </button>
         </form>
       </dialog>
+      <GlossaryDrawer />
     </ToastProvider>
     </ModeProvider>
   );
