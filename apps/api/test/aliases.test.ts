@@ -41,7 +41,7 @@ test('ta sama osoba pod innym nazwiskiem: ten sam adres publikowany jako własny
   // …tylko pokazana jako powiązana tożsamość z wynikiem, dowodami i ścieżką.
   assert.equal(dossier.linkedIdentities.length, 1);
   const [identity] = dossier.linkedIdentities;
-  assert.deepEqual([identity!.id, identity!.displayName, identity!.fullName, identity!.relation, identity!.score], ['tozsamosc:julka_k', 'Julia Kowalska', 'Julia Kowalska', 'same_person_likely', 85]);
+  assert.deepEqual([identity!.id, identity!.displayName, identity!.fullName, identity!.relation, identity!.score], ['tozsamosc:targ.example|julka_k', 'Julia Kowalska', 'Julia Kowalska', 'same_person_likely', 85]);
   assert.deepEqual(identity!.handles, ['julka_k']);
   assert.deepEqual(identity!.reasons[0]!.evidence, [{ kind: 'address', value: BTC_A }, { kind: 'url', value: 'https://targ.example/oferta/9' }]);
   assert.deepEqual(identity!.path, ['adres 1A1zP1eP5Q…v7DivfNa podmiotu', 'ten sam adres publikowany jako własny', 'profil „julka_k” (targ.example) (https://targ.example/oferta/9)']);
@@ -49,7 +49,7 @@ test('ta sama osoba pod innym nazwiskiem: ten sam adres publikowany jako własny
   assert.deepEqual(identity!.mergeWith, [{ target: 'profile', key: 'targ.example|julka_k' }]);
   assert.match(identity!.note, /ta sama osoba pod inną nazwą, osoba bliska albo podstawiona/);
   assert.ok(dossier.keyFindings.some((item) => item.text.startsWith('Powiązana tożsamość: „Julia Kowalska” — prawdopodobnie ta sama osoba (siła 85/100).')));
-  const node = dossier.graph.nodes.find((item) => item.id === 'identity:tozsamosc:julka_k')!;
+  const node = dossier.graph.nodes.find((item) => item.id === 'identity:tozsamosc:targ.example|julka_k')!;
   assert.deepEqual([node.kind, node.label, node.score], ['person', 'Julia Kowalska', 85]);
   assert.ok(dossier.graph.edges.some((edge) => edge.to === node.id && edge.kind === 'related' && edge.from === `addr:bitcoin:${BTC_A}` && edge.inferred));
 
@@ -269,4 +269,46 @@ test('zgodność stylu według modelu: najwyżej +10 do relacji „możliwe”, 
   const alone = dossierOf(await run(style(95), []), query);
   assert.deepEqual(alone.linkedIdentities, []);
   assert.equal(alone.weakLeadsHidden, 1);
+});
+
+test('ten sam nick w dwóch serwisach to dwa konta: przesłanki, adresy i scalanie nie przechodzą z jednego na drugie', async () => {
+  // Adres podmiotu wysyła środki na BTC_C; BTC_C publikuje INNA osoba, która w innym serwisie ma ten sam nick „julka_k”.
+  const payment = transfer(1, { counterparty: BTC_C, time: '2025-02-01T09:00:00.000Z', amount: 0.5 });
+  const targ = fakeConnector('targ', 'targ.example', ['crypto_address'], (identifier) =>
+    identifier.value === BTC_A
+      ? [{ url: 'https://targ.example/oferta/9', author: 'julka_k', category: 'sale_offer' as const, text: `Sprzedam telefon, wpłata na ${BTC_A}`, profile: { handle: 'julka_k', displayName: 'Julia Kowalska', location: 'Radom' } }]
+      : [],
+  );
+  const forum = fakeConnector('forum', 'forum.example', ['crypto_address'], (identifier) =>
+    identifier.value === BTC_C
+      ? [{ url: 'https://forum.example/u/julka_k', author: 'julka_k', text: `Mój adres: ${BTC_C}`, profile: { handle: 'julka_k', displayName: 'Julia Nowak', location: 'Gdańsk' } }]
+      : [],
+  );
+  const result = await runAnalysis({ query, connectors: [subjectProfile(), targ, forum], chainProviders: [chainWith({ [BTC_A]: { transfers: [payment] } })] });
+  const dossier = dossierOf(result, query);
+
+  // Jedna karta — konta z targ.example; konto z forum (sam jednokierunkowy przelew) zostaje słabym tropem.
+  assert.equal(dossier.linkedIdentities.length, 1);
+  const [identity] = dossier.linkedIdentities;
+  assert.deepEqual([identity!.id, identity!.status, identity!.fullName], ['tozsamosc:targ.example|julka_k', 'hypothesis', 'Julia Kowalska']);
+  assert.deepEqual(identity!.accounts, ['targ.example|julka_k']);
+  assert.deepEqual(identity!.profiles.map((profile) => profile.id), ['targ.example|julka_k']);
+  assert.deepEqual(identity!.mergeWith, [{ target: 'profile', key: 'targ.example|julka_k' }]);
+  // Adres i przesłanki drugiego konta nie są jej przypisane.
+  assert.deepEqual(identity!.addresses, [{ address: BTC_A, network: 'bitcoin', basis: 'shared_with_subject' }]);
+  assert.ok(!JSON.stringify(identity).includes(BTC_C) && !JSON.stringify(identity).includes('forum.example'));
+  assert.match(identity!.note, /^Hipoteza narzędzia, nie ustalenie tożsamości\./);
+  assert.equal(dossier.weakLeadsHidden, 1);
+  assert.ok(!dossier.linkedIdentities.some((item) => item.accounts.includes('forum.example|julka_k')));
+
+  // Para kont o tym samym nicku: najwyżej słaba hipoteza, z jawnym kontrdowodem — nigdy połączenie.
+  const sameNick = dossier.indicators.commonOperator.find((item) => item.id === 'forum.example|julka_k<->targ.example|julka_k')!;
+  assert.equal(sameNick.status, 'hypothesis');
+  assert.ok(sameNick.indicator.score <= 20);
+  assert.deepEqual(sameNick.indicator.components.map((item) => item.rule).sort(), ['operator.conflict.declared_name', 'operator.conflict.location', 'operator.same_handle']);
+  assert.deepEqual(sameNick.personas, ['Julia Nowak', 'Julia Kowalska']);
+  // Potwierdzenie jednego konta scala tylko to konto.
+  const merged = dossierOf(result, query, { decisions: [decision('profile', 'targ.example|julka_k', 'confirmed')] });
+  assert.deepEqual(merged.persons[0]!.profileIds.sort(), ['gitpub.example|rkowalski92', 'targ.example|julka_k']);
+  assert.ok(!merged.findings.some((finding) => finding.address === BTC_C && finding.confidence.score > 0));
 });

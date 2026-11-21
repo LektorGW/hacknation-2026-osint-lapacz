@@ -54,6 +54,111 @@ export interface DiscoveryStep {
   match: IdentityMatch;
   /** Czy identyfikator został użyty do dalszego wyszukiwania (limit głębokości i liczby). */
   followed: boolean;
+  /** Dlaczego identyfikatora nie użyto do dalszego wyszukiwania (brak pola = użyto). */
+  stopReason?: StopReason;
+}
+
+/** Powód zatrzymania rozszerzania analizy w danym miejscu — jawny, do pokazania analitykowi. */
+export type StopReason =
+  /** Osiągnięto limit głębokości (kroków) — dalsze tropy nie były rozwijane. */
+  | 'depth_limit'
+  /** Osiągnięto limit liczby identyfikatorów w analizie. */
+  | 'identifier_limit'
+  /** Wyczerpano budżet zapytań do źródeł i dostawców danych blockchain. */
+  | 'request_budget'
+  /** Limit zapytań na etap (np. kosztowne wyszukiwarki, zapytania na krok rozszerzania). */
+  | 'query_limit'
+  /** Limit czasu całej analizy. */
+  | 'time_limit'
+  /** Naturalny koniec: nie ma już nowych tropów do sprawdzenia. */
+  | 'no_new_leads'
+  /** Sprawdzono tylko największych kontrahentów — grafu nie rozwijamy po wszystkich. */
+  | 'counterparty_limit'
+  /** Limit liczby adresów z analizą blockchain. */
+  | 'chain_address_limit'
+  /** Trop pochodzi ze słabo przypisanego albo mało wiarygodnego źródła — nie był rozwijany. */
+  | 'low_reliability'
+  /** Analizę przerwano z zewnątrz (zamknięcie usługi). */
+  | 'aborted'
+  /** Źródło albo dostawca danych nie odpowiedział — ta część wyniku jest niepełna. */
+  | 'source_error';
+
+export interface ExpansionStop {
+  /** Etap analizy: `search`, `occurrences`, `chain`, `counterparties`, `pivot`. */
+  stage: string;
+  reason: StopReason;
+  /** Zdanie dla analityka: co zatrzymano i dlaczego. */
+  detail: string;
+  /** Ile tropów, zapytań albo adresów pominięto z tego powodu. */
+  skipped?: number;
+}
+
+/**
+ * Kontrola rozszerzania analizy: obowiązujące limity, zużycie budżetu zapytań, pominięte powtórzenia,
+ * powody zatrzymania i parametry potrzebne do powtórzenia analizy.
+ */
+export interface ExpansionReport {
+  /** Limity faktycznie zastosowane w tej analizie. */
+  limits: {
+    discoveryDepth: number;
+    maxIdentifiers: number;
+    maxRequests: number;
+    maxCounterparties: number;
+    maxChainAddresses: number;
+    pivotSteps: number;
+    pivotQueriesPerStep: number;
+    pivotMinLinkStrength: number;
+    maxBroadDiscovered: number;
+    maxBroadAddresses: number;
+    maxBroadCounterparties: number;
+    mentionStopAuthors: number;
+    requestTimeoutMs: number;
+    totalTimeoutMs: number;
+    concurrency: number;
+  };
+  /** Zapytania faktycznie wysłane: do łączników (łącznik × identyfikator) i do dostawców danych blockchain; `budget` to limit łączny. */
+  requests: { connectors: number; chain: number; budget: number };
+  /** Łączna liczba pominiętych powtórzeń (zapytania + identyfikatory + treści). */
+  duplicatesSkipped: number;
+  /** Powtórzenia według rodzaju: to samo zapytanie łącznik × identyfikator, ten sam identyfikator wskazany ponownie, ta sama treść pod innym adresem. */
+  duplicates: { queries: number; identifiers: number; documents: number };
+  /** Zasada wiarygodności źródeł zastosowana przy rozwijaniu identyfikatorów. */
+  reliability: { lowReliabilityCategories: SourceCategory[]; weakMatches: IdentityMatch[]; weakFollowSteps: number };
+  /** Powody zatrzymania w stałej kolejności etapów. */
+  stops: ExpansionStop[];
+  /** Parametry do powtórzenia analizy: wejście, okres, źródła w kolejności odpytywania, skrót reguł oceny. */
+  run: {
+    startedAt: string;
+    finishedAt: string;
+    identifiers: Identifier[];
+    period?: { from?: string; to?: string };
+    /** Identyfikatory łączników w kolejności odpytywania. */
+    connectors: string[];
+    /** Identyfikatory dostawców danych blockchain w kolejności prób. */
+    chainProviders: string[];
+    /** SHA-256 reguł Wskaźnika Pewności (pierwsze 16 znaków) — ta sama wartość = te same reguły. */
+    rulesHash: string;
+    /** Czy w analizie brał udział model językowy (jego odczyty nie są powtarzalne co do litery). */
+    ai?: string;
+  };
+}
+
+/** Źródło albo dostawca danych, który nie odpowiedział — wynik jest w tej części niepełny, niczego nie uzupełniano. */
+export interface SourceError {
+  /** Łącznik źródła (dla błędów wyszukiwania). */
+  connectorId?: string;
+  /** Dostawca danych blockchain (dla błędów analizy łańcucha). */
+  providerId?: string;
+  /** Etap analizy, w którym wystąpił błąd. */
+  stage: string;
+  /** Pierwszy komunikat błędu. */
+  message: string;
+  /** Ile zapytań do tego źródła nie powiodło się w tym etapie. */
+  count: number;
+  /** Adresy, dla których nie ma danych blockchain (`network:address`). */
+  addresses?: string[];
+  /** Błąd zgłosiło samo źródło w dzienniku i zwróciło to, co zdążyło pobrać (zapytanie formalnie się powiodło). */
+  reported?: boolean;
 }
 
 /** Porównanie stylu wypowiedzi dwóch profili przez model językowy — słaba przesłanka. */
@@ -112,6 +217,10 @@ export interface RunIntel {
   slowestQueries?: QueryTiming[];
   /** Wzmianki o identyfikatorach podmiotu w publikacjach innych autorów (nieprzypisane podmiotowi). */
   mentions?: MentionSummary[];
+  /** Kontrola rozszerzania: limity, budżet zapytań, powtórzenia, powody zatrzymania, parametry do powtórzenia. */
+  expansion?: ExpansionReport;
+  /** Źródła i dostawcy danych, którzy nie odpowiedzieli (pole obecne tylko, gdy coś zawiodło). */
+  sourceErrors?: SourceError[];
 }
 
 export const sightingKey = (item: { url: string; archivedAt?: string }): string => `${item.url}|${item.archivedAt ?? ''}`;

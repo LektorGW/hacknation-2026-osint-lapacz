@@ -186,8 +186,18 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
         counterparty.label ??
         (deposit ? `Prawdopodobny adres wpłat giełdy „${deposit.exchangeLabel}” (wnioskowanie)` : undefined) ??
         (transfer.counterpartyEns ? `ENS: ${transfer.counterpartyEns}` : undefined);
+      // Każda etykieta niesie źródło; etykieta z wnioskowania narzędzia jest tak oznaczona.
+      const labelInferred = !counterparty.label && deposit !== undefined;
+      let labelSource = counterparty.label
+        ? (counterparty.source ? `${counterparty.classificationSource}; ${counterparty.source}` : counterparty.classificationSource)
+        : deposit
+          ? `wnioskowanie narzędzia (reguła adresu wpłat giełdy; etykieta giełdy: ${deposit.exchangeLabelSource})`
+          : transfer.counterpartyEns
+            ? `${transfer.counterpartyLabelSource ?? raw.sourceName} (nazwa ENS — nie przesądza o klasie adresu)`
+            : undefined;
       const sanctioned = sanctions.lookup(transfer.counterparty);
       if (sanctioned) {
+        labelSource = labelSource ? `${sanctions.source}; ${labelSource}` : sanctions.source;
         label = label ? `${sanctionLabel(sanctioned)} — ${label}` : sanctionLabel(sanctioned);
         const warning = sanctionWarning(sanctions, sanctioned, 'kontrahent');
         if (!warnings.includes(warning)) warnings.push(warning);
@@ -199,6 +209,8 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
         counterparty: transfer.counterparty,
         counterpartyClass: counterparty.addressClass,
         ...(label ? { counterpartyLabel: label } : {}),
+        ...(label && labelSource ? { counterpartyLabelSource: labelSource } : {}),
+        ...(label && labelInferred ? { counterpartyLabelInferred: true } : {}),
         ...(counterparty.kind ? { counterpartyKind: counterparty.kind } : {}),
         asset: transfer.asset,
         amount: transfer.amount,

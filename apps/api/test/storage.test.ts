@@ -63,3 +63,22 @@ test('kopie treści dokumentów: zapis ze skrótem i odczyt', async () => {
 
   assert.deepEqual(await storage.listDocuments('run-2'), [document]);
 });
+
+test('decyzje: wycofanie nie usuwa wpisu — zostaje ślad audytowy', async () => {
+  const created = await storage.createCase('Sprawa z decyzjami', { identifiers: [{ type: 'nick' as const, value: 'janek' }] }, '2026-11-21T08:00:00.000Z');
+  const base = { caseId: created.id, decision: 'confirmed' as const, decidedAt: '2026-11-21T10:00:00.000Z', author: 'analityk' };
+  const link = { ...base, id: 'dec-1', target: 'link' as const, key: 'forum.example|a<->gitpub.example|b', note: 'ten sam telefon w aktach' };
+  const profile = { ...base, id: 'dec-2', target: 'profile' as const, key: 'gitpub.example|b' };
+  await storage.addDecision(link);
+  await storage.addDecision(profile);
+  assert.deepEqual(await storage.listDecisions(created.id), [link, profile]);
+
+  assert.equal(await storage.deleteDecision(created.id, 'dec-1', { at: '2026-11-21T11:30:00.000Z', by: 'kierownik' }), true);
+  // Wpis zostaje w rejestrze, w tej samej kolejności, z czasem i autorem wycofania.
+  assert.deepEqual(await storage.listDecisions(created.id), [{ ...link, withdrawnAt: '2026-11-21T11:30:00.000Z', withdrawnBy: 'kierownik' }, profile]);
+  // Drugie wycofanie tej samej decyzji, nieznana decyzja i cudza sprawa: brak zmian.
+  assert.equal(await storage.deleteDecision(created.id, 'dec-1'), false);
+  assert.equal(await storage.deleteDecision(created.id, 'brak'), false);
+  assert.equal(await storage.deleteDecision('inna-sprawa', 'dec-2'), false);
+  assert.equal((await storage.listDecisions(created.id))[1]!.withdrawnAt, undefined);
+});

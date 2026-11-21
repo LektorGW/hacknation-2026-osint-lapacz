@@ -20,7 +20,7 @@ import { registerMonitorRoutes } from './monitor-routes.ts';
 import { looksLikePersonName } from './persons.ts';
 import { renderReportHtml } from './report.ts';
 import { createRunEngine } from './runs.ts';
-import type { RunDepth, RunPeriod } from './runs.ts';
+import type { RunDepth, RunLimitOverrides, RunPeriod } from './runs.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 import { registerSweepRoutes } from './sweep-routes.ts';
@@ -198,8 +198,53 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook('preClose', () => runs.stop());
 
   /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
-  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard', period?: RunPeriod): Promise<AnalysisRun> =>
-    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth), depth, period });
+  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard', period?: RunPeriod, limits?: RunLimitOverrides): Promise<AnalysisRun> =>
+    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth), depth, period, limits });
+
+  /** Limity rozszerzania z żądania: kontrola głębokości, liczby identyfikatorów i budżetu zapytań jednej analizy. */
+  const limitsSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      maxRequests: { type: 'integer', minimum: 1, maximum: 20_000 },
+      discoveryDepth: { type: 'integer', minimum: 0, maximum: 6 },
+      maxIdentifiers: { type: 'integer', minimum: 1, maximum: 200 },
+      maxCounterparties: { type: 'integer', minimum: 0, maximum: 50 },
+      maxChainAddresses: { type: 'integer', minimum: 0, maximum: 100 },
+    },
+  } as const;
+
+  // ---------- Tryb danych: źródła demonstracyjne czy prawdziwe publiczne ----------
+
+  /**
+   * Rodzaj źródła po identyfikatorze: piaskownica i laboratorium to dane demonstracyjne (syntetyczne),
+   * indeks własny to treści zebrane wcześniej przez monitoring, reszta to prawdziwe źródła publiczne.
+   */
+  const sourceKind = (id: string): 'sandbox' | 'lab' | 'internal' | 'public' =>
+    id.startsWith('sandbox-') ? 'sandbox' : id.startsWith('lab-') ? 'lab' : id === 'corpus' ? 'internal' : 'public';
+  const dataMode = () => {
+    const sources = connectors.map(({ id, label, enabledByDefault }) => {
+      const kind = sourceKind(id);
+      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab', enabledByDefault };
+    });
+    const chain = [...new Map([...chainProviders, ...(deps.deepChainProviders ?? [])].map((provider) => [provider.id, provider])).values()].map(({ id, label }) => {
+      const kind = sourceKind(id);
+      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab' };
+    });
+    // Tryb „live”: zarejestrowano choć jedno prawdziwe źródło publiczne albo publicznego dostawcę danych blockchain.
+    const live = sources.some((item) => item.kind === 'public') || chain.some((item) => item.kind === 'public');
+    const demo = sources.some((item) => item.demo) || chain.some((item) => item.demo);
+    return {
+      mode: live ? ('live' as const) : ('sandbox' as const),
+      modeLabel: live
+        ? demo
+          ? 'Źródła publiczne (live) oraz źródła demonstracyjne — wyniki ze źródeł demonstracyjnych są oznaczone.'
+          : 'Źródła publiczne (live).'
+        : 'Tryb demonstracyjny (piaskownica): dane syntetyczne, bez zapytań do prawdziwych serwisów.',
+      sources,
+      chainProviders: chain,
+    };
+  };
 
   const periodSchema = {
     type: 'object',
@@ -238,7 +283,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get('/api/health', async () => {
     const database = (await storage.ping()) ? 'ok' : 'error';
-    return { status: database === 'ok' ? 'ok' : 'degraded', version: TOOL_VERSION, time: now().toISOString(), database };
+    return { status: database === 'ok' ? 'ok' : 'degraded', version: TOOL_VERSION, time: now().toISOString(), database, ...dataMode() };
   });
 
   app.get('/api/connectors', async () => connectorInfo());
@@ -280,7 +325,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     withSchedule(await requireCase(request.params.id)),
   );
 
-  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean; period?: RunPeriod } }>(
+  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean; period?: RunPeriod; limits?: RunLimitOverrides } }>(
     '/api/cases/:id/runs',
     {
       schema: {
@@ -293,6 +338,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             depth: { type: 'string', enum: ['standard', 'deep'] },
             async: { type: 'boolean' },
             period: periodSchema,
+            limits: limitsSchema,
           },
         },
       },
@@ -301,12 +347,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const caseSummary = await requireCase(request.params.id);
       const depth = request.body?.depth ?? 'standard';
       const period = cleanPeriod(request.body?.period);
+      const limits = request.body?.limits;
       if (request.body?.async) {
         // Analiza liczy się w tle; postęp pod /api/runs/:id/progress, wynik pod /api/runs/:id.
-        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth), depth, period });
+        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth), depth, period, limits });
         return reply.code(202).send({ id: run.id, status: run.status });
       }
-      const run = await executeRun(caseSummary, request.body?.connectors, depth, period);
+      const run = await executeRun(caseSummary, request.body?.connectors, depth, period, limits);
       return reply.code(201).send(run);
     },
   );
@@ -450,7 +497,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // ---------- Jedno wywołanie: identyfikator → sprawa → analiza → teczka ----------
 
-  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean; period?: RunPeriod } }>(
+  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean; period?: RunPeriod; limits?: RunLimitOverrides } }>(
     '/api/quick',
     {
       schema: {
@@ -464,6 +511,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             depth: { type: 'string', enum: ['standard', 'deep'] },
             async: { type: 'boolean' },
             period: periodSchema,
+            limits: limitsSchema,
           },
         },
       },
@@ -476,10 +524,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const created = await storage.createCase(value, { identifiers }, now().toISOString());
       const depth = request.body.depth ?? 'standard';
       if (request.body.async) {
-        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth), depth, period });
+        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth), depth, period, limits: request.body.limits });
         return reply.code(202).send({ case: created, run: { id: run.id, status: run.status } });
       }
-      const run = await executeRun(created, undefined, depth, period);
+      const run = await executeRun(created, undefined, depth, period, request.body.limits);
       return reply.code(201).send({ case: withSchedule(await requireCase(created.id)), dossier: await loadDossier(run) });
     },
   );

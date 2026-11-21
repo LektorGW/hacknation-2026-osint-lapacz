@@ -256,7 +256,7 @@ export function dossierOf(
   });
 }
 
-export function decision(target: 'profile' | 'address', key: string, value: 'confirmed' | 'rejected', note?: string): DecisionRecord {
+export function decision(target: 'profile' | 'address' | 'evidence' | 'link' | 'cashout', key: string, value: 'confirmed' | 'rejected', note?: string): DecisionRecord {
   return { id: `d-${target}-${key}-${value}`, caseId: 'sprawa-1', target, key, decision: value, note, decidedAt: '2026-11-21T10:00:00.000Z', author: 'analityk' };
 }
 

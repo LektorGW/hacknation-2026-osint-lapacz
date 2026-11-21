@@ -6,7 +6,7 @@
 import type { ChainActivity, ChainProvider, ConnectorContext, Network } from '@olcys/core';
 import { NATIVE_ASSET, buildChainActivity } from '../activity.ts';
 import type { ActivityOptions, RawTransfer } from '../activity.ts';
-import { CLUSTER_METHOD_UTXO } from '../cluster.ts';
+import { CLUSTER_METHOD_UTXO, detectChange } from '../cluster.ts';
 import type { UtxoTx } from '../cluster.ts';
 import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
@@ -69,11 +69,25 @@ export interface EsploraProviderConfig extends ActivityOptions {
   fallbackSiteUrl?: string;
 }
 
+/** Czego jeden „przelew” nie mówi o transakcji Bitcoin — trafia do ograniczeń, nie do listy przelewów. */
+export interface EsploraTransferNotes {
+  /** Adres uznany heurystycznie za resztę wracającą do portfela nadawcy. */
+  changeAddress?: string;
+  /** Liczba pozostałych odbiorców tej samej transakcji i łączna kwota do nich (BTC). */
+  otherRecipients?: number;
+  otherAmount?: number;
+}
+
 /**
  * Sprowadza transakcję do jednego przelewu z punktu widzenia badanego adresu.
  * Zwraca `null` dla transakcji bez wpływu na saldo adresu.
  */
-export function esploraTransfer(tx: EsploraTx, address: string, time: string, explorerUrl: string): Omit<RawTransfer, 'asset'> | null {
+export function esploraTransfer(
+  tx: EsploraTx,
+  address: string,
+  time: string,
+  explorerUrl: string,
+): (Omit<RawTransfer, 'asset'> & EsploraTransferNotes) | null {
   const inputs = tx.vin ?? [];
   const outputs = tx.vout ?? [];
   const spent = inputs
@@ -94,15 +108,25 @@ export function esploraTransfer(tx: EsploraTx, address: string, time: string, ex
     return { txid: tx.txid, time, direction: 'in', counterparty, amount: net / SATOSHI, explorerUrl };
   }
 
-  // Wyjście: kontrahentem jest odbiorca największej kwoty, a kwotą — suma wyjść
-  // do obcych adresów, nie większa niż ubytek salda (gdy transakcję współfinansują inni).
-  const external = outputs.filter((output) => output.scriptpubkey_address && output.scriptpubkey_address !== address);
+  // Wyjście: kontrahentem jest odbiorca największej kwoty, a kwotą — to, co trafiło DO TEGO kontrahenta
+  // (suma wyjść na jego adres), nie więcej niż ubytek salda (gdy transakcję współfinansują inni).
+  // Kwot wysłanych w tej samej transakcji do innych odbiorców nie wolno przypisać kontrahentowi —
+  // inaczej przelew na giełdę byłby zawyżony o płatności do osób trzecich.
+  // Wyjście rozpoznane jako RESZTA wracająca do portfela nadawcy (heurystyka z `cluster.ts`: dwa wyjścia,
+  // wszystkie wejścia z badanego adresu) nie jest płatnością — nie może zostać kontrahentem ani wejść do kwoty.
+  const change = detectChange(tx, new Set([address]));
+  const external = outputs.filter(
+    (output, index) => output.scriptpubkey_address && output.scriptpubkey_address !== address && index !== change?.changeIndex,
+  );
   const largest = external.reduce<(typeof external)[number] | undefined>(
     (best, output) => (best === undefined || (output.value ?? 0) > (best.value ?? 0) ? output : best),
     undefined,
   );
-  const externalTotal = external.reduce((total, output) => total + (output.value ?? 0), 0);
-  const amount = externalTotal > 0 ? Math.min(externalTotal, -net) : -net;
+  const toCounterparty = external
+    .filter((output) => output.scriptpubkey_address === largest?.scriptpubkey_address)
+    .reduce((total, output) => total + (output.value ?? 0), 0);
+  const others = external.filter((output) => output.scriptpubkey_address !== largest?.scriptpubkey_address);
+  const amount = toCounterparty > 0 ? Math.min(toCounterparty, -net) : -net;
   return {
     txid: tx.txid,
     time,
@@ -110,6 +134,10 @@ export function esploraTransfer(tx: EsploraTx, address: string, time: string, ex
     counterparty: largest?.scriptpubkey_address ?? 'nieustalony',
     amount: amount / SATOSHI,
     explorerUrl,
+    ...(change && change.changeAddress !== address ? { changeAddress: change.changeAddress } : {}),
+    ...(others.length > 0
+      ? { otherRecipients: new Set(others.map((output) => output.scriptpubkey_address)).size, otherAmount: others.reduce((total, output) => total + (output.value ?? 0), 0) / SATOSHI }
+      : {}),
   };
 }
 
@@ -239,10 +267,21 @@ export class EsploraProvider implements ChainProvider {
     const transfers: RawTransfer[] = [];
     // Dokładne zmiany salda (z opłatami): otrzymane wyjścia minus wydane wejścia w każdej transakcji.
     const flows: { asset: string; time: string; delta: number }[] = [];
+    let changeSkipped = 0;
+    const multiRecipient = { count: 0, recipients: 0, satoshi: 0 };
     for (const tx of txs) {
       const time = new Date((tx.status?.block_time ?? 0) * 1000).toISOString();
-      const transfer = esploraTransfer(tx, address, time, `${site}/tx/${tx.txid}`);
-      if (transfer) transfers.push({ ...transfer, asset });
+      const described = esploraTransfer(tx, address, time, `${site}/tx/${tx.txid}`);
+      if (described) {
+        const { changeAddress, otherRecipients, otherAmount, ...transfer } = described;
+        if (changeAddress) changeSkipped += 1;
+        if (otherRecipients) {
+          multiRecipient.count += 1;
+          multiRecipient.recipients += otherRecipients;
+          multiRecipient.satoshi += Math.round((otherAmount ?? 0) * SATOSHI);
+        }
+        transfers.push({ ...transfer, asset });
+      }
       const received = (tx.vout ?? []).filter((output) => output.scriptpubkey_address === address).reduce((sum, output) => sum + (output.value ?? 0), 0);
       const spent = (tx.vin ?? []).filter((input) => input.prevout?.scriptpubkey_address === address).reduce((sum, input) => sum + (input.prevout?.value ?? 0), 0);
       if (received !== spent) flows.push({ asset, time, delta: (received - spent) / SATOSHI });
@@ -252,6 +291,20 @@ export class EsploraProvider implements ChainProvider {
       'Bitcoin: kontrahent transakcji jest uproszczeniem — dla wypłat to odbiorca największej kwoty, ' +
         'dla wpłat pierwszy adres nadawcy. Transakcja może mieć wielu nadawców i odbiorców; zweryfikuj ją w eksploratorze.',
     ];
+    if (changeSkipped > 0) {
+      limitations.push(
+        `Bitcoin: w ${changeSkipped} transakcjach wychodzących jedno z dwóch wyjść uznano HEURYSTYCZNIE za resztę wracającą do portfela nadawcy ` +
+          '(typ skryptu zgodny z wejściem albo „nieokrągła” kwota) — nie jest liczone jako płatność ani jako kontrahent. Kwota przelewu to wtedy samo wyjście-płatność; ' +
+          'gdy heurystyka się myli, faktycznym odbiorcą jest drugie wyjście (do weryfikacji w eksploratorze).',
+      );
+    }
+    if (multiRecipient.count > 0) {
+      limitations.push(
+        `Bitcoin: ${multiRecipient.count} transakcji wychodzących miało więcej niż jednego odbiorcę. Na liście przelewów jest odbiorca największej kwoty z kwotą, która trafiła do niego; ` +
+          `pozostałe wyjścia (łącznie ${multiRecipient.satoshi / SATOSHI} BTC do ${multiRecipient.recipients} adresów) nie są pokazane jako osobne przelewy ani przypisane temu odbiorcy — ` +
+          'pełny podział jest w eksploratorze, a śledzenie środków bada wyjścia osobno.',
+      );
+    }
     const complete = stats.tx_count <= fetchedCount && !ranged;
     if (full) {
       limitations.push(
@@ -354,7 +407,10 @@ export class EsploraProvider implements ChainProvider {
             if (!tx.status?.confirmed) continue;
             const time = new Date((tx.status.block_time ?? 0) * 1000).toISOString();
             const transfer = esploraTransfer(tx, other, time, `${site}/tx/${tx.txid}`);
-            if (transfer?.direction === 'in') incoming.push({ ...transfer, asset });
+            if (transfer?.direction === 'in') {
+              const { changeAddress: _change, otherRecipients: _count, otherAmount: _amount, ...rest } = transfer;
+              incoming.push({ ...rest, asset });
+            }
           }
           return { incoming, more: Array.isArray(page) && page.filter((tx) => tx.status?.confirmed).length >= PAGE_SIZE };
         },

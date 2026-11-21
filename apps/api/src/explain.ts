@@ -118,7 +118,7 @@ export function buildUnconfirmedAddresses(input: UnconfirmedInput): UnconfirmedA
   return result.sort((a, b) => b.personAddressProbability - a.personAddressProbability || (b.chain?.transfers ?? 0) - (a.chain?.transfers ?? 0));
 }
 
-export type ExplanationKind = 'seized' | 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out';
+export type ExplanationKind = 'seized' | 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'source_errors' | 'partial' | 'no_cash_out';
 
 /** Wyjaśnienie braku wyniku wraz z tym, co analityk może zrobić. */
 export interface Explanation {
@@ -154,6 +154,8 @@ export interface ExplainInput {
   matcher?: ExternalServiceMatcher;
   /** Liczba przelewów na adresy organów państwa (zajęcia środków). */
   seizures?: number;
+  /** Źródła i dostawcy danych, którzy nie odpowiedzieli podczas analizy. */
+  sourceErrors?: { connectorId?: string; providerId?: string; stage: string; count: number; addresses?: string[] }[];
 }
 
 const MAX_SERVICE_ADDRESSES = 20;
@@ -228,6 +230,20 @@ export function buildExplanations(input: ExplainInput): Explanation[] {
       kind: 'chain_skipped',
       text: `Dla ${skipped.length} ${plural(skipped.length, 'adresu powiązanego', 'adresów powiązanych', 'adresów powiązanych')} nie ma danych z blockchaina (limit adresów, limit czasu albo brak odpowiedzi dostawcy danych).`,
       suggestions: ['Uruchom analizę ponownie albo załóż osobną sprawę dla samego adresu — dostanie pełną historię.'],
+    });
+  }
+  const failed = input.sourceErrors ?? [];
+  if (failed.length > 0) {
+    const names = [...new Set(failed.map((item) => item.connectorId ?? item.providerId ?? item.stage))];
+    const withoutChain = new Set(failed.flatMap((item) => item.addresses ?? [])).size;
+    result.push({
+      kind: 'source_errors',
+      text:
+        `Część źródeł nie odpowiedziała (${names.join(', ')}): wynik jest częściowy; brakujących danych nie uzupełniano.` +
+        (withoutChain > 0
+          ? ` Dla ${withoutChain} ${plural(withoutChain, 'adresu', 'adresów', 'adresów')} nie ma danych z blockchaina — to brak danych, a nie brak aktywności.`
+          : ''),
+      suggestions: ['Uruchom analizę ponownie, gdy źródło będzie dostępne; lista błędów jest w polu „sourceErrors” i w dzienniku analizy.'],
     });
   }
   if (input.partial) {

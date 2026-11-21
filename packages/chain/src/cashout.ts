@@ -7,7 +7,15 @@ import type { CashOutIndicator, CashOutKind, Transfer } from '@olcys/core';
 /** Przelew z rozpoznanym rodzajem usługi po stronie kontrahenta. */
 export interface ClassifiedTransfer extends Transfer {
   counterpartyKind?: CashOutKind;
+  /** Skąd pochodzi etykieta kontrahenta (zbiór etykiet, eksplorator, wnioskowanie narzędzia) — etykieta bez źródła nie istnieje. */
+  counterpartyLabelSource?: string;
+  /** Etykieta nie pochodzi z publicznego źródła, tylko z wnioskowania narzędzia (np. prawdopodobny adres wpłat giełdy). */
+  counterpartyLabelInferred?: boolean;
 }
+
+/** Zastrzeżenie dopisywane do każdego wskaźnika: blockchain nie pokazuje wypłaty na rachunek. */
+export const CASHOUT_CAVEAT =
+  'Sam blockchain pokazuje tylko przekazanie środków do usługi — czy doszło do sprzedaży i wypłaty w walucie tradycyjnej, może potwierdzić wyłącznie usługa.';
 
 export interface CashOutOptions {
   /**
@@ -81,7 +89,7 @@ export function detectCashOuts(transfers: ClassifiedTransfer[], options: CashOut
     const sent = `${formatAmount(transfer.amount)} ${transfer.asset}`;
 
     if (kind && kind !== 'stablecoin_swap') {
-      result.push(indicator(transfer, kind, `Przelew ${sent} na adres ${describeCounterparty(transfer)}. ${DIRECT_EXPLANATIONS[kind]}`));
+      result.push(indicator(transfer, kind, `Przelew ${sent} na adres ${describeCounterparty(transfer)}. ${DIRECT_EXPLANATIONS[kind]} ${CASHOUT_CAVEAT}`));
       continue;
     }
 
@@ -110,7 +118,7 @@ export function detectCashOuts(transfers: ClassifiedTransfer[], options: CashOut
         'stablecoin_swap',
         `Przelew ${sent} na adres ${describeCounterparty(transfer)} — usługi wymiany kryptowalut.${received} ` +
           'Wygląda to na zamianę znacznej wartości na stablecoiny, czyli tokeny o stałym kursie do dolara. ' +
-          'Taka zamiana utrwala zysk i często poprzedza wypłatę na rachunek bankowy.',
+          'Taka zamiana utrwala zysk i często poprzedza wypłatę na rachunek bankowy — sama nie jest jednak wyjściem do walut tradycyjnych.',
       ),
     );
   }

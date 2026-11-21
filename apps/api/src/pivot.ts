@@ -104,6 +104,15 @@ export interface PivotContext {
   record(doc: SourceDocument, step: number): boolean;
   expired(): boolean;
   log(message: string): void;
+  /** Odnotowuje powód zatrzymania pętli (limit kroków, limit zapytań na krok, czas, brak nowych tropów, słabe powiązania). */
+  onStop?(stop: PivotStop): void;
+}
+
+/** Powód zatrzymania pętli rozszerzania — trafia do `intel.expansion.stops`. */
+export interface PivotStop {
+  reason: 'depth_limit' | 'query_limit' | 'time_limit' | 'no_new_leads' | 'low_reliability';
+  detail: string;
+  skipped?: number;
 }
 
 /** Rdzeń nazwy konta: bez cyfr i typowych przyrostków („rkowalski92” → „rkowalski”); `undefined`, gdy nic nie ubyło. */
@@ -131,8 +140,12 @@ export async function runPivot(context: PivotContext): Promise<PivotLead[]> {
   const leads: PivotLead[] = [];
   const asked = new Set<string>();
   let sources = context.sources;
+  /** Powiązania adresów poniżej progu siły — niesprawdzane (adres → siła). */
+  const weakLinks = new Map<string, number>();
+  let exhausted = false;
+  let step = 1;
 
-  for (let step = 1; step <= context.steps && sources.length > 0 && !context.expired(); step++) {
+  for (; step <= context.steps && sources.length > 0 && !context.expired(); step++) {
     const tasks: Task[] = [];
     for (const source of sources) {
       const self = normalize(source.author ?? '');
@@ -194,7 +207,10 @@ export async function runPivot(context: PivotContext): Promise<PivotLead[]> {
           });
         }
         for (const link of linkedAddressesOf(item.chain)) {
-          if (link.strength < PIVOT_LIMITS.minLinkStrength) continue;
+          if (link.strength < PIVOT_LIMITS.minLinkStrength) {
+            weakLinks.set(link.address, Math.max(link.strength, weakLinks.get(link.address) ?? 0));
+            continue;
+          }
           const steps = [
             `adres ${shortAddress(item.address)} ${source.ofSubject ? 'podmiotu' : `(${origin})`}`,
             ...(link.via ? [`${link.kind === 'co_depositor' ? `adres wpłat ${link.service ? `usługi ${link.service} ` : ''}` : 'adres pośredni '}${shortAddress(link.via)}`] : []),
@@ -221,34 +237,64 @@ export async function runPivot(context: PivotContext): Promise<PivotLead[]> {
     for (const task of tasks) if (!asked.has(task.key) && !unique.has(task.key)) unique.set(task.key, task);
     const selected = [...unique.values()].slice(0, context.queriesPerStep);
     for (const task of selected) asked.add(task.key);
-    if (selected.length === 0) break;
+    if (selected.length === 0) {
+      exhausted = true;
+      break;
+    }
     context.log(`Rozszerzanie, krok ${step}: tropów do sprawdzenia ${selected.length}${unique.size > selected.length ? ` (limit ${context.queriesPerStep} na krok)` : ''}.`);
+    if (unique.size > selected.length) {
+      context.onStop?.({
+        reason: 'query_limit',
+        detail: `Rozszerzanie, krok ${step}: sprawdzono ${selected.length} z ${unique.size} tropów (limit ${context.queriesPerStep} zapytań na krok) — pozostałych nie sprawdzano.`,
+        skipped: unique.size - selected.length,
+      });
+    }
 
+    // Zapytania biegną równolegle, ale wyniki przetwarzamy w kolejności tropów — ta sama analiza
+    // daje te same tropy w tej samej kolejności, niezależnie od tego, które źródło odpowie pierwsze.
+    const answers = await Promise.all(selected.map(async (task) => (context.expired() ? undefined : (await task.run()).filter(task.accept))));
     const next: PivotSource[] = [];
-    await Promise.all(
-      selected.map(async (task) => {
-        if (context.expired()) return;
-        const found = (await task.run()).filter(task.accept);
-        const seen = new Set<string>();
-        for (const doc of found) {
-          if (seen.has(doc.url) || !context.record(doc, step)) continue;
-          seen.add(doc.url);
-          const lead = task.lead(doc);
-          leads.push({ ...lead, step, docUrl: doc.url, ...(doc.author ? { author: doc.author } : {}), service: doc.service });
-          context.log(`Trop (${lead.kind}): ${lead.path.join(' → ')}.`);
-          next.push({
-            path: lead.path,
-            author: doc.author,
-            handle: doc.profile?.handle ?? doc.author,
-            attributes: doc.profile,
-            addresses: context.ownedAddresses(doc),
-            ofSubject: false,
-          });
-        }
-        if (seen.size === 0 && task.keepWithoutDocument) leads.push({ ...task.lead(undefined), step });
-      }),
-    );
+    selected.forEach((task, index) => {
+      const found = answers[index];
+      if (!found) return;
+      const seen = new Set<string>();
+      for (const doc of found) {
+        if (seen.has(doc.url) || !context.record(doc, step)) continue;
+        seen.add(doc.url);
+        const lead = task.lead(doc);
+        leads.push({ ...lead, step, docUrl: doc.url, ...(doc.author ? { author: doc.author } : {}), service: doc.service });
+        context.log(`Trop (${lead.kind}): ${lead.path.join(' → ')}.`);
+        next.push({
+          path: lead.path,
+          author: doc.author,
+          handle: doc.profile?.handle ?? doc.author,
+          attributes: doc.profile,
+          addresses: context.ownedAddresses(doc),
+          ofSubject: false,
+        });
+      }
+      if (seen.size === 0 && task.keepWithoutDocument) leads.push({ ...task.lead(undefined), step });
+    });
     sources = next;
+  }
+
+  if (weakLinks.size > 0) {
+    context.onStop?.({
+      reason: 'low_reliability',
+      detail: `Powiązań adresów o sile poniżej ${PIVOT_LIMITS.minLinkStrength} (wg modułu danych blockchain) nie sprawdzano: ${weakLinks.size}.`,
+      skipped: weakLinks.size,
+    });
+  }
+  if (context.expired()) {
+    context.onStop?.({ reason: 'time_limit', detail: `Rozszerzanie przerwane po kroku ${step - 1}: upłynęła część limitu czasu analizy przeznaczona na ten etap.` });
+  } else if (!exhausted && sources.length > 0 && step > context.steps) {
+    context.onStop?.({
+      reason: 'depth_limit',
+      detail: `Osiągnięto limit kroków rozszerzania (${context.steps}) — tożsamości i adresów znalezionych w ostatnim kroku (${sources.length}) nie rozwijano dalej.`,
+      skipped: sources.length,
+    });
+  } else {
+    context.onStop?.({ reason: 'no_new_leads', detail: `Rozszerzanie zakończone po kroku ${Math.max(0, step - 1)}: brak nowych tropów do sprawdzenia.` });
   }
   return leads;
 }

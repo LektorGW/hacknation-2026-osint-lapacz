@@ -13,11 +13,26 @@ import type { CaseSummary, Storage } from './storage.ts';
 export type RunDepth = 'standard' | 'deep';
 
 /** Limity analizy w obu trybach — jawne, pokazywane przez API. */
-export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAddresses: number; requestTimeoutMs: number; totalTimeoutMs: number; concurrency: number }> = {
-  standard: { discoveryDepth: 3, maxChainAddresses: 15, requestTimeoutMs: 20_000, totalTimeoutMs: 120_000, concurrency: 6 },
+export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAddresses: number; requestTimeoutMs: number; totalTimeoutMs: number; concurrency: number; maxRequests: number }> = {
+  // `maxRequests`: budżet zapytań całej analizy (łączniki + dostawcy danych blockchain) — z dużym zapasem ponad zwykłe zużycie.
+  standard: { discoveryDepth: 3, maxChainAddresses: 15, requestTimeoutMs: 20_000, totalTimeoutMs: 120_000, concurrency: 6, maxRequests: 3000 },
   // Tryb głęboki pyta setki różnych hostów — większa współbieżność nie obciąża żadnego z nich bardziej.
-  deep: { discoveryDepth: 4, maxChainAddresses: 40, requestTimeoutMs: 45_000, totalTimeoutMs: 240_000, concurrency: 24 },
+  deep: { discoveryDepth: 4, maxChainAddresses: 40, requestTimeoutMs: 45_000, totalTimeoutMs: 240_000, concurrency: 24, maxRequests: 8000 },
 };
+
+/** Limity rozszerzania, które analityk może zmienić dla jednej analizy (w granicach schematu żądania). */
+export interface RunLimitOverrides {
+  /** Budżet zapytań całej analizy. */
+  maxRequests?: number;
+  /** Liczba kroków odkrywania identyfikatorów. */
+  discoveryDepth?: number;
+  /** Górny limit liczby identyfikatorów (podane + odkryte). */
+  maxIdentifiers?: number;
+  /** Ilu największych kontrahentów bez etykiety sprawdzić w źródłach. */
+  maxCounterparties?: number;
+  /** Ile adresów dostaje analizę blockchain. */
+  maxChainAddresses?: number;
+}
 
 /** Wyszukiwarka obiegająca setki forów potrzebuje więcej czasu niż pojedyncze źródło. */
 const CONNECTOR_TIMEOUTS: Record<string, number> = { 'deep-search': 30_000 };
@@ -55,6 +70,8 @@ export interface RunOptions {
   connectors: SourceConnector[];
   depth?: RunDepth;
   period?: RunPeriod;
+  /** Limity rozszerzania podane dla tej analizy; mają pierwszeństwo przed limitami trybu. */
+  limits?: RunLimitOverrides;
 }
 
 export interface RunEngineDeps {
@@ -97,7 +114,8 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
 
   const complete = async (run: StoredRun, caseSummary: CaseSummary, options: RunOptions, state: RunProgress): Promise<StoredRun> => {
     const depth = options.depth ?? 'standard';
-    const limits = { ...DEPTH_LIMITS[depth], ...deps.limits };
+    const requested = Object.fromEntries(Object.entries(options.limits ?? {}).filter(([, value]) => value !== undefined)) as RunLimitOverrides;
+    const limits = { ...DEPTH_LIMITS[depth], ...deps.limits, ...requested };
     const update = (patch: Partial<RunProgress>) => Object.assign(state, patch, { updatedAt: now().toISOString() });
     try {
       const result = await runAnalysis({
@@ -111,6 +129,9 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
         signal: abort.signal,
         discoveryDepth: limits.discoveryDepth,
         maxChainAddresses: limits.maxChainAddresses,
+        maxRequests: limits.maxRequests,
+        maxIdentifiers: requested.maxIdentifiers,
+        maxCounterparties: requested.maxCounterparties,
         timeoutMs: limits.requestTimeoutMs,
         connectorTimeouts: CONNECTOR_TIMEOUTS,
         pivot: PIVOT_LIMITS[depth],

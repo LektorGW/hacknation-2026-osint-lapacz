@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 CREATE INDEX IF NOT EXISTS decisions_case_idx ON decisions (case_id, seq);
 
+-- Wycofanie decyzji nie usuwa wpisu: zostaje ślad audytowy (kto i kiedy wycofał), a wynik wraca do automatycznego.
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ;
+
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS withdrawn_by TEXT;
+
 -- Przegląd źródeł (typowanie podmiotów): wynik z rankingiem w kolumnie result.
 CREATE TABLE IF NOT EXISTS sweeps (
   id          TEXT PRIMARY KEY,

@@ -3,13 +3,14 @@
 // osoby → adresy względem osoby głównej → usługi → sumy i priorytet → reszta.
 // Zapisana analiza pozostaje nietknięta — korekty istnieją tylko w teczce.
 
-import { computeConfidence, validateAddress } from '@olcys/core';
+import { computeConfidence, linkKey, validateAddress } from '@olcys/core';
 import type {
   AnalysisRun,
   Decision,
   Dossier,
   Finding,
   Identifier,
+  InvestigationIndicators,
   ScoreRules,
   StoredEvidence,
 } from '@olcys/core';
@@ -18,6 +19,7 @@ import type { LinkedIdentity } from './aliases.ts';
 import { insightEffect } from './ai-rules.ts';
 import type { InsightEvidence } from './ai-rules.ts';
 import { OWNERSHIP_CATEGORIES, effectiveUnrelatedPublishers, sortFindings } from './analysis.ts';
+import { buildCashOutAssessments } from './cashout-stage.ts';
 import type { AnalysisFinding } from './analysis.ts';
 import { detectReplacements } from './diff.ts';
 import { buildProfileNodes, decisionMatchesProfile, profileKey, sightingsOf } from './entity.ts';
@@ -28,6 +30,7 @@ import { buildGraph } from './graph.ts';
 import { addressKey, sightingKey } from './intel.ts';
 import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
+import { buildAccountWalletLinks, buildOperatorHypotheses } from './operator.ts';
 import { resolvePersons } from './persons.ts';
 import { summarizeFindings } from './priority.ts';
 import { collectFundingSources, collectSeizures, isIncidentSource, relatedAddressesOf } from './provenance.ts';
@@ -110,6 +113,12 @@ export interface DossierView extends Dossier {
   unconfirmedAddresses: UnconfirmedAddress[];
   /** Dlaczego nie ma adresów albo dowodu spieniężenia i co można zrobić. */
   explanations: Explanation[];
+  /** Trzy osobne wskaźniki: konto→portfel, wspólny operator (hipotezy), wyjście do walut tradycyjnych. */
+  indicators: InvestigationIndicators;
+  /** Źródła i dostawcy danych, którzy nie odpowiedzieli — wynik jest w tej części niepełny, niczego nie uzupełniano. */
+  sourceErrors: NonNullable<RunIntel['sourceErrors']>;
+  /** Kontrola rozszerzania analizy: limity, budżet zapytań, powody zatrzymania, parametry do powtórzenia. Brak dla starszych analiz. */
+  expansion?: RunIntel['expansion'];
 }
 
 export interface DossierInput {
@@ -137,18 +146,38 @@ function latestDecisions(decisions: DecisionRecord[], target: string): DecisionR
   return [...byKey.values()];
 }
 
+/** Klucz decyzji o parze kont w postaci kanonicznej (`linkKey`), bez względu na kolejność i wielkość liter. */
+function canonicalLinkKey(key: string): string | undefined {
+  const parts = key.split('<->').map((part) => part.trim());
+  return parts.length === 2 && parts[0] && parts[1] && parts[0].toLowerCase() !== parts[1].toLowerCase() ? linkKey(parts[0], parts[1]) : undefined;
+}
+
 const decisionNote = (decision: DecisionRecord): string =>
   `decyzja z ${formatDate(decision.decidedAt)} (${decision.author})${decision.note ? `, notatka: „${decision.note}”` : ''}`;
 
 export function buildDossier(input: DossierInput): DossierView {
   const { run, rules, caseSummary } = input;
+  // Decyzje wycofane zostają w rejestrze (historia i audyt), ale niczego nie zmieniają:
+  // po wycofaniu wynik jest dokładnie taki, jak bez tej decyzji.
+  const decisions = input.decisions.filter((decision) => !decision.withdrawnAt);
+  // Decyzje o parach kont (hipoteza wspólnego operatora): klucz kanoniczny → obowiązująca decyzja.
+  const linkDecisions = new Map<string, DecisionRecord>();
+  for (const decision of latestDecisions(decisions, 'link')) {
+    const key = canonicalLinkKey(decision.key);
+    if (key) linkDecisions.set(key, decision);
+  }
+  const linkDecisionOf = (a: string, b: string): Decision | undefined => linkDecisions.get(linkKey(a, b))?.decision;
+  const linkedAccounts = new Set([...linkDecisions].filter(([, decision]) => decision.decision === 'confirmed').flatMap(([key]) => key.split('<->')));
   // Decyzja „to ta sama osoba” dla profilu powiązanej tożsamości scala ją z podmiotem:
   // jej publikacje są wtedy liczone jak publikacje podmiotu.
-  const mergedKeys = new Set(latestDecisions(input.decisions, 'profile').filter((decision) => decision.decision === 'confirmed').map((decision) => decision.key.trim().toLowerCase()));
+  const mergedKeys = new Set(latestDecisions(decisions, 'profile').filter((decision) => decision.decision === 'confirmed').map((decision) => decision.key.trim().toLowerCase()));
   const sightings = sightingsOf(run, input.intel).map((sighting) =>
     sighting.role !== 'subject' && (mergedKeys.has(profileKey(sighting).toLowerCase()) || mergedKeys.has(sighting.url.toLowerCase()))
       ? { ...sighting, role: 'subject' as const, step: 0, identity: { match: 'verified_link' as const, reasons: ['Tożsamość scalona z osobą główną decyzją analityka.'], distance: 0 } }
-      : sighting,
+      : sighting.role !== 'subject' && linkedAccounts.has(profileKey(sighting).toLowerCase())
+        ? // Konto wskazane w potwierdzonej parze trafia między profile sprawy — do kandydata, z którym je połączono.
+          { ...sighting, role: 'subject' as const, identity: { match: 'linked_profile' as const, reasons: ['Konto włączone do profili sprawy decyzją analityka o wspólnym operatorze.'] } }
+        : sighting,
   );
   const nodes = buildProfileNodes(run, sightings);
 
@@ -162,16 +191,17 @@ export function buildDossier(input: DossierInput): DossierView {
 
   // ---------- Osoby ----------
   const profileDecisions = new Map<string, Decision>();
-  for (const decision of latestDecisions(input.decisions, 'profile')) {
+  for (const decision of latestDecisions(decisions, 'profile')) {
     for (const node of nodes) {
       if (decisionMatchesProfile(decision.key, node)) profileDecisions.set(node.card.id, decision.decision);
     }
   }
-  const { persons, personOfProfile } = resolvePersons({
+  const { persons, personOfProfile, blockedPairs } = resolvePersons({
     nodes,
     identifiers: run.query.identifiers,
     findings: run.findings,
     decisions: profileDecisions,
+    linkDecisions: new Map([...linkDecisions].map(([key, decision]) => [key, decision.decision])),
     rules,
     authorComparisons: input.intel?.authorComparisons,
   });
@@ -187,10 +217,10 @@ export function buildDossier(input: DossierInput): DossierView {
 
   // ---------- Adresy względem osoby głównej ----------
   const nodeOfDoc = new Map(nodes.flatMap((node) => node.sightings.map((item) => [sightingKey(item), node] as const)));
-  const addressDecisions = new Map(latestDecisions(input.decisions, 'address').map((decision) => [decision.key.trim().toLowerCase(), decision]));
+  const addressDecisions = new Map(latestDecisions(decisions, 'address').map((decision) => [decision.key.trim().toLowerCase(), decision]));
 
   // Decyzja dla pojedynczego śladu: „potwierdzony” cofa wpływ modelu, „odrzucony” wyłącza ślad.
-  const evidenceDecisions = new Map(latestDecisions(input.decisions, 'evidence').map((decision) => [decision.key.trim().toLowerCase(), decision]));
+  const evidenceDecisions = new Map(latestDecisions(decisions, 'evidence').map((decision) => [decision.key.trim().toLowerCase(), decision]));
 
   // Adresy znane tylko z publikacji powiązanych tożsamości nie są adresami podmiotu — chyba że
   // analityk scalił tożsamość (wtedy publikujący profil należy już do osoby głównej).
@@ -370,25 +400,64 @@ export function buildDossier(input: DossierInput): DossierView {
   ];
   const replacements = detectReplacements({ ...run, findings });
   const relatedPersons = buildRelatedPersons({ run: { ...run, findings }, linked, sightings, subjectProfiles: mainNodes, otherCases: input.otherCases, rules, addressOnly });
+  const externalNodes = [
+    ...buildProfileNodes(run, sightings, 'linked_identity'),
+    // Współpublikujący liczy się tylko wtedy, gdy podaje adres jako własny (profil, oferta).
+    ...buildProfileNodes(run, sightings, 'co_publisher').filter((node) => node.sightings.some((item) => OWNERSHIP_CATEGORIES.includes(item.category))),
+    ...buildProfileNodes(run, sightings, 'counterparty_publisher'),
+  ];
   const { identities: linkedIdentities, hidden: weakLeadsHidden } = ownerUnknown
     ? { identities: [], hidden: 0 }
     : buildLinkedIdentities({
         main,
         mainNodes,
         otherNodes: nodes.filter((node) => !mainProfileIds.has(node.card.id)),
-        externalNodes: [
-          ...buildProfileNodes(run, sightings, 'linked_identity'),
-          // Współpublikujący liczy się tylko wtedy, gdy podaje adres jako własny (profil, oferta).
-          ...buildProfileNodes(run, sightings, 'co_publisher').filter((node) => node.sightings.some((item) => OWNERSHIP_CATEGORIES.includes(item.category))),
-          ...buildProfileNodes(run, sightings, 'counterparty_publisher'),
-        ],
+        externalNodes,
         leads: input.intel?.pivot ?? [],
         linked,
         allFindings: run.findings,
         authorComparisons: input.intel?.authorComparisons,
-        decisionOf: (node) => latestDecisions(input.decisions, 'profile').find((decision) => decisionMatchesProfile(decision.key, node))?.decision,
+        decisionOf: (node) => latestDecisions(decisions, 'profile').find((decision) => decisionMatchesProfile(decision.key, node))?.decision,
+        linkDecisionOf,
         rules,
       });
+
+  // ---------- Trzy wskaźniki: konto → portfel, wspólny operator, wyjście do walut tradycyjnych ----------
+  // Konta znane teczce: profile sprawy oraz konta powiązanych tożsamości (po jednym na serwis + nazwę).
+  const accounts = ownerUnknown ? [] : [...nodes];
+  if (!ownerUnknown) {
+    for (const node of externalNodes) if (!accounts.some((known) => known.card.id === node.card.id)) accounts.push(node);
+  }
+  const indicators: InvestigationIndicators = {
+    accountWallet: buildAccountWalletLinks({
+      accounts,
+      findings: run.findings,
+      rules,
+      addressDecisionOf: (finding) => addressDecisions.get(addressKey(finding).toLowerCase()) ?? addressDecisions.get(finding.address.toLowerCase()),
+    }),
+    commonOperator: buildOperatorHypotheses({
+      accounts,
+      findings: run.findings,
+      rules,
+      personOfProfile,
+      blockedPairs,
+      profileDecisions,
+      linkDecisions,
+      authorComparisons: input.intel?.authorComparisons,
+      leads: input.intel?.pivot ?? [],
+    }),
+    // Ostatni szczebel drabiny (udokumentowane wyjście do walut tradycyjnych) daje wyłącznie obowiązująca
+    // decyzja analityka `cashout` „potwierdzony” — dokumentacja spoza blockchaina, z podstawą w notatce.
+    cashOut: buildCashOutAssessments({
+      findings,
+      linkedKeys,
+      documentedExits: new Set(
+        latestDecisions(decisions, 'cashout')
+          .filter((decision) => decision.decision === 'confirmed')
+          .flatMap((decision) => findings.filter((finding) => [addressKey(finding).toLowerCase(), finding.address.toLowerCase()].includes(decision.key.trim().toLowerCase())).map(addressKey)),
+      ),
+    }),
+  };
   // Adresy powiązane w blockchainie, które mają publikację, są tożsamościami; pozostałe to „inne adresy”.
   const publishedLinked = new Set(linkedIdentities.flatMap((identity) => identity.addresses.map((item) => item.address.toLowerCase())));
   for (const finding of findings) {
@@ -412,6 +481,7 @@ export function buildDossier(input: DossierInput): DossierView {
     connectorCount: run.connectors.length,
     deep: input.deep === true,
     partial: input.intel?.partial === true,
+    sourceErrors: input.intel?.sourceErrors,
     serviceLabels: input.serviceLabels,
     matcher: input.matchService,
     seizures: seizures.length,
@@ -447,6 +517,9 @@ export function buildDossier(input: DossierInput): DossierView {
     explanations,
     linkedIdentities,
     weakLeadsHidden,
+    indicators,
+    sourceErrors: input.intel?.sourceErrors ?? [],
+    ...(input.intel?.expansion ? { expansion: input.intel.expansion } : {}),
     graph: buildGraph({
       subjectLabel: main?.fullName ?? caseSummary.name,
       caseName: caseSummary.name,
@@ -461,6 +534,8 @@ export function buildDossier(input: DossierInput): DossierView {
       linkedIdentities,
       seizures,
       fundingSources,
+      indicators,
+      persons,
     }),
     timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: confirmedProofs, seizures }),
     totals: {

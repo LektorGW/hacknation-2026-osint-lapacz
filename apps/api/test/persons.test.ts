@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { Identifier } from '@olcys/core';
 import { runAnalysis } from '../src/analysis.ts';
 import { looksLikePersonName } from '../src/persons.ts';
-import { BTC_A, BTC_B, BTC_C, decision, dossierOf, fakeConnector, fakeProvider } from './helpers.ts';
+import { BTC_A, BTC_B, BTC_C, ETH_A, decision, dossierOf, fakeConnector, fakeProvider } from './helpers.ts';
 
 const email: Identifier = { type: 'email', value: 'jan.kowalski@poczta.example' };
 const nick: Identifier = { type: 'nick', value: 'krypto_janek' };
@@ -213,4 +213,232 @@ test('decyzja analityka przenosi profil między kandydatami i przelicza wynik', 
 
   // Bez decyzji wynik wraca do automatycznego.
   assert.equal(dossierOf(result, query).findings.find((finding) => finding.address === BTC_A)!.confidence.score, 85);
+});
+
+// ---------- Łączenie z ograniczeniami: sprzeczności, kopie publikacji, adresy usług ----------
+
+const phone = '600 100 200';
+const shopMail = 'kontakt@sklep.example';
+
+/** A–B (ten sam telefon), B–C (ten sam e-mail sklepu); A i C deklarują różne imiona i nazwiska, B — żadnego. */
+const chainWithContradiction = () => [
+  fakeConnector('gitpub', 'gitpub.example', ['email'], () => [
+    { url: 'https://gitpub.example/jkowalski', author: 'jkowalski', text: `Wsparcie: ${BTC_A}`, profile: { handle: 'jkowalski', displayName: 'Jan Kowalski', emails: [email.value], phones: [phone] } },
+  ]),
+  fakeConnector('forum', 'forum.example', ['nick'], () => [
+    { url: 'https://forum.example/u/krypto_janek', author: 'krypto_janek', text: 'Profil bez nazwiska.', profile: { handle: 'krypto_janek', phones: ['+48 600-100-200'], emails: [shopMail] } },
+  ]),
+  fakeConnector('targ', 'targ.example', ['nick'], () => [
+    { url: 'https://targ.example/u/krypto_janek', author: 'krypto_janek', category: 'sale_offer' as const, text: `Skup, wpłaty na ${BTC_C}`, profile: { handle: 'krypto_janek', displayName: 'Piotr Nowak', emails: [shopMail] } },
+  ]),
+];
+
+test('łączenie nie jest przechodnie: A–B i B–C nie skleja A z C, gdy deklarują różne nazwiska', async () => {
+  const { result, query } = await analyse([email, nick], chainWithContradiction());
+  const dossier = dossierOf(result, query);
+  const [a, b, c] = ['gitpub.example|jkowalski', 'forum.example|krypto_janek', 'targ.example|krypto_janek'];
+
+  const [main, other] = dossier.persons;
+  assert.equal(dossier.persons.length, 2);
+  assert.deepEqual([...main!.profileIds].sort(), [b, a]);
+  assert.deepEqual(other!.profileIds, [c]);
+  assert.ok(!dossier.persons.some((person) => person.profileIds.includes(a) && person.profileIds.includes(c)));
+  // Pominięte połączenie B–C jest wykazane u obu kandydatów, z powodem wskazującym sprzeczną parę.
+  for (const person of [main!, other!]) {
+    assert.equal(person.status, 'hypothesis');
+    assert.deepEqual(person.blockedMerges!.map((item) => [[...item.profileIds].sort(), item.weight]), [[[b, c].sort(), 100]]);
+    assert.match(person.blockedMerges![0]!.reason, /sprzeczne deklarowane imiona i nazwiska: .*(Jan Kowalski.*Piotr Nowak|Piotr Nowak.*Jan Kowalski)/);
+    assert.ok(person.reasons.some((reason) => reason.startsWith('Nie połączono profili') && reason.includes('mimo wiązania o wadze 100')));
+  }
+  // Adres konta C nie jest adresem osoby głównej.
+  assert.equal(dossier.findings.find((finding) => finding.address === BTC_C)!.confidence.score, 0);
+
+  // Hipoteza B–C: mocne przesłanki, ale zablokowana sprzecznością w grupie; pary A–C nie łączy nic.
+  const hypothesis = dossier.indicators.commonOperator.find((item) => item.accounts.includes(b) && item.accounts.includes(c))!;
+  assert.equal(hypothesis.status, 'blocked');
+  assert.ok(hypothesis.indicator.score <= 45);
+  const conflict = hypothesis.indicator.components.find((item) => item.rule === 'operator.conflict.cluster')!;
+  assert.deepEqual([conflict.direction, conflict.blocking], ['contradicts', true]);
+  assert.ok(!dossier.indicators.commonOperator.some((item) => item.accounts.includes(a) && item.accounts.includes(c)));
+  assert.equal(dossier.indicators.commonOperator.find((item) => item.accounts.includes(a) && item.accounts.includes(b))!.status, 'auto_grouped');
+});
+
+/** Podmiot z własnym profilem i drugie konto (to samo imię i nazwisko), które podaje ten sam adres na różne sposoby. */
+const secondAccountWith = (doc: { category: 'sale_offer' | 'forum_post'; text: string }) => [
+  fakeConnector('gitpub', 'gitpub.example', ['email'], () => [
+    {
+      url: 'https://gitpub.example/jkowalski',
+      author: 'jkowalski',
+      text: `Przyjmuję wpłaty za zlecenia programistyczne na adres ${BTC_A} dziękuję`,
+      profile: { handle: 'jkowalski', displayName: 'Jan Kowalski', emails: [email.value] },
+    },
+  ]),
+  fakeConnector('targ', 'targ.example', ['full_name'], () => [
+    { url: 'https://targ.example/oferta/7', author: 'kowalski_auto', identityMatch: 'name_only' as const, ...doc, profile: { handle: 'kowalski_auto', displayName: 'Jan Kowalski' } },
+  ]),
+];
+
+test('ten sam adres łączy profile tylko jako niezależna deklaracja własności — nie jako wzmianka ani kopia treści', async () => {
+  const personsOf = async (doc: { category: 'sale_offer' | 'forum_post'; text: string }) => {
+    const { result, query } = await analyse([email, fullName], secondAccountWith(doc));
+    return dossierOf(result, query);
+  };
+  const pairOf = (dossier: Awaited<ReturnType<typeof personsOf>>) => dossier.indicators.commonOperator.find((item) => item.accounts.includes('targ.example|kowalski_auto'))!;
+
+  // Własna, niezależnie sformułowana oferta z tym samym adresem: mocne wiązanie (80) — jedna osoba.
+  const owned = await personsOf({ category: 'sale_offer', text: `Sprzedam auto, zaliczka na ${BTC_A}` });
+  assert.equal(owned.persons.length, 1);
+  assert.ok(pairOf(owned).indicator.components.some((item) => item.rule === 'operator.same_owned_address' && item.applied === 80));
+
+  // Wzmianka w wypowiedzi: słaba przesłanka (30 + 15 za nazwę) — osobni kandydaci.
+  const mentioned = await personsOf({ category: 'forum_post', text: `Czy ktoś kojarzy adres ${BTC_A}? Podobno oszust.` });
+  assert.equal(mentioned.persons.length, 2);
+  const mention = pairOf(mentioned).indicator.components.find((item) => item.rule === 'operator.same_address_mention')!;
+  assert.equal(mention.weight, 30);
+  assert.match(mention.limitations[0]!, /nie dowodzi wspólnego operatora/);
+  assert.equal(pairOf(mentioned).status, 'hypothesis');
+  assert.ok(pairOf(mentioned).indicator.score < 50);
+
+  // Ta sama treść skopiowana do drugiego serwisu: kopia, nie druga deklaracja — też osobni kandydaci.
+  const copied = await personsOf({ category: 'sale_offer', text: `Przyjmuję wpłaty za zlecenia programistyczne na adres ${BTC_A} dziękuję` });
+  assert.equal(copied.persons.length, 2);
+  assert.match(pairOf(copied).indicator.components.find((item) => item.rule === 'operator.same_address_mention')!.explanation, /kopia publikacji/);
+  assert.ok(!pairOf(copied).indicator.components.some((item) => item.rule === 'operator.same_owned_address'));
+});
+
+test('dwa konta publikujące ten sam adres GIEŁDY nie są jedną osobą; składnik wyjaśnia, że adresu nie policzono', async () => {
+  const query = { identifiers: [email, fullName] };
+  const connectors = secondAccountWith({ category: 'sale_offer', text: `Sprzedam auto, zaliczka na ${BTC_A}` });
+  const result = await runAnalysis({ query, connectors, chainProviders: [fakeProvider({ [BTC_A]: 'exchange' })] });
+  const dossier = dossierOf(result, query);
+
+  assert.equal(dossier.persons.length, 2);
+  assert.ok(dossier.persons.every((person) => person.profileIds.length === 1 && person.blockedMerges === undefined));
+  const [hypothesis] = dossier.indicators.commonOperator;
+  assert.deepEqual(hypothesis!.accounts, ['gitpub.example|jkowalski', 'targ.example|kowalski_auto']);
+  // Zostaje tylko słaba przesłanka (ta sama nazwa wyświetlana, 15); adres giełdy jest wykazany jako niepoliczony.
+  assert.deepEqual([hypothesis!.status, hypothesis!.indicator.score], ['hypothesis', 15]);
+  const notCounted = hypothesis!.indicator.components.find((item) => item.rule === 'operator.shared_or_institutional_address')!;
+  assert.equal(Math.abs(notCounted.applied), 0);
+  assert.match(notCounted.explanation, /NIE został policzony/);
+  assert.deepEqual(notCounted.evidence[0], { kind: 'address', value: BTC_A });
+  assert.ok(!hypothesis!.indicator.components.some((item) => item.rule === 'operator.same_owned_address'));
+  // Konto → portfel: publikacja odnotowana, ale to nie jest portfel prywatny żadnego z kont.
+  assert.deepEqual(dossier.indicators.accountWallet.map((link) => [link.accountId, link.notPrivateWallet, link.indicator.score]), [
+    ['gitpub.example|jkowalski', true, 0],
+    ['targ.example|kowalski_auto', true, 0],
+  ]);
+});
+
+test('ten sam nick w dwóch serwisach u różnych osób: osobni kandydaci i najwyżej słaba hipoteza', async () => {
+  const connectors = [
+    fakeConnector('forum', 'forum.example', ['nick'], () => [
+      { url: 'https://forum.example/u/krypto_janek', author: 'krypto_janek', text: `Mój adres ${BTC_A}`, profile: { handle: 'krypto_janek', displayName: 'Jan Kowalski', location: 'Poznań' } },
+    ]),
+    fakeConnector('targ', 'targ.example', ['nick'], () => [
+      { url: 'https://targ.example/u/krypto_janek', author: 'krypto_janek', category: 'sale_offer' as const, text: `Skup, wpłaty na ${BTC_C}`, profile: { handle: 'krypto_janek', displayName: 'Piotr Nowak', location: 'Gdańsk' } },
+    ]),
+  ];
+  const { result, query } = await analyse([nick], connectors);
+  const dossier = dossierOf(result, query);
+
+  assert.equal(dossier.persons.length, 2);
+  assert.ok(dossier.persons.every((person) => person.profileIds.length === 1 && person.status === 'hypothesis'));
+  // Adresy nie są łączone: każdy kandydat ma tylko swój.
+  assert.deepEqual(dossier.persons.flatMap((person) => person.addresses.map((item) => item.key)).sort(), [`bitcoin:${BTC_A}`, `bitcoin:${BTC_C}`].sort());
+  assert.ok(dossier.persons.every((person) => person.addresses.length === 1));
+  const [hypothesis] = dossier.indicators.commonOperator;
+  assert.equal(dossier.indicators.commonOperator.length, 1);
+  assert.equal(hypothesis!.status, 'hypothesis');
+  // Sam nick (20) minus sprzeczne nazwiska (10) i lokalizacje (10).
+  assert.equal(hypothesis!.indicator.score, 0);
+  assert.deepEqual(hypothesis!.indicator.components.map((item) => item.rule).sort(), ['operator.conflict.declared_name', 'operator.conflict.location', 'operator.same_handle']);
+  assert.match(hypothesis!.indicator.components.find((item) => item.rule === 'operator.same_handle')!.limitations[0]!, /często używany przez różne osoby/);
+  assert.match(hypothesis!.statement, /nie jest to ustalenie tożsamości/);
+});
+
+test('jeden operator, trzy persony: uzasadniona hipoteza ze składnikami, nigdy „potwierdzona” bez analityka', async () => {
+  const mail = email.value;
+  const connectors = [
+    fakeConnector('gitpub', 'gitpub.example', ['email'], () => [
+      { url: 'https://gitpub.example/jkowalski', author: 'jkowalski', text: `Wsparcie projektu: ${BTC_A}`, profile: { handle: 'jkowalski', emails: [mail] }, discoveredIdentifiers: [{ type: 'nick' as const, value: 'mroczny_handlarz' }] },
+    ]),
+    fakeConnector('forum', 'forum.example', ['email'], () => [
+      { url: 'https://forum.example/u/mroczny_handlarz', author: 'mroczny_handlarz', text: `Handel wyłącznie na mój adres ${BTC_A}, bez pośredników`, profile: { handle: 'mroczny_handlarz', emails: [mail] }, discoveredIdentifiers: [{ type: 'login' as const, value: 'jkowalski' }] },
+    ]),
+    fakeConnector('targ', 'targ.example', ['email'], () => [
+      { url: 'https://targ.example/u/btc_skup_24', author: 'btc_skup_24', category: 'sale_offer' as const, text: `Skup kryptowalut całą dobę, wpłaty kierować na ${BTC_A}`, profile: { handle: 'btc_skup_24', emails: [mail] } },
+    ]),
+  ];
+  const { result, query } = await analyse([email], connectors);
+  const dossier = dossierOf(result, query);
+
+  assert.equal(dossier.persons.length, 1);
+  assert.equal(dossier.persons[0]!.profileIds.length, 3);
+  assert.equal(dossier.persons[0]!.status, 'hypothesis');
+  const hypotheses = dossier.indicators.commonOperator;
+  assert.equal(hypotheses.length, 3);
+  for (const hypothesis of hypotheses) {
+    assert.equal(hypothesis.status, 'auto_grouped');
+    assert.equal(hypothesis.indicator.kind, 'common_operator');
+    assert.equal(hypothesis.indicator.calibrated, false);
+    // Bez decyzji analityka wskaźnik nie osiąga 100.
+    assert.equal(hypothesis.indicator.score, 95);
+    assert.match(hypothesis.statement, /Przesłanki wspólnego operatora — nie jest to ustalenie tożsamości\./);
+    assert.equal(hypothesis.decision, undefined);
+    const byRule = new Map(hypothesis.indicator.components.map((item) => [item.rule, item]));
+    const mailComponent = byRule.get('operator.same_email')!;
+    assert.deepEqual([mailComponent.weight, mailComponent.applied, mailComponent.direction], [100, 100, 'supports']);
+    assert.deepEqual(mailComponent.evidence[0], { kind: 'attribute', value: mail });
+    assert.ok(mailComponent.limitations.length > 0 && mailComponent.explanation.length > 0 && mailComponent.source.length > 0);
+    // Kolejna niezależna przesłanka dolicza tylko część wagi (20%, łącznie najwyżej 15).
+    const addressComponent = byRule.get('operator.same_owned_address')!;
+    assert.equal(addressComponent.weight, 80);
+    assert.ok(addressComponent.applied < 80 && addressComponent.independence === 'independent');
+    assert.ok(hypothesis.path.length >= 3);
+  }
+  const mutual = hypotheses.find((item) => item.accounts.includes('gitpub.example|jkowalski') && item.accounts.includes('forum.example|mroczny_handlarz'))!;
+  assert.ok(mutual.indicator.components.some((item) => item.rule === 'operator.mutual_links' && item.weight === 90));
+  assert.ok(!hypotheses.some((item) => item.status === 'confirmed'));
+  // Konto → portfel: trzy konta deklarują ten sam adres, każde z własnym wskaźnikiem ze swoich publikacji.
+  assert.deepEqual(dossier.indicators.accountWallet.map((link) => [link.accountId, link.indicator.score, link.status, link.notPrivateWallet]).sort(), [
+    ['forum.example|mroczny_handlarz', 85, 'computed', false],
+    ['gitpub.example|jkowalski', 85, 'computed', false],
+    ['targ.example|btc_skup_24', 70, 'computed', false],
+  ]);
+});
+
+test('konto → portfel: adres smart kontraktu nie jest portfelem prywatnym, a wzmianka waży mniej niż deklaracja', async () => {
+  const connectors = [
+    fakeConnector('gitpub', 'gitpub.example', ['email'], () => [
+      { url: 'https://gitpub.example/jkowalski', author: 'jkowalski', text: `Kontrakt puli: ${ETH_A}, wsparcie: ${BTC_A}`, profile: { handle: 'jkowalski', emails: [email.value] } },
+    ]),
+    fakeConnector('forum', 'forum.example', ['email'], () => [
+      { url: 'https://forum.example/p/1', author: 'jkowalski', category: 'forum_post' as const, text: `W dyskusji padł adres ${BTC_B}`, profile: { handle: 'jkowalski', emails: [email.value] } },
+    ]),
+  ];
+  const query = { identifiers: [email] };
+  const result = await runAnalysis({ query, connectors, chainProviders: [fakeProvider({ [ETH_A]: 'smart_contract' })] });
+  const dossier = dossierOf(result, query);
+  const linkOf = (address: string) => dossier.indicators.accountWallet.find((link) => link.address === address)!;
+
+  const contract = linkOf(ETH_A);
+  assert.deepEqual([contract.accountId, contract.addressClass, contract.notPrivateWallet, contract.indicator.score, contract.status], ['gitpub.example|jkowalski', 'smart_contract', true, 0, 'computed']);
+  const exclusion = contract.indicator.components.find((item) => item.rule === 'wallet.exclusion.address_class')!;
+  assert.deepEqual([exclusion.applied, exclusion.direction], [0, 'contradicts']);
+  assert.match(exclusion.explanation, /smart kontrakt/);
+  // W teczce adres kontraktu jest wykluczony i nie wchodzi do adresów powiązanych.
+  const finding = dossier.findings.find((item) => item.address === ETH_A)!;
+  assert.deepEqual([finding.confidence.excluded, finding.confidence.score, finding.subjectProbability], [true, 0, 0]);
+  assert.ok(!dossier.cashOutProof.some((proof) => JSON.stringify(proof).includes(ETH_A)));
+
+  // Deklaracja na własnym profilu: 85; sama wzmianka w wypowiedzi: 50 − 20, z jawnym ograniczeniem.
+  assert.equal(linkOf(BTC_A).indicator.score, 85);
+  const mention = linkOf(BTC_B);
+  assert.equal(mention.indicator.score, 30);
+  assert.ok(mention.indicator.limitations.includes('wzmianka, nie deklaracja własności'));
+  assert.deepEqual(mention.indicator.components.map((item) => [item.rule, item.applied]), [['wallet.base.forum_post', 50], ['wallet.mention_only', -20]]);
+  // Odrzucenie adresu przez analityka zeruje wskaźnik i zmienia status twierdzenia.
+  const rejected = dossierOf(result, query, { decisions: [decision('address', `bitcoin:${BTC_A}`, 'rejected')] }).indicators.accountWallet.find((link) => link.address === BTC_A)!;
+  assert.deepEqual([rejected.status, rejected.indicator.score], ['rejected', 0]);
 });

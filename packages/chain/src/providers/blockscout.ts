@@ -145,6 +145,22 @@ export function verifiedTokenSymbol(
   return `${symbol ?? 'token'} (niezweryfikowany token ${short})`;
 }
 
+/**
+ * Token, dla którego źródło nie podało liczby miejsc po przecinku: kwoty nie da się przeliczyć z jednostek
+ * bazowych, więc nie wolno jej zgadywać. Przelew zostaje na liście z dopiskiem „niezweryfikowany” —
+ * taki symbol nie jest wyceniany, śledzony ani liczony do wskaźników.
+ */
+export function amountUnitUnknown(asset: string): string {
+  return asset.includes('niezweryfikowany') ? asset : `${asset} (niezweryfikowany — źródło nie podało liczby miejsc po przecinku; kwota w jednostkach bazowych)`;
+}
+
+/** Liczba miejsc po przecinku podana przez źródło; `undefined`, gdy jej brak lub jest błędna. */
+export function declaredDecimals(...candidates: (string | number | null | undefined)[]): number | undefined {
+  const raw = candidates.find((value) => value !== null && value !== undefined && value !== '');
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 36 ? parsed : undefined;
+}
+
 export interface BlockscoutProviderConfig extends ActivityOptions {
   /** Adres instancji, domyślnie `https://eth.blockscout.com`. */
   siteUrl?: string;
@@ -326,15 +342,16 @@ export class BlockscoutProvider implements ChainProvider {
     for (const item of items.slice(0, limit)) {
       const txid = item.transaction_hash ?? item.tx_hash;
       if (!txid || !item.timestamp || !item.total?.value) continue;
-      const decimals = Number(item.total.decimals ?? item.token?.decimals ?? 0);
+      const decimals = declaredDecimals(item.total.decimals, item.token?.decimals);
+      const symbol = verifiedTokenSymbol(labels, network, item.token?.address_hash ?? item.token?.address, item.token?.symbol);
       const outgoing = item.from?.hash !== undefined && normalizeAddress(item.from.hash) === self;
       transfers.push({
         txid,
         time: item.timestamp,
         direction: outgoing ? 'out' : 'in',
         ...this.describe(outgoing ? item.to : item.from),
-        asset: verifiedTokenSymbol(labels, network, item.token?.address_hash ?? item.token?.address, item.token?.symbol),
-        amount: fromBaseUnits(item.total.value, Number.isFinite(decimals) ? decimals : 0),
+        asset: decimals === undefined ? amountUnitUnknown(symbol) : symbol,
+        amount: fromBaseUnits(item.total.value, decimals ?? 0),
         explorerUrl: `${this.explorerUrl}/tx/${txid}`,
       });
     }

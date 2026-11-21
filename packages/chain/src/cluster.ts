@@ -48,12 +48,18 @@ export function looksLikeCoinJoin(tx: UtxoTx): boolean {
   return Math.max(0, ...counts.values()) >= 3;
 }
 
-/** Adresy współwystępujące z podanym adresem na wejściach transakcji (bez transakcji typu CoinJoin). */
-export function commonInputAddresses(txs: UtxoTx[], address: string): { address: string; txid: string }[] {
+/**
+ * Adresy współwystępujące z podanym adresem na wejściach transakcji (bez transakcji typu CoinJoin).
+ * `isService` wskazuje adresy z publiczną etykietą (giełda, usługa, mikser, instytucja): taki adres
+ * nigdy nie trafia do klastra, a transakcja, w której wydaje on środki razem z adresem podmiotu, jest
+ * transakcją usługi (wypłata zbiorcza, konsolidacja) — nie świadczy o wspólnym portfelu, więc pomijamy ją całą.
+ */
+export function commonInputAddresses(txs: UtxoTx[], address: string, isService?: (address: string) => boolean): { address: string; txid: string }[] {
   const found = new Map<string, string>();
   for (const tx of txs) {
     const inputs = inputAddresses(tx);
     if (!inputs.includes(address) || looksLikeCoinJoin(tx)) continue;
+    if (isService && inputs.some((other) => other !== address && isService(other))) continue;
     for (const other of inputs) {
       if (other !== address && !found.has(other)) found.set(other, tx.txid);
     }
@@ -120,7 +126,9 @@ export function detectChange(tx: UtxoTx, own: ReadonlySet<string>): ChangeGuess 
 export const CLUSTER_METHOD_UTXO = [
   'HEURYSTYKA wspólnych wejść: adresy, których środki wydano w jednej transakcji razem ze środkami adresu podmiotu, ' +
     'uznajemy za należące do tego samego portfela. Zawodzi przy transakcjach wspólnych (CoinJoin, PayJoin, wypłaty zbiorcze usług) — ' +
-    'transakcje z co najmniej trzema adresami wejściowymi i trzema równymi wyjściami są pomijane jako wyglądające na CoinJoin.',
+    'transakcje z co najmniej trzema adresami wejściowymi i trzema równymi wyjściami są pomijane jako wyglądające na CoinJoin, ' +
+    'a transakcje, w których wśród wejść jest adres z publiczną etykietą usługi (giełda, mikser, instytucja), nie budują klastra. ' +
+    'Klastra nie budujemy też, gdy sam badany adres ma etykietę usługi.',
   'HEURYSTYKA adresu reszty: w transakcji o dwóch wyjściach za resztę uznajemy wyjście o typie skryptu zgodnym z wejściem ' +
     'lub o „nieokrągłej” kwocie (gdy drugie jest okrągłe); adres dotąd nieużywany wzmacnia przesłankę. Sprzeczne przesłanki = brak wskazania.',
   'Klaster jest przypuszczeniem analitycznym: przynależność adresu do portfela podmiotu wymaga potwierdzenia innymi dowodami.',

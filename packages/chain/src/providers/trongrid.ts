@@ -25,7 +25,7 @@ import { getDefaultLabels } from '../labels.ts';
 import type { LabelSet } from '../labels.ts';
 import { lookupPartyLabels } from '../party-labels.ts';
 import type { LabelLookup } from '../party-labels.ts';
-import { verifiedTokenSymbol } from './blockscout.ts';
+import { amountUnitUnknown, declaredDecimals, verifiedTokenSymbol } from './blockscout.ts';
 
 interface TronGridPage<T> {
   data?: T[];
@@ -211,7 +211,9 @@ export class TronGridProvider implements ChainProvider {
       if (item.confirmed === false || (item.finalResult ?? item.contractRet ?? 'SUCCESS') !== 'SUCCESS') continue;
       const outgoing = item.from_address === address;
       const tag = (outgoing ? item.to_address_tag?.to_address_tag : item.from_address_tag?.from_address_tag)?.trim();
-      const asset = verifiedTokenSymbol(labels, network, item.tokenInfo?.tokenId, item.tokenInfo?.tokenAbbr);
+      const decimals = declaredDecimals(item.tokenInfo?.tokenDecimal);
+      const symbol = verifiedTokenSymbol(labels, network, item.tokenInfo?.tokenId, item.tokenInfo?.tokenAbbr);
+      const asset = decimals === undefined ? amountUnitUnknown(symbol) : symbol;
       if (item.tokenInfo?.tokenId && !asset.includes('niezweryfikowany')) this.tokenContracts.set(asset, item.tokenInfo.tokenId);
       transfers.push({
         txid: item.transaction_id,
@@ -219,7 +221,7 @@ export class TronGridProvider implements ChainProvider {
         direction: outgoing ? 'out' : 'in',
         counterparty: outgoing ? item.to_address : item.from_address,
         asset,
-        amount: fromBaseUnits(item.quant, item.tokenInfo?.tokenDecimal ?? 0),
+        amount: fromBaseUnits(item.quant, decimals ?? 0),
         explorerUrl: this.link(item.transaction_id),
         counterpartyIsContract: (outgoing ? item.toAddressIsContract : item.fromAddressIsContract) === true,
         // TronScan podał wszystko, co publicznie wie o kontrahencie — nie pytamy o niego ponownie.
@@ -269,15 +271,17 @@ export class TronGridProvider implements ChainProvider {
     for (const item of items) {
       if (!item.block_timestamp || !item.value || !item.from || !item.to) continue;
       const outgoing = item.from === address;
-      const symbol = verifiedTokenSymbol(labels, network, item.token_info?.address, item.token_info?.symbol);
+      const decimals = declaredDecimals(item.token_info?.decimals);
+      const verified = verifiedTokenSymbol(labels, network, item.token_info?.address, item.token_info?.symbol);
+      const symbol = decimals === undefined ? amountUnitUnknown(verified) : verified;
       if (item.token_info?.address && !symbol.includes('niezweryfikowany')) this.tokenContracts.set(symbol, item.token_info.address);
       transfers.push({
         txid: item.transaction_id,
         time: new Date(item.block_timestamp).toISOString(),
         direction: outgoing ? 'out' : 'in',
         counterparty: outgoing ? item.to : item.from,
-        asset: verifiedTokenSymbol(labels, network, item.token_info?.address, item.token_info?.symbol),
-        amount: fromBaseUnits(item.value, item.token_info?.decimals ?? 0),
+        asset: symbol,
+        amount: fromBaseUnits(item.value, decimals ?? 0),
         explorerUrl: this.link(item.transaction_id),
       });
     }

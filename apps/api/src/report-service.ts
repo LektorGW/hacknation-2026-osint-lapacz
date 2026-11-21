@@ -129,9 +129,11 @@ export function renderServiceRequestHtml(
 <h2>1. Kogo dotyczy materiał</h2>
 ${inference(`<p>${
     main && main.probability > 0
-      ? `Najbardziej prawdopodobna osoba według analizy: <strong>${esc(main.fullName ?? 'imię i nazwisko nieustalone')}</strong> (prawdopodobieństwo ${main.probability}%).`
+      ? `Kandydat na osobę o najwyższym wskaźniku według analizy: <strong>${esc(main.fullName ?? 'imię i nazwisko nieustalone')}</strong> (wskaźnik ${main.probability}/100${
+          main.status === 'confirmed' ? ', potwierdzony decyzją analityka' : ', hipoteza'
+        }).`
       : 'Analiza nie ustaliła osoby.'
-  } Ustalenie osoby jest wnioskiem narzędzia do weryfikacji.</p>
+  } Ustalenie osoby jest wnioskiem narzędzia do weryfikacji; wskaźnik jest porządkowy (jawne reguły), nie jest skalibrowanym prawdopodobieństwem.</p>
   ${
     subjectAddresses.length > 0
       ? `<p>Adresy przypisywane podmiotowi, których dotyczą przelewy:</p><ul>${subjectAddresses

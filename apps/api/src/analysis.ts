@@ -13,7 +13,7 @@ import { assessIdentity, assessLinkedProfile, isUniqueType, matchRank, normalize
 import type { IdentityAssessment } from './identity.ts';
 import { addressKey, sightingKey } from './intel.ts';
 import { mentionsInDocument } from './services.ts';
-import type { AuthorComparison, DiscoveryStep, MentionSummary, QueryTiming, RunIntel, Sighting, SightingRole, StageTiming } from './intel.ts';
+import type { AuthorComparison, DiscoveryStep, ExpansionStop, MentionSummary, QueryTiming, RunIntel, Sighting, SightingRole, SourceError, StageTiming, StopReason } from './intel.ts';
 import { comparablePairs } from './persons.ts';
 import { PIVOT_LIMITS, runPivot } from './pivot.ts';
 import type { PivotLead, PivotSource } from './pivot.ts';
@@ -83,6 +83,12 @@ export interface AnalysisParams {
   concurrency?: number;
   /** Najwyżej tyle adresów dostaje analizę blockchain (najlepiej udokumentowane najpierw). */
   maxChainAddresses?: number;
+  /**
+   * Budżet zapytań całej analizy: każde zapytanie do łącznika (łącznik × identyfikator) i każde
+   * wywołanie dostawcy danych blockchain. Po wyczerpaniu kolejne zapytania są pomijane z powodem
+   * zatrzymania `request_budget`; wynik obejmuje to, co zebrano do tej chwili.
+   */
+  maxRequests?: number;
   /** Od ilu niepowiązanych autorów adres uznajemy za powszechnie cytowany i nikomu go nie przypisujemy. */
   widelyCitedAuthors?: number;
   /** Limit czasu całej analizy; po jego upływie zwracany jest wynik częściowy. */
@@ -132,8 +138,10 @@ export type AnalysisFinding = Omit<Finding, 'evidence'> & {
   evidence: InsightEvidence[];
   /** Adres cytowany przez bardzo wielu autorów — nie jest przypisywany osobie. */
   widelyCited?: boolean;
-  /** Analizę blockchain pominięto z powodu limitu adresów albo czasu. */
+  /** Analizę blockchain pominięto z powodu limitu adresów, czasu albo budżetu zapytań. */
   chainSkipped?: boolean;
+  /** Żaden dostawca danych blockchain nie odpowiedział dla tego adresu — `chain` jest puste, żadnych kwot nie przyjęto. */
+  chainUnavailable?: boolean;
   /**
    * Adres opublikowany przez powiązaną tożsamość (pętla rozszerzania), a nie przez podmiot.
    * Nie jest przypisany podmiotowi; `linkedScore` to Wskaźnik Pewności względem autora publikacji.
@@ -232,6 +240,26 @@ export const DEFAULT_MAX_IDENTIFIERS = 40;
 export const DEFAULT_MAX_COUNTERPARTIES = 10;
 export const DEFAULT_CONCURRENCY = 6;
 export const DEFAULT_MAX_CHAIN_ADDRESSES = 15;
+/** Domyślny budżet zapytań analizy — z dużym zapasem; zwykła analiza zużywa kilkadziesiąt–kilkaset zapytań. */
+export const DEFAULT_MAX_REQUESTS = 5000;
+/**
+ * Wiarygodność źródeł przy rozwijaniu: z jakich dokumentów NIE bierzemy identyfikatorów do dalszego wyszukiwania.
+ * - kategorie o niskiej wiarygodności (masowe komentarze: konkursy, rozdania) — nigdy;
+ * - dokumenty słabo przypisane podmiotowi (zgodne tylko nazwisko albo pospolity nick) — tylko wtedy,
+ *   gdy znaleziono je wprost po identyfikatorze analityka (krok < `weakFollowSteps`); taki identyfikator
+ *   dziedziczy słabą ocenę i trafia wyłącznie do źródeł bezpośrednich. Łańcuch „słaby → słaby” jest ucinany.
+ */
+export const EXPANSION_RELIABILITY: { lowReliabilityCategories: SourceCategory[]; weakMatches: IdentityMatch[]; weakFollowSteps: number } = {
+  lowReliabilityCategories: ['mass_comment'],
+  weakMatches: ['name_only', 'common_handle'],
+  weakFollowSteps: 1,
+};
+/** Komunikaty, którymi łącznik sam zgłasza niedostępność źródła, zwracając to, co zdążył pobrać. */
+const REPORTED_FAILURE = /błąd podczas|nie udało się pobrać|kod (?:5\d\d|429)(?!\d)/i;
+/** Stała kolejność etapów w wykazie powodów zatrzymania i błędów źródeł. */
+const STAGE_ORDER = ['search', 'occurrences', 'chain', 'counterparties', 'pivot', 'ai', 'scoring'];
+const stageRank = (stage: string) => STAGE_ORDER.indexOf(stage) + 1 || STAGE_ORDER.length + 1;
+const REASON_ORDER: StopReason[] = ['aborted', 'time_limit', 'request_budget', 'depth_limit', 'identifier_limit', 'query_limit', 'counterparty_limit', 'chain_address_limit', 'low_reliability', 'source_error', 'no_new_leads'];
 export const DEFAULT_WIDELY_CITED_AUTHORS = 10;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
 export const DEFAULT_MAX_MENTION_AUTHORS = 3;
@@ -303,6 +331,57 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     params.log?.(message);
   };
 
+  const runStartedAt = now().toISOString();
+
+  // ---------- Kontrola rozszerzania: budżet zapytań, powtórzenia, powody zatrzymania, błędy źródeł ----------
+
+  const maxRequests = Math.max(0, Math.floor(params.maxRequests ?? DEFAULT_MAX_REQUESTS));
+  const requests = { connectors: 0, chain: 0 };
+  const duplicates = { queries: 0, identifiers: 0, documents: 0 };
+  const stops: ExpansionStop[] = [];
+  const addStop = (stage: string, reason: StopReason, detail: string, skipped?: number) => {
+    stops.push({ stage, reason, detail, ...(skipped !== undefined ? { skipped } : {}) });
+  };
+  /** Zapytania pominięte po wyczerpaniu budżetu, według etapu. */
+  const budgetSkipped = new Map<string, number>();
+  let budgetLogged = false;
+  /** Rezerwuje jedno zapytanie w budżecie analizy; `false`, gdy budżet jest wyczerpany. */
+  const reserveRequest = (kind: 'connectors' | 'chain', stage: string): boolean => {
+    if (requests.connectors + requests.chain < maxRequests) {
+      requests[kind]++;
+      return true;
+    }
+    budgetSkipped.set(stage, (budgetSkipped.get(stage) ?? 0) + 1);
+    if (!budgetLogged) {
+      budgetLogged = true;
+      log(
+        `Wyczerpano budżet zapytań analizy (${maxRequests}) — kolejne zapytania do źródeł i dostawców danych blockchain są pomijane; ` +
+          'wynik obejmuje to, co zebrano do tej chwili.',
+      );
+    }
+    return false;
+  };
+  /** Błędy źródeł i dostawców zebrane według (etap, źródło) — jedno źródło to jeden wpis z licznikiem. */
+  const sourceErrors = new Map<string, SourceError>();
+  const noteSourceError = (entry: { connectorId?: string; providerId?: string; stage: string; message: string; address?: string; reported?: boolean }) => {
+    const key = `${entry.stage}|${entry.connectorId ?? ''}|${entry.providerId ?? ''}|${entry.reported ? 'r' : ''}`;
+    const existing = sourceErrors.get(key);
+    if (existing) {
+      existing.count++;
+      if (entry.address && !existing.addresses?.includes(entry.address)) (existing.addresses ??= []).push(entry.address);
+      return;
+    }
+    sourceErrors.set(key, {
+      ...(entry.connectorId ? { connectorId: entry.connectorId } : {}),
+      ...(entry.providerId ? { providerId: entry.providerId } : {}),
+      stage: entry.stage,
+      message: entry.message,
+      count: 1,
+      ...(entry.address ? { addresses: [entry.address] } : {}),
+      ...(entry.reported ? { reported: true } : {}),
+    });
+  };
+
   const normalizeText = params.normalizeText ?? ((text: string) => text);
   /** Adresy w treści — po sprowadzeniu nietypowych zapisów do postaci wykrywalnej. */
   const extract = (text: string) => extractAddresses(normalizeText(text));
@@ -322,7 +401,10 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   /** `share`: jaka część limitu czasu przypada na dany rodzaj pracy — reszta zostaje na kolejne fazy. */
   const expired = (what: string, share = 1): boolean => {
     if (performance.now() < startedAt + totalMs * share) return false;
-    if (!partial) log(`Przekroczono limit czasu całej analizy — ${what} i dalsze kroki pominięto; wynik jest częściowy.`);
+    if (!partial) {
+      log(`Przekroczono limit czasu całej analizy — ${what} i dalsze kroki pominięto; wynik jest częściowy.`);
+      addStop(progress.stage, 'time_limit', `Przekroczono limit czasu całej analizy (${Math.round(totalMs / 1000)} s) — ${what} i dalsze kroki pominięto.`);
+    }
     partial = true;
     return true;
   };
@@ -438,6 +520,39 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   // ---------- Dane blockchain: start, gdy tylko adres ma mocny ślad ----------
 
   const resolveActivity = params.resolveActivity ?? firstWorkingProvider;
+  /** Co stało się z zapytaniami o adres: czy któryś dostawca odpowiedział, kto zawiódł, czy zabrakło budżetu. */
+  const chainOutcomes = new Map<string, { ok: boolean; budget: boolean; failures: { providerId: string; message: string }[] }>();
+  const outcomeFor = (key: string) => {
+    let outcome = chainOutcomes.get(key);
+    if (!outcome) chainOutcomes.set(key, (outcome = { ok: false, budget: false, failures: [] }));
+    return outcome;
+  };
+  // Każde wywołanie dostawcy liczy się do budżetu zapytań; błędy dostawców zapamiętujemy per adres,
+  // żeby odróżnić „inny dostawca odpowiedział” od „nikt nie odpowiedział” (wtedy nie przyjmujemy żadnych liczb).
+  const chainProviders: ChainProvider[] = params.chainProviders.map((provider) => ({
+    ...provider,
+    id: provider.id,
+    label: provider.label,
+    supports: (network, address) => provider.supports(network, address),
+    getActivity: async (network, address, context) => {
+      const outcome = outcomeFor(addressKey({ network, address }));
+      if (!reserveRequest('chain', 'chain')) {
+        outcome.budget = true;
+        throw new Error('wyczerpano budżet zapytań analizy');
+      }
+      try {
+        const activity = await provider.getActivity(network, address, context);
+        outcome.ok = true;
+        return activity;
+      } catch (error) {
+        if (!context.signal?.aborted) outcome.failures.push({ providerId: provider.id, message: errorText(error) });
+        throw error;
+      }
+    },
+  }));
+  /** Adresy bez analizy łańcucha z powodu budżetu zapytań oraz adresy, dla których dostawcy nie odpowiedzieli. */
+  const chainBudgetSkipped = new Set<AddressGroup>();
+  const chainUnavailable = new Map<AddressGroup, string>();
   const chainLimited = createLimiter(CHAIN_CONCURRENCY);
   const chainLimit = params.maxChainAddresses ?? DEFAULT_MAX_CHAIN_ADDRESSES;
   const chainJobs = new Map<AddressGroup, Promise<void>>();
@@ -458,17 +573,46 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     if (running || chainJobs.size >= chainLimit) return running;
     const job = chainLimited(async () => {
       if (expired('analizę blockchain części adresów')) return;
+      const key = addressKey(group);
+      if (chainProviders.length > 0 && requests.connectors + requests.chain >= maxRequests) {
+        // Budżet wyczerpany przed pierwszym zapytaniem o ten adres.
+        reserveRequest('chain', 'chain');
+        chainBudgetSkipped.add(group);
+        return;
+      }
+      let failure: string | undefined;
       try {
         group.chain = await withTimeout(
-          (signal) => resolveActivity(params.chainProviders, group.network, group.address, chainContext(group, signal)),
+          (signal) => resolveActivity(chainProviders, group.network, group.address, chainContext(group, signal)),
           // Limit obejmuje kolejne próby u wszystkich dostawców.
-          timeoutMs * Math.max(1, params.chainProviders.length),
+          timeoutMs * Math.max(1, chainProviders.length),
           params.signal,
         );
-        if (!group.chain) log(`${group.address}: brak danych blockchain — adres pozostaje bez klasyfikacji.`);
       } catch (error) {
-        log(`${group.address}: BŁĄD pobierania danych blockchain: ${errorText(error)}.`);
+        failure = errorText(error);
+        log(`${group.address}: BŁĄD pobierania danych blockchain: ${failure}.`);
       }
+      const outcome = chainOutcomes.get(key);
+      const answered = outcome?.ok === true;
+      if (!answered && outcome?.budget && outcome.failures.length === 0 && failure === undefined) {
+        // Zapytanie zatrzymał budżet, a strategia wyboru dostawcy zwróciła wynik zastępczy — nie przyjmujemy go.
+        group.chain = undefined;
+        chainBudgetSkipped.add(group);
+        return;
+      }
+      if (!answered && ((outcome?.failures.length ?? 0) > 0 || failure !== undefined) && !params.signal?.aborted) {
+        // Żaden dostawca nie odpowiedział: wynik zastępczy (same zera) wprowadzałby w błąd, więc adres zostaje bez danych.
+        group.chain = undefined;
+        const failures = outcome?.failures.length
+          ? outcome.failures
+          : chainProviders.filter((provider) => provider.supports(group.network, group.address)).map((provider) => ({ providerId: provider.id, message: failure ?? 'brak odpowiedzi' }));
+        for (const item of failures) noteSourceError({ providerId: item.providerId, stage: 'chain', message: item.message, address: key });
+        const reason = failures.map((item) => `${item.providerId}: ${item.message}`).join('; ') || failure || 'brak odpowiedzi';
+        chainUnavailable.set(group, reason);
+        log(`${group.address}: dane blockchain NIEDOSTĘPNE — żaden dostawca nie odpowiedział (${reason}). Adres pozostaje bez danych z łańcucha; żadnych kwot nie przyjęto.`);
+        return;
+      }
+      if (!group.chain) log(`${group.address}: brak danych blockchain — adres pozostaje bez klasyfikacji.`);
     });
     chainJobs.set(group, job);
     return job;
@@ -517,6 +661,8 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
   /** Niepowiązani autorzy wymieniający identyfikator w źródłach wyszukiwawczych: identyfikator → autorzy. */
   const citers = new Map<string, Set<string>>();
+  /** Zapytania już wysłane w tej analizie: `łącznik|identyfikator` → odpowiedź (kontrola powtórzeń). */
+  const askedQueries = new Map<string, Promise<SourceDocument[]>>();
   /** Identyfikatory, dla których przerwano zbieranie wzmianek (są powszechnie cytowane). */
   const mentionStopped = new Set<string>();
   const mentionStopAuthors = params.mentionStopAuthors ?? DEFAULT_MENTION_STOP_AUTHORS;
@@ -525,17 +671,28 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
    * Pyta wszystkie łączniki akceptujące dany typ; błąd jednego nie zatrzymuje pozostałych.
    * `directOnly` pomija kosztowne wyszukiwarki (pytamy tylko źródła bezpośrednie: profile, rejestry, indeks własny).
    */
-  const search = async (identifier: Identifier, options: { timeShare?: number; directOnly?: boolean } = {}): Promise<SourceDocument[]> => {
+  const search = async (identifier: Identifier, options: { timeShare?: number; directOnly?: boolean; stage?: AnalysisStage } = {}): Promise<SourceDocument[]> => {
     const key = identifierKey(identifier);
+    const stage = options.stage ?? 'search';
     const wanted = normalizeName(identifier.value);
     const accepting = params.connectors.filter(
       (connector) => connector.accepts.includes(identifier.type) && !(options.directOnly && isBroadSearch(connector.id)),
     );
-    progress.connectorsTotal += accepting.length;
     const results = await Promise.all(
-      accepting.map((connector) =>
-        limited(async () => {
+      accepting.map((connector) => {
+        // To samo zapytanie (łącznik × identyfikator) wysyłamy raz na analizę; kolejne etapy dostają tę samą odpowiedź.
+        const queryKey = `${connector.id}|${key}`;
+        const asked = askedQueries.get(queryKey);
+        if (asked) {
+          duplicates.queries++;
+          return asked;
+        }
+        // Budżet rezerwujemy przy zlecaniu, w kolejności kodu — nie zależy od tego, które źródło odpowie pierwsze.
+        if (!reserveRequest('connectors', stage)) return Promise.resolve<SourceDocument[]>([]);
+        progress.connectorsTotal++;
+        const job = limited(async (): Promise<SourceDocument[]> => {
           if (expired('wyszukiwanie w części źródeł', options.timeShare ?? SEARCH_TIME_SHARE)) {
+            requests.connectors--;
             progress.connectorsDone++;
             return [];
           }
@@ -544,18 +701,28 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           if (isSearchSource(connector.id) && (citers.get(key)?.size ?? 0) > mentionStopAuthors) {
             if (!mentionStopped.has(key)) {
               mentionStopped.add(key);
+              addStop(
+                stage,
+                'query_limit',
+                `${identifier.type} „${identifier.value}”: wymienia go ponad ${mentionStopAuthors} niepowiązanych autorów — dalszych źródeł wyszukiwawczych o ten identyfikator nie pytano.`,
+              );
               log(
                 `${identifier.type} „${identifier.value}”: wymienia go co najmniej ${citers.get(key)!.size} niepowiązanych autorów (próg ${mentionStopAuthors}) — ` +
                   'dalsze źródła wyszukiwawcze pominięto dla tego identyfikatora.',
               );
             }
+            requests.connectors--;
             progress.connectorsDone++;
             report();
             return [];
           }
           const context = (signal: AbortSignal): ConnectorContext => ({
             signal,
-            log: (message) => log(`[${connector.id}] ${message}`),
+            log: (message) => {
+              log(`[${connector.id}] ${message}`);
+              // Łącznik sam obsłużył błąd źródła i zwrócił to, co miał — analityk musi o tym wiedzieć.
+              if (REPORTED_FAILURE.test(message)) noteSourceError({ connectorId: connector.id, stage, message, reported: true });
+            },
           });
           const queryStarted = performance.now();
           let documentsFound = 0;
@@ -578,23 +745,28 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
             return found;
           } catch (error) {
             log(`[${connector.id}] BŁĄD przy ${identifier.type} „${identifier.value}”: ${errorText(error)}. Źródło pominięte.`);
+            // Przerwanie całej analizy to nie awaria źródła.
+            if (!params.signal?.aborted) noteSourceError({ connectorId: connector.id, stage, message: errorText(error) });
             return [];
           } finally {
             queries.push({ connectorId: connector.id, identifier, ms: Math.round(performance.now() - queryStarted), documents: documentsFound });
             progress.connectorsDone++;
             report();
           }
-        }),
-      ),
+        });
+        askedQueries.set(queryKey, job);
+        return job;
+      }),
     );
     const unique: SourceDocument[] = [];
-    let duplicates = 0;
+    let repeated = 0;
     for (const doc of results.flat()) {
       const kept = dedupe(doc);
       if (kept) unique.push(kept);
-      else duplicates++;
+      else repeated++;
     }
-    if (duplicates > 0) log(`Pominięto ${duplicates} powtórzeń tej samej treści pod innym adresem (${identifier.type} „${identifier.value}”).`);
+    duplicates.documents += repeated;
+    if (repeated > 0) log(`Pominięto ${repeated} powtórzeń tej samej treści pod innym adresem (${identifier.type} „${identifier.value}”).`);
     return unique;
   };
 
@@ -685,9 +857,20 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const trail = new Map<string, DiscoveryStep>();
   let limitLogged = false;
   let broadDiscovered = 0;
+  /** Identyfikatory odkryte, które trafiły do wyszukiwania (każdy najwyżej raz). */
+  const askedIdentifiers = new Set<string>();
+
+  /** Identyfikatory potwierdzone, które przez limit trafiły tylko do źródeł bezpośrednich (bez kosztownych wyszukiwarek). */
+  let broadCapped = 0;
+  const hasBroadFor = (type: Identifier['type']) => params.connectors.some((connector) => isBroadSearch(connector.id) && connector.accepts.includes(type));
 
   /** Odnotowuje identyfikatory wskazane przez dokument i wybiera te do kolejnego kroku. */
   const collectDiscovered = (doc: SourceDocument, identity: IdentityAssessment, step: number, next: Map<string, Pending>) => {
+    // Wiarygodność źródła (EXPANSION_RELIABILITY): masowy komentarz nigdy nie prowadzi dalej, a dokument
+    // słabo przypisany podmiotowi — tylko wtedy, gdy znaleziono go wprost po identyfikatorze analityka.
+    const lowCategory = EXPANSION_RELIABILITY.lowReliabilityCategories.includes(doc.category);
+    const weakDocument = EXPANSION_RELIABILITY.weakMatches.includes(identity.match) || EXPANSION_RELIABILITY.weakMatches.includes(doc.identityMatch);
+    const unreliable = lowCategory || (weakDocument && step >= EXPANSION_RELIABILITY.weakFollowSteps);
     for (const raw of doc.discoveredIdentifiers ?? []) {
       const identifier = { type: raw.type, value: raw.value.trim() };
       // Adresy trafiają do analizy przez treść dokumentów, nie przez tę listę.
@@ -704,6 +887,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
       const pending = next.get(key);
       if (pending) {
+        duplicates.identifiers++;
         // Ten sam identyfikator wskazany w tym kroku także przez mocniejszy dokument.
         if (match === 'linked_profile' && pending.match !== 'linked_profile') {
           pending.match = match;
@@ -711,7 +895,13 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         }
         continue;
       }
-      if (trail.has(key)) continue;
+      const prior = trail.get(key);
+      // Identyfikator wskazany wcześniej tylko przez źródło niewiarygodne dostaje drugą szansę, gdy wskazuje go wiarygodne.
+      const retry = prior !== undefined && !prior.followed && prior.stopReason === 'low_reliability' && !unreliable && !askedIdentifiers.has(key);
+      if (prior && !retry) {
+        duplicates.identifiers++;
+        continue;
+      }
 
       // Nazwa ENS wymieniona w treści wpisu (a nie wskazana przez profil) często należy do kogoś innego:
       // sprawdzamy ją tylko w źródłach znających samą nazwę i przyjmujemy, gdy prowadzi do adresu podmiotu.
@@ -723,7 +913,8 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       const directOnly = requireKnownAddress || !strongSource || broadDiscovered >= MAX_BROAD_DISCOVERED;
       const withinDepth = step < depth;
       const withinLimit = inputKeys.size + [...trail.values()].filter((entry) => entry.followed).length < maxIdentifiers;
-      const followed = withinDepth && withinLimit;
+      const followed = withinDepth && withinLimit && !unreliable;
+      const stopReason: StopReason | undefined = followed ? undefined : unreliable ? 'low_reliability' : !withinDepth ? 'depth_limit' : 'identifier_limit';
       trail.set(key, {
         identifier,
         step: step + 1,
@@ -732,8 +923,19 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         via: doc.matchedIdentifier,
         match,
         followed,
+        ...(stopReason ? { stopReason } : {}),
       });
+      if (unreliable) {
+        log(
+          `Identyfikator ${identifier.type} „${identifier.value}” wskazany w ${doc.url} nie jest wyszukiwany: ` +
+            (lowCategory
+              ? 'źródłem jest masowy komentarz (niska wiarygodność).'
+              : 'dokument jest słabo przypisany podmiotowi (zgodne tylko nazwisko albo pospolity nick) i nie został znaleziony wprost po identyfikatorze analityka.'),
+        );
+      }
       if (followed) {
+        askedIdentifiers.add(key);
+        if (strongSource && !requireKnownAddress && directOnly && hasBroadFor(identifier.type)) broadCapped++;
         if (!directOnly) broadDiscovered++;
         next.set(key, { identifier, match, distance: (identity.distance ?? 0) + 1, parent: doc.matchedIdentifier, ...(requireKnownAddress ? { requireKnownAddress } : {}), ...(directOnly ? { directOnly } : {}) });
         log(`Odkryty identyfikator (krok ${step + 1}): ${identifier.type} „${identifier.value}” — wskazany w ${doc.url}.`);
@@ -744,6 +946,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     }
   };
 
+  let lastStep = 0;
   let frontier: Pending[] = personIdentifiers.map((identifier) => ({ identifier, match: 'exact_identifier', distance: 0 }));
   for (let step = 0; frontier.length > 0; step++) {
     const batches = await Promise.all(
@@ -756,7 +959,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         const leadsToSubject = (doc: SourceDocument) => extract(doc.text).some((address) => (groups.get(addressKey(address))?.evidence.size ?? 0) > 0);
         docs = found.filter(leadsToSubject);
         if (docs.length === 0) {
-          trail.get(identifierKey(item.identifier))!.followed = false;
+          const entry = trail.get(identifierKey(item.identifier))!;
+          entry.followed = false;
+          entry.stopReason = 'low_reliability';
           log(`${item.identifier.type} „${item.identifier.value}” wymieniono w treści publikacji, ale nie prowadzi do adresu podmiotu — to cudza nazwa, pominięto.`);
         }
       }
@@ -776,9 +981,35 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       }
     }
     frontier = [...next.values()];
+    lastStep = step;
     if (frontier.length > 0) {
       log(`Krok ${step + 1} wyszukiwania: nowych identyfikatorów ${frontier.length}.`);
       enterPhase(`search-${step + 1}`);
+    }
+  }
+
+  // Powody zatrzymania odkrywania — z tego, co zostało w ścieżce dojścia bez dalszego wyszukiwania.
+  {
+    const names = (reason: StopReason) => [...trail.values()].filter((entry) => !entry.followed && entry.stopReason === reason).map((entry) => `${entry.identifier.type} „${entry.identifier.value}”`);
+    const listed = (items: string[]) => `${items.slice(0, 10).join(', ')}${items.length > 10 ? ` i ${items.length - 10} innych` : ''}`;
+    const beyondDepth = names('depth_limit');
+    const beyondLimit = names('identifier_limit');
+    const unreliable = names('low_reliability');
+    if (beyondDepth.length > 0) addStop('search', 'depth_limit', `Osiągnięto limit głębokości odkrywania (kroków: ${depth}) — nie wyszukiwano dalej: ${listed(beyondDepth)}.`, beyondDepth.length);
+    if (beyondLimit.length > 0) addStop('search', 'identifier_limit', `Osiągnięto limit ${maxIdentifiers} identyfikatorów w analizie — nie wyszukiwano: ${listed(beyondLimit)}.`, beyondLimit.length);
+    if (unreliable.length > 0) {
+      addStop(
+        'search',
+        'low_reliability',
+        `Nie rozwijano identyfikatorów ze źródeł o niskiej wiarygodności (masowe komentarze; dokumenty zgodne tylko nazwiskiem albo pospolitym nickiem poza pierwszym krokiem; cudze nazwy z treści): ${listed(unreliable)}.`,
+        unreliable.length,
+      );
+    }
+    if (broadCapped > 0) {
+      addStop('search', 'query_limit', `Kosztowne wyszukiwarki dostały najwyżej ${MAX_BROAD_DISCOVERED} odkryte identyfikatory — pozostałe potwierdzone (${broadCapped}) sprawdzono tylko w źródłach bezpośrednich.`, broadCapped);
+    }
+    if (personIdentifiers.length > 0 && beyondDepth.length === 0 && beyondLimit.length === 0 && !partial && !budgetSkipped.has('search')) {
+      addStop('search', 'no_new_leads', `Odkrywanie zakończone po kroku ${lastStep}: znalezione profile nie wskazały żadnych nowych identyfikatorów do sprawdzenia.`);
     }
   }
 
@@ -797,9 +1028,10 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   // publikuje? Każdy autor jest wtedy kandydatem na właściciela, a jego publikacja — śladem.
   const addressOnly = personIdentifiers.length === 0;
 
-  const checkOccurrences = async (group: AddressGroup, index: number) => {
+  const fetchOccurrences = (group: AddressGroup, index: number) =>
+    search({ type: 'crypto_address', value: group.address }, { timeShare: OCCURRENCE_TIME_SHARE, directOnly: index >= MAX_BROAD_ADDRESSES, stage: 'occurrences' });
+  const checkOccurrences = async (group: AddressGroup, occurrences: SourceDocument[]) => {
     const key = `${group.network}:${group.address}`;
-    const occurrences = await search({ type: 'crypto_address', value: group.address }, { timeShare: OCCURRENCE_TIME_SHARE, directOnly: index >= MAX_BROAD_ADDRESSES });
     const candidateAuthors = new Set<string>();
     const containsAddress = (doc: SourceDocument) => extract(doc.text).some((item) => `${item.network}:${item.address}` === key);
 
@@ -922,7 +1154,20 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   // Wystąpienia adresów biegną równolegle z analizą łańcucha i sprawdzaniem kontrahentów:
   // każde zapytanie do wyszukiwarki forów trwa kilkanaście sekund, więc nie ustawiamy ich w kolejce.
   report('occurrences');
-  const occurrencesDone = Promise.all(ranked.map(checkOccurrences));
+  // Zapytania biegną równolegle, ale odpowiedzi przetwarzamy w kolejności rankingu adresów —
+  // wynik nie zależy od tego, które źródło odpowie pierwsze.
+  const occurrenceQueries = ranked.map(fetchOccurrences);
+  const occurrencesDone = (async () => {
+    for (const [index, group] of ranked.entries()) await checkOccurrences(group, await occurrenceQueries[index]!);
+  })();
+  if (ranked.length > MAX_BROAD_ADDRESSES && hasBroadFor('crypto_address')) {
+    addStop(
+      'occurrences',
+      'query_limit',
+      `Wystąpienia adresów w kosztownych wyszukiwarkach sprawdzono dla ${MAX_BROAD_ADDRESSES} najlepiej udokumentowanych adresów; pozostałe (${ranked.length - MAX_BROAD_ADDRESSES}) tylko w źródłach bezpośrednich.`,
+      ranked.length - MAX_BROAD_ADDRESSES,
+    );
+  }
 
   // ---------- Dane blockchain ----------
 
@@ -933,6 +1178,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const chainSkipped = new Set(ranked.filter((group) => !chainJobs.has(group) || (!group.chain && performance.now() >= deadline)));
   if (ranked.length > chainJobs.size) {
     log(`Adresów ${ranked.length}, limit analizy blockchain ${chainLimit} — ${ranked.length - chainJobs.size} najsłabiej udokumentowanych pozostaje bez analizy łańcucha.`);
+    addStop('chain', 'chain_address_limit', `Analizę blockchain dostało ${chainJobs.size} z ${ranked.length} adresów (limit ${chainLimit}) — najsłabiej udokumentowane pozostają bez analizy łańcucha.`, ranked.length - chainJobs.size);
   }
 
   // ---------- Kontrahenci bez etykiety: czy ktoś opublikował ich adresy? ----------
@@ -940,16 +1186,33 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const subjectGroups = [...groups.values()].filter(
     (group) => !rules.excludedClasses.includes(group.chain?.profile.addressClass ?? 'unknown'),
   );
-  const counterparties = unlabeledCounterparties(subjectGroups, new Set(groups.keys())).slice(0, maxCounterparties);
+  const allCounterparties = unlabeledCounterparties(subjectGroups, new Set(groups.keys()));
+  const counterparties = allCounterparties.slice(0, Math.max(0, maxCounterparties));
   report('counterparties');
   if (counterparties.length > 0) {
     log(`Sprawdzanie kontrahentów bez etykiety (największych wartością): ${counterparties.length}.`);
   }
-  await Promise.all(
-    counterparties.map(async (candidate, index) => {
+  if (allCounterparties.length > counterparties.length) {
+    // Zasada: grafu nie rozwijamy po wszystkich kontrahentach transakcji — tylko największych, i tylko o jeden krok.
+    log(`Kontrahentów bez etykiety ${allCounterparties.length}, limit ${maxCounterparties} — pozostałych ${allCounterparties.length - counterparties.length} nie sprawdzano (nie rozwijamy grafu po wszystkich kontrahentach).`);
+    addStop(
+      'counterparties',
+      'counterparty_limit',
+      `Sprawdzono ${counterparties.length} największych wartością kontrahentów bez etykiety z ${allCounterparties.length} (limit ${maxCounterparties}) — nie rozwijamy grafu po wszystkich kontrahentach; ` +
+        'kontrahentów sprawdzamy tylko w publikacjach, bez analizy ich własnych kontrahentów.',
+      allCounterparties.length - counterparties.length,
+    );
+  }
+  // Zapytania o kontrahentów biegną równolegle z wystąpieniami adresów; odpowiedzi przetwarzamy
+  // po nich i w kolejności rankingu — zapisany wynik nie zależy od kolejności odpowiedzi źródeł.
+  const counterpartyQueries = counterparties.map((candidate, index) =>
+    search({ type: 'crypto_address', value: candidate.address }, { timeShare: OCCURRENCE_TIME_SHARE, directOnly: index >= MAX_BROAD_COUNTERPARTIES, stage: 'counterparties' }),
+  );
+  await occurrencesDone;
+  {
+    for (const [index, candidate] of counterparties.entries()) {
       const key = addressKey(candidate);
-      const options = { timeShare: OCCURRENCE_TIME_SHARE, directOnly: index >= MAX_BROAD_COUNTERPARTIES };
-      const publications = (await search({ type: 'crypto_address', value: candidate.address }, options)).filter((doc) => extract(doc.text).some((item) => addressKey(item) === key));
+      const publications = (await counterpartyQueries[index]!).filter((doc) => extract(doc.text).some((item) => addressKey(item) === key));
       // Adres w zestawieniach albo u kilku niezależnych autorów nie wskazuje żadnego z nich jako kontrahenta.
       const single = publications.filter((doc) => doc.author && !isAddressList(doc));
       const authors = new Set(single.map((doc) => normalizeName(doc.author!)));
@@ -958,7 +1221,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           `Kontrahent ${candidate.address} występuje w publicznych zestawieniach adresów lub u ${authors.size} różnych autorów — ` +
             'publikacje nie wskazują właściciela; autorzy nie są osobami powiązanymi.',
         );
-        if (authors.size >= MANY_PUBLISHERS_MIN || single.length === 0) return;
+        if (authors.size >= MANY_PUBLISHERS_MIN || single.length === 0) continue;
       }
       for (const doc of single) {
         const author = doc.author ? normalizeName(doc.author) : '';
@@ -977,10 +1240,8 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         noteSighting(doc, { match: 'same_handle', reasons: [] }, 'counterparty_publisher', 0, [key]);
         log(`Kontrahent ${candidate.address} opublikowany przez „${doc.author}”: ${doc.url} — możliwa osoba powiązana.`);
       }
-    }),
-  );
-
-  await occurrencesDone;
+    }
+  }
 
   // ---------- Rozszerzanie: inne tożsamości tej samej osoby i adresy powiązane ----------
 
@@ -1009,15 +1270,27 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       queriesPerStep: pivotLimits.queriesPerStep,
       sources: [...subjectProfiles, ...subjectChains],
       isSubjectName: (name) => knownNames.has(normalizeName(name)),
-      search: (identifier) => search(identifier, { timeShare: PIVOT_LIMITS.timeShare, directOnly: true }),
+      search: (identifier) => search(identifier, { timeShare: PIVOT_LIMITS.timeShare, directOnly: true, stage: 'pivot' }),
       phraseSearch: async (phrase) => {
         if (!corpus || expired('rozszerzanie o inne tożsamości', PIVOT_LIMITS.timeShare)) return [];
-        try {
-          return (await corpus.search({ type: 'full_name', value: phrase }, { log: (message) => log(`[corpus] ${message}`) })).map(dedupe).filter((doc): doc is SourceDocument => doc !== undefined);
-        } catch (error) {
-          log(`[corpus] BŁĄD przy frazie „${phrase}”: ${errorText(error)}.`);
-          return [];
+        // Fraza w indeksie własnym też jest zapytaniem: raz na analizę i w ramach budżetu.
+        const queryKey = `${corpus.id}|phrase:${phrase.trim().toLowerCase()}`;
+        let job = askedQueries.get(queryKey);
+        if (job) duplicates.queries++;
+        else {
+          if (!reserveRequest('connectors', 'pivot')) return [];
+          job = (async () => {
+            try {
+              return await corpus.search({ type: 'full_name', value: phrase }, { log: (message) => log(`[corpus] ${message}`) });
+            } catch (error) {
+              log(`[corpus] BŁĄD przy frazie „${phrase}”: ${errorText(error)}.`);
+              noteSourceError({ connectorId: corpus.id, stage: 'pivot', message: errorText(error) });
+              return [];
+            }
+          })();
+          askedQueries.set(queryKey, job);
         }
+        return (await job).map(dedupe).filter((doc): doc is SourceDocument => doc !== undefined);
       },
       ownedAddresses,
       record: (doc, step) => {
@@ -1045,12 +1318,17 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       },
       expired: () => performance.now() >= startedAt + totalMs * PIVOT_LIMITS.timeShare,
       log,
+      onStop: (stop) => addStop('pivot', stop.reason, stop.detail, stop.skipped),
     });
     // Adresy powiązanych tożsamości: analiza łańcucha w ramach wspólnego limitu adresów.
     const linkedGroups = [...groups.values()].filter((group) => group.linkedOnly);
     for (const group of linkedGroups) startChain(group);
     await Promise.all(linkedGroups.map((group) => chainJobs.get(group)));
-    for (const group of linkedGroups) if (!chainJobs.has(group)) chainSkipped.add(group);
+    const linkedSkipped = linkedGroups.filter((group) => !chainJobs.has(group));
+    for (const group of linkedSkipped) chainSkipped.add(group);
+    if (linkedSkipped.length > 0) {
+      addStop('pivot', 'chain_address_limit', `Adresy powiązanych tożsamości bez analizy blockchain (wspólny limit ${chainLimit} adresów): ${linkedSkipped.length}.`, linkedSkipped.length);
+    }
     if (pivotLeads.length > 0) log(`Rozszerzanie: tropów ${pivotLeads.length}, adresów powiązanych tożsamości ${linkedGroups.length}.`);
   }
 
@@ -1109,7 +1387,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       notes.push(explanation);
       confidence = { ...confidence, score: 0, tier: [...rules.tiers].sort((a, b) => a.min - b.min)[0]!.label, ledger: [...confidence.ledger, { rule: 'info.linked_identity', delta: -confidence.score, running: 0, explanation, evidenceIds: evidence.map((item) => item.id) }], nextSteps: [] };
     }
-    if (chainSkipped.has(group)) notes.push('Nie analizowano łańcucha: adres poza limitem liczby adresów albo czasu analizy.');
+    const unavailable = chainUnavailable.get(group);
+    if (unavailable !== undefined) {
+      notes.push(`Dane blockchain niedostępne: żaden dostawca danych nie odpowiedział dla tego adresu (${unavailable}). Nie podano żadnych kwot ani klasyfikacji — to brak danych, a nie brak aktywności.`);
+    } else if (chainBudgetSkipped.has(group)) {
+      notes.push(`Nie analizowano łańcucha: wyczerpano budżet zapytań analizy (${maxRequests}).`);
+    } else if (chainSkipped.has(group)) notes.push('Nie analizowano łańcucha: adres poza limitem liczby adresów albo czasu analizy.');
     findings.push({
       address: group.address,
       network: group.network,
@@ -1119,7 +1402,8 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       chain: group.chain,
       unrelatedPublishers,
       ...(widelyCited ? { widelyCited } : {}),
-      ...(chainSkipped.has(group) ? { chainSkipped: true } : {}),
+      ...(chainSkipped.has(group) || chainBudgetSkipped.has(group) ? { chainSkipped: true } : {}),
+      ...(unavailable !== undefined ? { chainUnavailable: true } : {}),
       ...(group.linkedOnly ? { linkedOnly: true, linkedScore } : {}),
       ...(notes.length > 0 ? { notes } : {}),
     });
@@ -1166,30 +1450,34 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     log(`[model ${ai.model}] odczytano publikacji: ${read} z ${queue.length} (odczyt jest sugestią; o wyniku decydują reguły).`);
 
     const nodes = buildProfileNodes({ findings } as unknown as AnalysisRun, [...sightings.values()]);
-    const comparisons: AuthorComparison[] = [];
+    let comparisons: AuthorComparison[] = [];
     // Poza parami profili podmiotu porównujemy też profile podmiotu z profilami powiązanych tożsamości
     // (z pętli rozszerzania, współpublikujących, kontrahentów) — do oceny „ta sama osoba albo bliska”.
     const outside = (['linked_identity', 'co_publisher', 'counterparty_publisher'] as const).flatMap((role) =>
       buildProfileNodes({ findings } as unknown as AnalysisRun, [...sightings.values()], role),
     );
     const crossPairs = nodes.flatMap((a) => outside.map((b) => ({ a, b })));
-    await Promise.all(
-      [...comparablePairs(nodes, findings, rules), ...crossPairs]
-        .slice(0, MAX_AUTHOR_COMPARISONS)
-        .map(({ a, b }) =>
-          aiLimited(async () => {
-            const texts = (node: (typeof nodes)[number]) => node.sightings.map(textOf).filter((text): text is string => Boolean(text));
-            const [left, right] = [texts(a), texts(b)];
-            if (left.length === 0 || right.length === 0 || performance.now() >= deadline) return;
-            try {
-              const result = await ai.compareAuthors(left, right);
-              if (result) comparisons.push({ a: a.card.id, b: b.card.id, likelihood: result.likelihood, reasons: result.reasons, model: result.model });
-            } catch (error) {
-              log(`[model ${ai.model}] BŁĄD porównania autorów ${a.card.id} / ${b.card.id}: ${errorText(error)}.`);
-            }
-          }),
-        ),
-    );
+    // Wyniki w kolejności par, nie w kolejności odpowiedzi modelu.
+    comparisons = (
+      await Promise.all(
+        [...comparablePairs(nodes, findings, rules), ...crossPairs]
+          .slice(0, MAX_AUTHOR_COMPARISONS)
+          .map(({ a, b }) =>
+            aiLimited(async (): Promise<AuthorComparison | undefined> => {
+              const texts = (node: (typeof nodes)[number]) => node.sightings.map(textOf).filter((text): text is string => Boolean(text));
+              const [left, right] = [texts(a), texts(b)];
+              if (left.length === 0 || right.length === 0 || performance.now() >= deadline) return undefined;
+              try {
+                const result = await ai.compareAuthors(left, right);
+                return result ? { a: a.card.id, b: b.card.id, likelihood: result.likelihood, reasons: result.reasons, model: result.model } : undefined;
+              } catch (error) {
+                log(`[model ${ai.model}] BŁĄD porównania autorów ${a.card.id} / ${b.card.id}: ${errorText(error)}.`);
+                return undefined;
+              }
+            }),
+          ),
+      )
+    ).filter((item): item is AuthorComparison => item !== undefined);
     if (comparisons.length > 0) {
       authorComparisons = comparisons;
       log(`[model ${ai.model}] porównano styl autorów dla par profili: ${comparisons.length} (słaba przesłanka, nie łączy profili).`);
@@ -1202,6 +1490,46 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   if (slowestQueries.length > 0) {
     log(`Najwolniejsze zapytania: ${slowestQueries.map((item) => `${item.connectorId} (${item.identifier.type} „${item.identifier.value}”) ${(item.ms / 1000).toFixed(1)} s`).join('; ')}.`);
   }
+
+  // ---------- Kontrola rozszerzania: podsumowanie ----------
+
+  for (const [stage, skipped] of budgetSkipped) {
+    addStop(stage, 'request_budget', `Wyczerpano budżet zapytań analizy (${maxRequests}) — w tym etapie pominięto zapytań: ${skipped}.`, skipped);
+  }
+  if (chainBudgetSkipped.size > 0) log(`Budżet zapytań: adresów bez analizy łańcucha ${chainBudgetSkipped.size}.`);
+  if (params.signal?.aborted) addStop(progress.stage, 'aborted', 'Analizę przerwano z zewnątrz (zamykanie usługi) — wynik obejmuje to, co zebrano do chwili przerwania.');
+  const sourceName = (item: SourceError) => item.connectorId ?? item.providerId ?? '';
+  const failedSources = [...sourceErrors.values()].sort(
+    (a, b) => stageRank(a.stage) - stageRank(b.stage) || (sourceName(a) < sourceName(b) ? -1 : sourceName(a) > sourceName(b) ? 1 : 0) || Number(a.reported ?? false) - Number(b.reported ?? false),
+  );
+  for (const item of failedSources) item.addresses?.sort();
+  for (const stage of new Set(failedSources.map((item) => item.stage))) {
+    const inStage = failedSources.filter((item) => item.stage === stage);
+    const names = [...new Set(inStage.map(sourceName))];
+    addStop(
+      stage,
+      'source_error',
+      `${stage === 'chain' ? 'Dostawcy danych blockchain' : 'Źródła'}, które nie odpowiedziały: ${names.join(', ')} — tej części wyniku brakuje; niczego nie uzupełniano.`,
+      inStage.reduce((sum, item) => sum + item.count, 0),
+    );
+  }
+  if (failedSources.length > 0) {
+    log(
+      `WYNIK CZĘŚCIOWY — nie odpowiedziały: ${failedSources.map((item) => `${sourceName(item)} (${item.stage}, ${item.count}×: ${item.message})`).join('; ')}. ` +
+        'Ustalenia pochodzą z pozostałych źródeł; brakujących danych nie uzupełniano.',
+    );
+  }
+  const stopKey = (item: ExpansionStop) => stageRank(item.stage) * 100 + REASON_ORDER.indexOf(item.reason);
+  const orderedStops = stops
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => stopKey(a.item) - stopKey(b.item) || (a.item.detail < b.item.detail ? -1 : a.item.detail > b.item.detail ? 1 : 0) || a.index - b.index)
+    .map(({ item }) => item);
+  const duplicatesSkipped = duplicates.queries + duplicates.identifiers + duplicates.documents;
+  log(
+    `Kontrola rozszerzania: zapytań do źródeł ${requests.connectors}, do dostawców danych blockchain ${requests.chain} (budżet ${maxRequests}); ` +
+      `pominiętych powtórzeń ${duplicatesSkipped} (zapytania ${duplicates.queries}, identyfikatory ${duplicates.identifiers}, treści ${duplicates.documents}).`,
+  );
+  if (orderedStops.length > 0) log(`Powody zatrzymania: ${orderedStops.map((item) => `[${item.stage}/${item.reason}] ${item.detail}`).join(' ')}`);
   log(`Koniec analizy: adresów ${findings.length}${partial ? ' (wynik częściowy — limit czasu)' : ''}.`);
 
   return {
@@ -1220,6 +1548,41 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       timings,
       slowestQueries,
       ...(mentions.length > 0 ? { mentions } : {}),
+      expansion: {
+        limits: {
+          discoveryDepth: depth,
+          maxIdentifiers,
+          maxRequests,
+          maxCounterparties,
+          maxChainAddresses: chainLimit,
+          pivotSteps: pivotLimits.steps,
+          pivotQueriesPerStep: pivotLimits.queriesPerStep,
+          pivotMinLinkStrength: PIVOT_LIMITS.minLinkStrength,
+          maxBroadDiscovered: MAX_BROAD_DISCOVERED,
+          maxBroadAddresses: MAX_BROAD_ADDRESSES,
+          maxBroadCounterparties: MAX_BROAD_COUNTERPARTIES,
+          mentionStopAuthors,
+          requestTimeoutMs: timeoutMs,
+          totalTimeoutMs: totalMs,
+          concurrency: params.concurrency ?? DEFAULT_CONCURRENCY,
+        },
+        requests: { connectors: requests.connectors, chain: requests.chain, budget: maxRequests },
+        duplicatesSkipped,
+        duplicates,
+        reliability: EXPANSION_RELIABILITY,
+        stops: orderedStops,
+        run: {
+          startedAt: runStartedAt,
+          finishedAt: now().toISOString(),
+          identifiers: params.query.identifiers.map((item) => ({ type: item.type, value: item.value.trim() })),
+          ...(params.period?.from || params.period?.to ? { period: params.period } : {}),
+          connectors: params.connectors.map((connector) => connector.id),
+          chainProviders: params.chainProviders.map((provider) => provider.id),
+          rulesHash: sha256Hex(JSON.stringify(rules)).slice(0, 16),
+          ...(params.ai ? { ai: params.ai.model } : {}),
+        },
+      },
+      ...(failedSources.length > 0 ? { sourceErrors: failedSources } : {}),
     },
   };
 }

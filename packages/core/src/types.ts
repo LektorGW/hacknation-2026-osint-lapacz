@@ -239,7 +239,7 @@ export interface AnalystDecision {
   id: string;
   caseId: string;
   /** `link`: hipoteza wspólnego operatora dwóch kont; klucz z `linkKey(a, b)`. */
-  target: 'profile' | 'address' | 'evidence' | 'link';
+  target: 'profile' | 'address' | 'evidence' | 'link' | 'cashout';
   /** Profil: `service|handle` albo URL; adres: `network:address`; para kont: `a<->b`. */
   key: string;
   decision: Decision;

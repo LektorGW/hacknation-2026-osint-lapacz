@@ -304,3 +304,31 @@ test('zestawienie spraw i jawne reguły ocen', async () => {
   assert.equal(rules.services.base.transfer_out, 70);
   assert.equal(typeof rules.relations.shared_address, 'number');
 });
+
+test('decyzja o parze kont: klucz kanoniczny, a wycofanie zostawia wpis w rejestrze', async () => {
+  const { caseId, runId } = await caseWithRun();
+  const before = (await app.inject(`/api/runs/${runId}/dossier`)).json();
+  assert.deepEqual(Object.keys(before.indicators).sort(), ['accountWallet', 'cashOut', 'commonOperator']);
+
+  // Kolejność kont i wielkość liter nie mają znaczenia — zapisywany jest klucz kanoniczny.
+  const created = await post(`/api/cases/${caseId}/decisions`, { target: 'link', key: ' Targ.example|Inny <-> gitpub.example|krypto_janek ', decision: 'rejected', note: 'inna osoba' });
+  assert.equal(created.statusCode, 201);
+  const record = created.json();
+  assert.deepEqual([record.target, record.key, record.decision], ['link', 'gitpub.example|krypto_janek<->targ.example|inny', 'rejected']);
+  for (const key of ['gitpub.example|krypto_janek', 'a<->b<->c', 'a<->A', '<->b']) {
+    assert.equal((await post(`/api/cases/${caseId}/decisions`, { target: 'link', key, decision: 'confirmed' })).statusCode, 400);
+  }
+  assert.equal((await post(`/api/cases/${caseId}/decisions`, { target: 'cashout', key: 'bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', decision: 'confirmed', note: 'odpowiedź giełdy' })).statusCode, 201);
+
+  // Wycofanie: 204, wpis zostaje z czasem i autorem wycofania, teczka wraca do stanu sprzed decyzji.
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/cases/${caseId}/decisions/${record.id}` })).statusCode, 204);
+  const listed = (await app.inject(`/api/cases/${caseId}/decisions`)).json();
+  assert.equal(listed.length, 2);
+  assert.deepEqual(listed[0], { ...record, withdrawnAt: '2026-11-21T10:00:00.000Z', withdrawnBy: 'analityk' });
+  assert.equal(listed[1].withdrawnAt, undefined);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/cases/${caseId}/decisions/${listed[1].id}` })).statusCode, 204);
+  const after = (await app.inject(`/api/runs/${runId}/dossier`)).json();
+  assert.equal(after.decisions.length, 2);
+  assert.ok(after.decisions.every((item: { withdrawnAt?: string }) => item.withdrawnAt === '2026-11-21T10:00:00.000Z'));
+  assert.deepEqual({ ...after, decisions: [] }, { ...before, decisions: [] });
+});

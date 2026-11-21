@@ -191,7 +191,14 @@ export async function findLinkedAddresses(search: LinkSearch): Promise<{ links: 
 
   // ---------- same_wallet: klaster portfela (bez dodatkowych żądań) ----------
   const clusterSet = new Set<string>();
+  let clusterServices = 0;
   for (const member of search.cluster?.addresses ?? []) {
+    // Adres z publiczną etykietą (giełda, usługa, kontrakt, mikser, instytucja) nie jest portfelem prywatnym osoby.
+    const known = classify(network, member.address, { labels });
+    if (known.label || known.kind || (known.addressClass !== 'unknown' && known.addressClass !== 'private')) {
+      clusterServices += 1;
+      continue;
+    }
     clusterSet.add(normalizeAddress(member.address));
     const doubtful = member.reason.includes('UWAGA');
     const common = member.reason.startsWith('heurystyka wspólnych wejść');
@@ -215,7 +222,16 @@ export async function findLinkedAddresses(search: LinkSearch): Promise<{ links: 
     });
   }
 
+  if (clusterServices > 0) {
+    limitations.push(
+      `Powiązania: pominięto ${clusterServices} adres(y) klastra z publiczną etykietą usługi — adres giełdy, kontraktu lub innej usługi nie jest portfelem prywatnym osoby.`,
+    );
+  }
+
   // ---------- co_depositor: inni nadawcy wpłat na ten sam indywidualny adres wpłat ----------
+  // Podstawą powiązania jest WYŁĄCZNIE indywidualny adres wpłat (jedno konto klienta). Wspólny portfel
+  // zbiorczy giełdy („hot wallet”) albo ten sam kontrakt obsługuje tysiące niezwiązanych osób — dwa
+  // portfele korzystające z tej samej giełdy lub kontraktu NIE są przez to powiązane.
   interface DepositTarget {
     address: string;
     asset: string;
@@ -239,6 +255,8 @@ export async function findLinkedAddresses(search: LinkSearch): Promise<{ links: 
     const known = describe(transfer);
     const key = normalizeAddress(transfer.counterparty);
     if (known.addressClass !== 'exchange' || targets.has(key)) continue;
+    // Adres wpisany do zbioru etykiet to znany portfel zbiorczy usługi — nigdy indywidualny adres wpłat.
+    if (labels.lookup(network, transfer.counterparty)) continue;
     targets.set(key, { address: transfer.counterparty, asset: transfer.asset, exchange: known.label ?? 'giełda', time: transfer.time, txid: transfer.txid, labelOnly: true });
   }
 
@@ -277,8 +295,20 @@ export async function findLinkedAddresses(search: LinkSearch): Promise<{ links: 
         fail(`nie udało się sprawdzić aktywności adresu wpłat ${target.address}`, error);
       }
     }
+    // Historia adresu nie mieści się na jednej stronie, a liczby transakcji nie udało się ustalić: nie wiemy,
+    // czy to indywidualny adres wpłat, czy portfel zbiorczy usługi — bez tej pewności powiązań nie tworzymy.
+    if (node.more && txCount === undefined) {
+      depositRejected += 1;
+      limitations.push(
+        `Powiązania: adres ${target.address} (środki przekazywane do „${target.exchange}”) ma historię dłuższą niż jedna pobrana strona, a liczby jego transakcji nie udało się ustalić — ` +
+          'nie da się odróżnić indywidualnego adresu wpłat od portfela zbiorczego usługi. Nie utworzono powiązań „współwpłacający”.',
+      );
+      continue;
+    }
     // Wyjątek: adres przyjmujący wpłaty wielu osób to pośrednik (kantor, bramka, serwis), nie konto jednej osoby.
-    if (senders.size > options.maxDepositSenders || (txCount !== undefined && txCount > options.maxDepositTxCount)) {
+    // Adres znany tylko z etykiety portfela giełdy (bez zaobserwowanego zamiecenia) musi mieć aktywność pojedynczego klienta.
+    const txLimit = target.labelOnly ? options.maxPrivateTxCount : options.maxDepositTxCount;
+    if (senders.size > options.maxDepositSenders || (txCount !== undefined && txCount > txLimit)) {
       depositRejected += 1;
       limitations.push(
         `Powiązania: adres ${target.address} (środki przekazywane do „${target.exchange}”) ma ${senders.size}${node.more ? '+' : ''} różnych nadawców` +

@@ -164,7 +164,7 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
       ? [
           {
             text:
-              `Znaleziono adres ${shortAddress(pendingAddress.address)}, którego nie potwierdzono jako należącego do podmiotu (prawdopodobieństwo ${pendingAddress.personAddressProbability}%)` +
+              `Znaleziono adres ${shortAddress(pendingAddress.address)}, którego nie potwierdzono jako należącego do podmiotu (wskaźnik osoba–adres ${pendingAddress.personAddressProbability}/100)` +
               `${pendingAddress.chain ? `; w blockchainie ma ${pendingAddress.chain.transfers} ${plural(pendingAddress.chain.transfers, 'przelew', 'przelewy', 'przelewów')}` : ''}. ` +
               'Decyzja analityka „potwierdzony” dla profilu lub adresu przeliczy teczkę z tym adresem.',
             layer: 'inference',
@@ -208,7 +208,7 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
     result.push({
       text:
         `Powiązana tożsamość: „${identity.displayName}” — ${identityRelationLabel(identity.relation)} (siła ${identity.score}/100). ${identity.reasons[0]!.text} ` +
-        'To wskazówka do rozstrzygnięcia przez analityka: ta sama osoba, osoba bliska albo podstawiona.',
+        'To przesłanki wspólnego operatora, nie ustalenie — analityk rozstrzyga, czy to ta sama osoba, osoba bliska albo podstawiona.',
       layer: 'inference',
     });
   }

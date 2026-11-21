@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { linkKey } from '@olcys/core';
 import { runAnalysis } from '../src/analysis.ts';
 import { computePriority } from '../src/priority.ts';
 import { BTC_A, BTC_B, BTC_EXCHANGE, FIXED_NOW, cashOut, chainWith, decision, dossierOf, evidence, fakeConnector, finding, run, transfer } from './helpers.ts';
@@ -96,7 +97,7 @@ test('graf: wszystkie rodzaje węzłów, krawędzie tylko między istniejącymi 
   const { result } = await scenario();
   const { nodes, edges } = dossierOf(result, query).graph;
 
-  assert.deepEqual([...new Set(nodes.map((node) => node.kind))].sort(), ['address', 'identifier', 'person', 'profile', 'service', 'subject']);
+  assert.deepEqual([...new Set(nodes.map((node) => node.kind))].sort(), ['address', 'identifier', 'operator', 'person', 'persona', 'profile', 'service', 'source', 'subject']);
   for (const kind of ['has_identifier', 'found_profile', 'publishes', 'cash_out', 'related']) {
     assert.ok(edges.some((edge) => edge.kind === kind), `brak krawędzi ${kind}`);
   }
@@ -243,4 +244,149 @@ test('decyzje: odrzucony adres wypada z sum i priorytetu, z adnotacją', async (
   const confirmed = dossierOf(result, query, { decisions: [decision('address', BTC_A, 'confirmed')] });
   assert.equal(confirmed.findings[0]!.confidence.score, 90);
   assert.equal(confirmed.findings[0]!.decision, 'confirmed');
+});
+
+// ---------- Decyzje o parach kont (hipoteza wspólnego operatora) ----------
+
+const mail = { type: 'email' as const, value: 'jan.kowalski@poczta.example' };
+const GITPUB = 'gitpub.example|jkowalski';
+const FORUM = 'forum.example|krypto_janek';
+const TARG = 'targ.example|julka_k';
+
+/** Dwa konta z tym samym e-mailem (automatycznie jedna osoba) oraz oferta innej osoby z adresem podmiotu. */
+const linkScenario = async () => {
+  const linkQuery = { identifiers: [mail, nick] };
+  const gitpub = fakeConnector('gitpub', 'gitpub.example', ['email'], () => [
+    { url: 'https://gitpub.example/jkowalski', author: 'jkowalski', text: `Wsparcie: ${BTC_A}`, profile: { handle: 'jkowalski', displayName: 'Jan Kowalski', emails: [mail.value] } },
+  ]);
+  const forum = fakeConnector('forum', 'forum.example', ['nick'], () => [
+    { url: 'https://forum.example/u/krypto_janek', author: 'krypto_janek', category: 'sale_offer' as const, text: `Sprzedam, płatność ${BTC_B}`, profile: { handle: 'krypto_janek', displayName: 'Jan Kowalski', emails: [mail.value] } },
+  ]);
+  const targ = fakeConnector('targ', 'targ.example', ['crypto_address'], (identifier) =>
+    identifier.value === BTC_A
+      ? [{ url: 'https://targ.example/oferta/9', author: 'julka_k', category: 'sale_offer' as const, text: `Sprzedam telefon, wpłata na ${BTC_A}`, profile: { handle: 'julka_k', displayName: 'Julia Kowalska' } }]
+      : [],
+  );
+  const result = await runAnalysis({ query: linkQuery, connectors: [gitpub, forum, targ], chainProviders: [chainWith({})] });
+  return { result, linkQuery };
+};
+
+test('decyzja „to nie ten sam operator” rozdziela konta i przelicza osoby, tożsamości, wskaźniki i graf', async () => {
+  const { result, linkQuery } = await linkScenario();
+  const auto = dossierOf(result, linkQuery);
+  const pair = (dossier: typeof auto, x: string, y: string) => dossier.indicators.commonOperator.find((item) => item.id === linkKey(x, y))!;
+
+  // Automatycznie: wspólny e-mail łączy oba konta w jedną osobę; adres drugiego konta liczy się podmiotowi.
+  assert.deepEqual([...auto.persons[0]!.profileIds].sort(), [FORUM, GITPUB]);
+  assert.equal(pair(auto, GITPUB, FORUM).status, 'auto_grouped');
+  assert.equal(auto.totals.linkedAddresses, 2);
+
+  // Klucz w dowolnej kolejności i wielkości liter wskazuje tę samą parę.
+  const reject = decision('link', `${FORUM.toUpperCase()}<->${GITPUB}`, 'rejected', 'różne osoby — ustalenia z akt');
+  const rejected = dossierOf(result, linkQuery, { decisions: [reject] });
+  assert.equal(rejected.persons.length, 2);
+  assert.deepEqual(rejected.persons.map((person) => person.profileIds), [[GITPUB], [FORUM]]);
+  assert.match(rejected.persons[0]!.blockedMerges![0]!.reason, /decyzja analityka: konta .* nie mają wspólnego operatora/);
+  // Hipoteza: status, wyzerowany wskaźnik, decyzja i składnik z jej identyfikatorem.
+  const hypothesis = pair(rejected, GITPUB, FORUM);
+  assert.deepEqual([hypothesis.status, hypothesis.indicator.score, hypothesis.decision!.decision, hypothesis.decision!.id, hypothesis.decision!.note], ['rejected', 0, 'rejected', reject.id, 'różne osoby — ustalenia z akt']);
+  const veto = hypothesis.indicator.components.find((item) => item.rule === 'operator.conflict.analyst_rejected')!;
+  assert.deepEqual([veto.blocking, veto.evidence[0]], [true, { kind: 'decision', value: reject.id }]);
+  // Przesłanki pozostają widoczne — decyzja ich nie ukrywa.
+  assert.ok(hypothesis.indicator.components.some((item) => item.rule === 'operator.same_email'));
+  // Odłączone konto jest powiązaną tożsamością z odnotowanym odrzuceniem.
+  const identity = rejected.linkedIdentities.find((item) => item.accounts.includes(FORUM))!;
+  assert.deepEqual([identity.id, identity.status, identity.decision, identity.accounts], [`tozsamosc:${FORUM}`, 'rejected', 'rejected', [FORUM]]);
+  // Adres znany tylko z odłączonego konta przestaje być adresem podmiotu.
+  assert.equal(auto.findings.find((item) => item.address === BTC_B)!.confidence.score, 70);
+  assert.equal(rejected.findings.find((item) => item.address === BTC_B)!.confidence.score, 0);
+  assert.equal(rejected.totals.linkedAddresses, 1);
+  assert.notDeepEqual(rejected.graph, auto.graph);
+  assert.notDeepEqual(rejected.keyFindings, auto.keyFindings);
+  // Pozostałe hipotezy są nietknięte.
+  assert.deepEqual(pair(rejected, GITPUB, TARG), pair(auto, GITPUB, TARG));
+});
+
+test('potwierdzenie pary kont scala je mimo różnych nazwisk; wycofanie decyzji przywraca wynik automatyczny i zostaje w rejestrze', async () => {
+  const { result, linkQuery } = await linkScenario();
+  const auto = dossierOf(result, linkQuery);
+  const key = linkKey(GITPUB, TARG);
+
+  // Automatycznie: ten sam adres publikowany jako własny, ale różne nazwiska — hipoteza zablokowana, konto osobno.
+  const before = auto.indicators.commonOperator.find((item) => item.id === key)!;
+  assert.equal(before.status, 'blocked');
+  assert.ok(before.indicator.score <= 45);
+  assert.ok(before.indicator.components.some((item) => item.rule === 'operator.conflict.declared_name' && item.blocking));
+  assert.ok(!auto.persons[0]!.profileIds.includes(TARG));
+  assert.ok(auto.linkedIdentities.some((identity) => identity.accounts.includes(TARG) && identity.status === 'hypothesis'));
+  assert.equal(auto.persons[0]!.status, 'hypothesis');
+
+  const confirm = decision('link', key, 'confirmed', 'ten sam numer rachunku w aktach');
+  const confirmed = dossierOf(result, linkQuery, { decisions: [confirm] });
+  assert.deepEqual([...confirmed.persons[0]!.profileIds].sort(), [FORUM, GITPUB, TARG]);
+  assert.equal(confirmed.persons[0]!.status, 'confirmed');
+  assert.ok(confirmed.persons[0]!.reasons.some((reason) => reason.includes('decyzją analityka o wspólnym operatorze')));
+  assert.ok(!confirmed.linkedIdentities.some((identity) => identity.accounts.includes(TARG)));
+  const after = confirmed.indicators.commonOperator.find((item) => item.id === key)!;
+  assert.deepEqual([after.status, after.indicator.score, after.decision!.id], ['confirmed', 100, confirm.id]);
+  assert.ok(after.indicator.components.some((item) => item.rule === 'operator.analyst_confirmed'));
+  assert.match(after.statement, /przyjęty decyzją analityka/);
+  assert.notDeepEqual(confirmed.graph, auto.graph);
+
+  // Wycofanie: wpis zostaje w rejestrze z czasem i autorem wycofania, a wynik jest dokładnie automatyczny.
+  const withdrawnRecord = { ...confirm, withdrawnAt: '2026-11-21T11:00:00.000Z', withdrawnBy: 'analityk' };
+  const withdrawn = dossierOf(result, linkQuery, { decisions: [withdrawnRecord] });
+  assert.deepEqual(withdrawn.decisions, [withdrawnRecord]);
+  assert.deepEqual({ ...withdrawn, decisions: [] }, { ...auto, decisions: [] });
+  // Nowa decyzja po wycofanej działa normalnie, a historia zachowuje oba wpisy.
+  const again = dossierOf(result, linkQuery, { decisions: [withdrawnRecord, { ...decision('link', key, 'rejected'), id: 'd-druga' }] });
+  assert.equal(again.indicators.commonOperator.find((item) => item.id === key)!.status, 'rejected');
+  assert.equal(again.decisions.length, 2);
+});
+
+test('wyjście do walut tradycyjnych: ostatni szczebel tylko po decyzji analityka; wycofanie przywraca poprzedni', async () => {
+  const { result } = await scenario();
+  const key = `bitcoin:${BTC_A}`;
+  const order = ['onchain_transfer', 'service_interaction', 'cashout_signal', 'documented_fiat_exit'];
+  const best = (decisions: ReturnType<typeof decision>[]) => {
+    const items = dossierOf(result, query, { decisions }).indicators.cashOut.filter((item) => item.address === BTC_A);
+    return items.sort((a, b) => order.indexOf(b.stage) - order.indexOf(a.stage))[0]!;
+  };
+
+  // Same dane blockchain (wpłata na giełdę) nie dają udokumentowanego wyjścia.
+  const auto = best([]);
+  assert.ok(order.indexOf(auto.stage) < order.indexOf('documented_fiat_exit'));
+  assert.notEqual(auto.status, 'confirmed');
+  // Decyzja z podstawą spoza blockchaina: najwyższy szczebel, status „potwierdzone”.
+  const documented = decision('cashout', key, 'confirmed', 'odpowiedź giełdy z 3.11.2026 — wypłata na rachunek');
+  assert.deepEqual([best([documented]).stage, best([documented]).status], ['documented_fiat_exit', 'confirmed']);
+  // Decyzja „odrzucony” jest tylko odnotowana; wycofanie przywraca wynik automatyczny, a wpis zostaje w rejestrze.
+  assert.deepEqual(best([decision('cashout', key, 'rejected')]), auto);
+  const withdrawn = { ...documented, withdrawnAt: '2026-11-21T11:00:00.000Z', withdrawnBy: 'analityk' };
+  assert.deepEqual(best([withdrawn]), auto);
+  assert.deepEqual(dossierOf(result, query, { decisions: [withdrawn] }).decisions, [withdrawn]);
+});
+
+test('źródła, które nie odpowiedziały: teczka wykazuje je wprost i nie udaje pełnego wyniku', async () => {
+  const { result } = await scenario();
+  const clean = dossierOf(result, query);
+  assert.deepEqual(clean.sourceErrors, []);
+  assert.ok(!clean.explanations.some((item) => item.kind === 'source_errors'));
+  assert.deepEqual(clean.expansion, result.intel.expansion);
+
+  const sourceErrors = [
+    { connectorId: 'forum', stage: 'search', message: 'fetch failed', count: 2 },
+    { providerId: 'atrapa-chain', stage: 'chain', message: 'limit zapytań', count: 1, addresses: [`bitcoin:${BTC_A}`] },
+  ];
+  // Adres bez danych dostawcy: brak danych, a nie „brak aktywności”.
+  const findings = result.findings.map((item) => ({ ...item, chain: undefined, chainUnavailable: true }));
+  const dossier = dossierOf({ ...result, findings, intel: { ...result.intel, sourceErrors } }, query);
+  assert.deepEqual(dossier.sourceErrors, sourceErrors);
+  const note = dossier.explanations.find((item) => item.kind === 'source_errors')!;
+  assert.match(note.text, /^Część źródeł nie odpowiedziała \(forum, atrapa-chain\): wynik jest częściowy; brakujących danych nie uzupełniano\. Dla 1 adresu nie ma danych z blockchaina — to brak danych, a nie brak aktywności\./);
+  // Bez danych z blockchaina nie ma sum ani wniosku „brak wypłat”.
+  assert.deepEqual(dossier.totals.cashOutPlnByYear, {});
+  assert.ok(dossier.explanations.some((item) => item.kind === 'chain_skipped'));
+  assert.ok(!dossier.explanations.some((item) => item.kind === 'no_cash_out'));
+  assert.deepEqual(dossier.indicators.cashOut, []);
 });

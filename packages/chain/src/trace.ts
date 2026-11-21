@@ -868,7 +868,14 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
   const own = new Set<string>([search.address]);
 
   // Heurystyka wspólnych wejść działa na już pobranych transakcjach — bez dodatkowych żądań.
-  for (const item of commonInputAddresses(search.txs, search.address)) {
+  // Adres z publiczną etykietą (giełda, usługa, mikser, instytucja) nie jest portfelem prywatnym:
+  // nie trafia do klastra, a gdy etykietę ma sam badany adres, klastra nie budujemy wcale.
+  const labelled = (address: string) => {
+    const known = classify(network, address, { labels });
+    return Boolean(known.label) || Boolean(known.kind) || (known.addressClass !== 'unknown' && known.addressClass !== 'private');
+  };
+  const subjectIsService = labelled(search.address);
+  for (const item of subjectIsService ? [] : commonInputAddresses(search.txs, search.address, labelled)) {
     if (clusterAddresses.length >= options.clusterLimit) break;
     own.add(item.address);
     clusterAddresses.push({
@@ -878,7 +885,13 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     });
   }
   const questions: TraceResult['openQuestions'] = [];
-  if (!options.enabled) return { trails, deposits, limitations: [], clusterAddresses, openQuestions: questions };
+  const clusterNotes = subjectIsService
+    ? [
+        'Badany adres ma publiczną etykietę usługi — nie budujemy klastra portfela (heurystyki wspólnych wejść i adresu reszty wskazywałyby adresy usługi, nie osoby) ' +
+          'i nie śledzimy dalszej drogi środków: w usłudze środki klientów są wymieszane, więc jej wypłat nie da się przypisać konkretnej wpłacie.',
+      ]
+    : [];
+  if (!options.enabled || subjectIsService) return { trails, deposits, limitations: clusterNotes, clusterAddresses, openQuestions: questions };
 
   let stoppedBy: string | undefined;
   let lookupBroken = false;
@@ -1087,6 +1100,10 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     const top = outputs.find(({ output }) => !partial.has(output.scriptpubkey_address!));
     if (!top || top.output.value! < satoshi * options.minForwardedShare) return stops.add(outputs.length > 0 ? STOP.split : STOP.unspent);
     const to = top.output.scriptpubkey_address!;
+    // Odbiorca z etykietą, która nie jest usługą wymiany (instytucja, zbiórka, inny znany adres): tu ścieżka się kończy.
+    const topKnown = await resolve(to);
+    if (stoppedBy) return;
+    if (topKnown.label || (topKnown.addressClass !== 'unknown' && topKnown.addressClass !== 'private')) return stops.add(STOP.labelled);
     const amount = Math.min(satoshi, top.output.value!);
     const reason = `adres ${short(address)} po ${hours} h przekazał dalej ${Math.round((top.output.value! / satoshi) * 100)}% otrzymanej kwoty jednym wyjściem — reguła: adres przelotowy${merged}`;
     await follow(
@@ -1230,7 +1247,7 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     }
   }
 
-  const limitations = stops.limitations();
+  const limitations = [...clusterNotes, ...stops.limitations()];
   if (stoppedBy) {
     limitations.push(
       `Śledzenie dalszej drogi środków przerwano: ${stoppedBy}. Sprawdzono ${examined} z ${subjectSpends.length} transakcji wychodzących ` +

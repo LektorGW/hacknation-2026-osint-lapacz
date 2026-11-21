@@ -19,7 +19,7 @@ import type { AddressReplacement } from './diff.ts';
 import type { DossierFinding, DossierView } from './dossier.ts';
 import { formatAmount as amount, formatPln as pln, shortAddress as short } from './format.ts';
 import { NETWORK_LABEL, STYLE, calc, dateTime, esc, fact, inference, layerTag, link } from './report-html.ts';
-import { renderProofSection } from './report-proof.ts';
+import { renderIndicatorSections, renderMethodologyBox, renderProofSection } from './report-proof.ts';
 import { renderServiceSection } from './report-service.ts';
 import type { CaseSummary } from './storage.ts';
 
@@ -123,14 +123,40 @@ function renderLedger(finding: Finding): string {
         .map((value) => `Ś${value}`)
         .join(', ');
       const delta = entry.delta > 0 ? `+${entry.delta}` : String(entry.delta);
-      return `<tr><td>${index + 1}</td><td>${esc(entry.explanation)}<br><span class="meta">reguła: <code>${esc(entry.rule)}</code></span></td>
-        <td>${basis || '—'}</td><td class="liczba">${delta} p.p.</td><td class="liczba"><strong>${entry.running}%</strong></td></tr>`;
+      const weight = entry.weight === undefined ? '' : `; waga reguły: ${entry.weight > 0 ? '+' : ''}${esc(entry.weight)} p.p.`;
+      const sources = [...new Set(entry.sources ?? [])];
+      return `<tr><td>${index + 1}</td><td>${esc(entry.explanation)}<br><span class="meta">reguła: <code>${esc(entry.rule)}</code>${weight}</span>
+          ${entry.independence ? `<br><span class="meta">niezależność: ${esc(entry.independence)}</span>` : ''}
+          ${(entry.limitations ?? []).length > 0 ? `<br><span class="meta">ograniczenia: ${esc(entry.limitations!.join(' '))}</span>` : ''}</td>
+        <td>${basis || '—'}${sources.length > 0 ? `<br><span class="meta">${sources.map((url) => link(url)).join('<br>')}</span>` : ''}</td>
+        <td class="liczba">${delta} p.p.</td><td class="liczba"><strong>${entry.running}%</strong></td></tr>`;
     })
     .join('');
+  const groups = finding.confidence.provenance ?? [];
+  const independent = finding.confidence.independentSources ?? groups.length;
+  const provenance =
+    finding.confidence.provenance === undefined
+      ? ''
+      : `<p>Ślady pogrupowane według pochodzenia — niezależnych pochodzeń: <strong>${independent}</strong> (śladów: ${finding.evidence.length}).
+          Kopie, przedruki i wersje archiwalne tej samej treści liczą się jako jedno potwierdzenie.</p>
+        ${
+          groups.length > 0
+            ? `<table><tr><th>Pochodzenie</th><th>Ślady</th><th>Usługi</th><th>Dlaczego ślady uznano za zależne</th></tr>
+              ${groups
+                .map(
+                  (group, index) => `<tr><td>${index + 1}</td>
+                    <td>${group.evidenceIds.map((id) => (numbers.has(id) ? `Ś${numbers.get(id)}` : esc(id))).join(', ') || '—'}</td>
+                    <td>${esc(group.services.join(', '))}</td>
+                    <td>${group.reasons.length > 0 ? esc(group.reasons.join('; ')) : 'pojedynczy ślad albo ślady niezależne'}</td></tr>`,
+                )
+                .join('')}</table>`
+            : ''
+        }`;
   return `<table>
-    <tr><th>Krok</th><th>Zastosowana reguła</th><th>Podstawa</th><th class="liczba">Zmiana</th><th class="liczba">Wynik po kroku</th></tr>
+    <tr><th>Krok</th><th>Zastosowana reguła (waga, niezależność, ograniczenia)</th><th>Podstawa i źródła</th><th class="liczba">Zmiana</th><th class="liczba">Wynik po kroku</th></tr>
     ${rows}
-  </table>`;
+  </table>
+  ${provenance}`;
 }
 
 /** Kontrahent transakcji: etykieta (jeśli jest) i skrócony adres. */
@@ -272,7 +298,7 @@ function renderFinding(finding: DossierFinding, number: number, rules: ScoreRule
         ? 'Adres nie jest przypisywany badanemu podmiotowi. Odnotowano jedynie fakt jego publikacji lub użycia.'
         : finding.evidence.length === 0
           ? 'Adres został podany przez analityka; w przeszukanych źródłach nie znaleziono jego publikacji przez badany podmiot.'
-          : `Powiązanie adresu z podmiotem oceniono jako: <strong>${esc(confidence.tier)}</strong>. To ocena prawdopodobieństwa, nie ustalenie własności adresu.`
+          : `Powiązanie adresu z podmiotem oceniono jako: <strong>${esc(confidence.tier)}</strong>. To nazwa progu wskaźnika porządkowego (siła udokumentowania), nie skalibrowane prawdopodobieństwo i nie ustalenie własności adresu.`
     }</p>
     ${
       confidence.nextSteps.length > 0
@@ -359,13 +385,15 @@ function renderPersons(dossier: DossierView): string {
   if (dossier.persons.length === 0) {
     return '<p>W przeszukanych źródłach nie znaleziono profili, z których można by ustalić osobę.</p>';
   }
-  return inference(`<p>Narzędzie automatycznie połączyło znalezione profile w kandydatów na osoby. Pierwszy kandydat to ustalenie główne;
-      kolejni oznaczają, że część śladów może należeć do kogoś innego (np. imiennika). To wniosek do weryfikacji, nie ustalenie tożsamości.</p>
+  return inference(`<p>Narzędzie automatycznie połączyło znalezione profile w kandydatów na osoby. Pierwszy kandydat to hipoteza główna;
+      kolejni oznaczają, że część śladów może należeć do kogoś innego (np. imiennika). Każdy kandydat jest hipotezą wspólnego operatora kont —
+      wnioskiem do weryfikacji, nie ustaleniem tożsamości. Nazwa przy kandydacie to nazwa deklarowana w profilach.</p>
     ${dossier.persons
       .map((person, index) => {
         const profiles = dossier.profiles.filter((profile) => person.profileIds.includes(profile.id));
+        const state = person.status === 'confirmed' ? 'potwierdzony decyzją analityka' : person.status === 'rejected' ? 'odrzucony decyzją analityka' : 'hipoteza — do weryfikacji';
         return `<div class="zrodlo">
-          <h4>${index === 0 ? 'Osoba główna' : `Inny kandydat ${index}`}: ${esc(person.fullName ?? 'imię i nazwisko nieustalone')} — prawdopodobieństwo ${person.probability}%</h4>
+          <h4>${index === 0 ? 'Osoba główna' : `Inny kandydat ${index}`}: ${esc(person.fullName ?? 'imię i nazwisko nieustalone')} — wskaźnik ${person.probability}/100 (${state})</h4>
           ${person.nameVariants.length > 0 ? `<p>Inne zapisy nazwy: ${esc(person.nameVariants.join(', '))}.</p>` : ''}
           <p>Przesłanki, krok po kroku:</p><ol>${person.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ol>
           <p>Profile: ${profiles.map((profile) => `${esc(profile.handle ?? '—')} (${esc(profile.service)})`).join(', ') || '—'}.</p>
@@ -377,8 +405,8 @@ function renderPersons(dossier: DossierView): string {
           }
           ${
             person.addresses.length > 0
-              ? `<table><tr><th>Adres przypisany tej osobie</th><th class="liczba">Łączne prawdopodobieństwo osoba–adres</th></tr>
-                ${person.addresses.map((item) => `<tr><td class="mono">${esc(item.key)}</td><td class="liczba">${item.probability}%</td></tr>`).join('')}</table>`
+              ? `<table><tr><th>Adres przypisany tej osobie</th><th class="liczba">Łączny wskaźnik osoba–adres</th></tr>
+                ${person.addresses.map((item) => `<tr><td class="mono">${esc(item.key)}</td><td class="liczba">${item.probability}/100</td></tr>`).join('')}</table>`
               : ''
           }
         </div>`;
@@ -388,7 +416,7 @@ function renderPersons(dossier: DossierView): string {
 
 function renderProfiles(dossier: DossierView): string {
   if (dossier.profiles.length === 0) return '<p>Analiza nie zapisała żadnego profilu.</p>';
-  return inference(`<p>Ocena 0–100 mówi, na ile profil należy do osoby głównej. Wynika z jawnych przesłanek wymienionych przy każdym profilu.</p>
+  return inference(`<p>Ocena 0–100 (wskaźnik porządkowy) mówi, jak mocne są przesłanki, że profil należy do osoby głównej. Wynika z jawnych przesłanek wymienionych przy każdym profilu.</p>
     <table>
       <tr><th>Serwis / konto</th><th class="liczba">Ocena</th><th>Poziom</th><th>Przesłanki</th><th class="liczba">Adresy</th><th>Decyzja analityka</th></tr>
       ${dossier.profiles
@@ -444,21 +472,98 @@ function renderTimeline(dossier: DossierView): string {
     ${dossier.timeline.length > shown.length ? `<p class="meta">Pokazano ${shown.length} najnowszych z ${dossier.timeline.length} zdarzeń; pełna oś czasu jest w teczce sprawy.</p>` : ''}`;
 }
 
+const DECISION_TARGET_LABEL: Record<string, string> = {
+  profile: 'profil',
+  address: 'adres',
+  evidence: 'ślad',
+  link: 'hipoteza wspólnego operatora (para kont)',
+};
+
+/** Rejestr decyzji do audytu: także decyzje wycofane — z datą i autorem wycofania. */
 function renderDecisions(dossier: DossierView): string {
-  if (dossier.decisions.length === 0) {
+  const decisions = (dossier.decisions ?? []) as (DossierView['decisions'][number] & { withdrawnAt?: string; withdrawnBy?: string })[];
+  if (decisions.length === 0) {
     return '<p>Analityk nie podjął żadnej decyzji — wszystkie wyniki pochodzą z automatycznej oceny narzędzia.</p>';
   }
+  const withdrawn = decisions.filter((decision) => decision.withdrawnAt).length;
   return fact(`<table>
-      <tr><th>Kiedy</th><th>Kto</th><th>Dotyczy</th><th>Decyzja</th><th>Notatka</th></tr>
-      ${dossier.decisions
+      <tr><th>Kiedy</th><th>Kto</th><th>Dotyczy</th><th>Decyzja</th><th>Stan</th><th>Notatka</th></tr>
+      ${decisions
         .map(
           (decision) => `<tr><td style="white-space:nowrap">${dateTime(decision.decidedAt)}</td><td>${esc(decision.author)}</td>
-            <td>${decision.target === 'profile' ? 'profil' : 'adres'}: <span class="mono">${esc(decision.key)}</span></td>
-            <td>${decision.decision === 'confirmed' ? 'potwierdzenie' : 'odrzucenie'}</td><td>${esc(decision.note ?? '—')}</td></tr>`,
+            <td>${esc(DECISION_TARGET_LABEL[decision.target] ?? decision.target)}: <span class="mono">${esc(decision.key)}</span></td>
+            <td>${decision.decision === 'confirmed' ? 'potwierdzenie' : 'odrzucenie'}</td>
+            <td>${
+              decision.withdrawnAt
+                ? `<strong>wycofana</strong> ${dateTime(decision.withdrawnAt)}${decision.withdrawnBy ? ` przez: ${esc(decision.withdrawnBy)}` : ''} — nie wpływa na wynik`
+                : 'w rejestrze'
+            }</td><td>${esc(decision.note ?? '—')}</td></tr>`,
         )
         .join('')}
     </table>
-    <p class="meta">Dla każdego profilu i adresu obowiązuje najnowsza decyzja; wcześniejsze pozostają w rejestrze.</p>`);
+    <p class="meta">Dla każdego profilu, adresu, śladu i pary kont obowiązuje najnowsza niewycofana decyzja; wcześniejsze i wycofane pozostają w rejestrze do audytu.
+      Decyzji w rejestrze: ${decisions.length}, w tym wycofanych: ${withdrawn}.</p>`);
+}
+
+/**
+ * Ścieżka dowodowa adresu: identyfikator wejściowy → konto (jak znalezione) → publikacja (URL, czas pozyskania,
+ * skrót treści) → adres (suma kontrolna) → ustalenia z blockchaina → usługa. Składana wyłącznie z danych teczki.
+ */
+function renderEvidencePaths(dossier: DossierView): string {
+  const accepted = dossier.findings.filter((finding) => !finding.confidence.excluded);
+  if (accepted.length === 0) return '<p>Brak adresów powiązanych z podmiotem — nie ma ścieżek dowodowych do pokazania.</p>';
+  return accepted
+    .map((finding) => {
+      const services = dossier.serviceLinks.filter((item) => item.transfers.some((transfer) => transfer.subjectAddress === finding.address));
+      const chain = finding.chain;
+      const publications =
+        finding.evidence.length === 0
+          ? '<p>Adres podany przez analityka — brak publikacji przypisanej podmiotowi; ścieżka zaczyna się od danych wejściowych.</p>'
+          : `<table>
+              <tr><th>1. Identyfikator wejściowy</th><th>2. Konto i sposób odnalezienia</th><th>3. Publikacja</th><th>Pozyskano</th><th>Skrót SHA-256 treści</th></tr>
+              ${finding.evidence
+                .map((item) => {
+                  const profile = dossier.profiles.find((card) => card.evidenceIds.includes(item.id));
+                  return `<tr><td>${esc(IDENTIFIER_LABEL[item.matchedIdentifier.type] ?? item.matchedIdentifier.type)} „${esc(item.matchedIdentifier.value)}”</td>
+                    <td>${esc(profile?.handle ?? item.author ?? 'konto nieustalone')} (${esc(item.service)})<br>
+                      <span class="meta">${esc(IDENTITY_LABEL[item.identityMatch] ?? item.identityMatch)}${item.identityReasons?.length ? ` — ${esc(item.identityReasons.join(' '))}` : ''}</span></td>
+                    <td>${link(item.url)}</td><td style="white-space:nowrap">${dateTime(item.capturedAt)}</td><td class="mono">${esc(item.contentHash)}</td></tr>`;
+                })
+                .join('')}
+            </table>`;
+      return `<section class="adres">
+        <h3><span class="mono">${esc(finding.address)}</span></h3>
+        ${fact(`<h4>Od identyfikatora do publikacji</h4>${publications}
+          <h4>4. Adres</h4>
+          <p>Sieć: ${esc(NETWORK_LABEL[finding.network] ?? finding.network)}. Suma kontrolna adresu: ${finding.checksumVerified ? 'potwierdzona' : 'niepotwierdzona (zapis bez sumy kontrolnej)'}.</p>
+          <h4>5. Ustalenia z blockchaina</h4>
+          <p>${
+            chain
+              ? `${esc(CLASS_LABEL[chain.profile.addressClass] ?? chain.profile.addressClass)}; transakcji: ${chain.profile.txCount}; pobranych przelewów: ${chain.transfers.length}; przelewów do usług wymiany: ${chain.cashOuts.length}; udokumentowanych ścieżek środków: ${chain.trails?.length ?? 0}.`
+              : 'Nie pobrano danych blockchain dla tego adresu.'
+          }</p>`)}
+        ${calc(`<h4>Wskaźnik Pewności powiązania adresu z podmiotem</h4>
+          <p>${finding.confidence.score}% — ${esc(finding.confidence.tier)}${
+            finding.confidence.independentSources !== undefined ? `; niezależnych pochodzeń: ${finding.confidence.independentSources}` : ''
+          }. Rozbicie na reguły: sekcja 4.</p>`)}
+        ${inference(`<h4>6. Usługa</h4>
+          ${
+            services.length === 0
+              ? '<p>Nie stwierdzono przelewów między tym adresem a adresami usług.</p>'
+              : `<ul>${services
+                  .map((item) => {
+                    const transfers = item.transfers.filter((transfer) => transfer.subjectAddress === finding.address);
+                    return `<li><strong>${esc(item.name)}</strong> — przelewów: ${transfers.length} (np. ${transfers
+                      .slice(0, 3)
+                      .map((transfer) => `<span class="mono">${link(transfer.explorerUrl, short(transfer.txid))}</span>`)
+                      .join(', ')}); siła powiązania ${item.strength}/100${item.inferredOnly ? ' — wyłącznie wnioskowanie' : ''}.</li>`;
+                  })
+                  .join('')}</ul>
+                <p>Przelew do usługi jest zapisem w blockchainie; to, czy podmiot ma w niej konto i czy wypłacił środki, może potwierdzić tylko usługa.</p>`
+          }`)}
+      </section>`;
+    })
+    .join('');
 }
 
 /** Adnotacje teczki: dlaczego wynik adresu różni się od zapisanego w analizie. */
@@ -524,11 +629,11 @@ ${
     ? `<h2>Adresy do potwierdzenia</h2>
       ${inference(`<p>Adresy znalezione w analizie, których nie przypisano podmiotowi. Nie wchodzą do sum ani priorytetu; decyzja analityka „potwierdzony” dla profilu lub adresu przeliczy teczkę.</p>
         <table>
-          <tr><th>Adres</th><th class="liczba">Prawdopodobieństwo osoba–adres</th><th>Dlaczego niepotwierdzony</th><th>Aktywność w blockchainie</th></tr>
+          <tr><th>Adres</th><th class="liczba">Wskaźnik osoba–adres</th><th>Dlaczego niepotwierdzony</th><th>Aktywność w blockchainie</th></tr>
           ${dossier.unconfirmedAddresses
             .map(
               (item) => `<tr><td class="mono">${esc(item.address)}<br><span class="meta">${esc(NETWORK_LABEL[item.network] ?? item.network)}; źródła: ${item.sources.map((source) => link(source.url, source.service)).join(', ')}</span></td>
-                <td class="liczba">${item.personAddressProbability}%</td>
+                <td class="liczba">${item.personAddressProbability}/100</td>
                 <td><ul>${item.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul></td>
                 <td>${
                   item.chain
@@ -544,7 +649,10 @@ ${
 <h2>Powiązania z giełdami, portfelami i usługami</h2>
 ${renderServiceSection(dossier.serviceLinks)}
 
+${renderIndicatorSections(dossier.indicators, dossier.persons)}
+
 <h2>Jak czytać ten raport</h2>
+${renderMethodologyBox()}
 <p>Każda informacja należy do jednej z trzech warstw. Warstwy są oznaczone etykietą i rodzajem obramowania:</p>
 ${fact('<p>Informacja pobrana wprost z publicznego źródła lub z blockchaina. Można ją sprawdzić pod podanym adresem; skrót SHA-256 pozwala potwierdzić, że zapisana kopia treści nie została zmieniona.</p>')}
 ${calc('<p>Liczba policzona przez narzędzie według jawnych reguł (np. Wskaźnik Pewności, suma w PLN, priorytet). Każdy krok obliczenia jest pokazany i można go powtórzyć.</p>')}
@@ -598,6 +706,10 @@ ${renderProfiles(dossier)}
 
 <h2>4. Adresy powiązane z podmiotem</h2>
 ${accepted.length === 0 ? '<p>Brak adresów, które można rozważać jako powiązane z podmiotem.</p>' : accepted.map((finding, index) => renderFinding(finding, index + 1, context.rules)).join('')}
+
+<h2>Ścieżka dowodowa</h2>
+<p>Dla każdego adresu powiązanego z podmiotem: od identyfikatora wejściowego, przez konto i publikację, do adresu, ustaleń z blockchaina i usługi.</p>
+${renderEvidencePaths(dossier)}
 
 <h2>5. Adresy odrzucone</h2>
 <p>Adresy znalezione przy podmiocie, których <strong>nie</strong> przypisuje się mu, ponieważ należą do pośredników lub są współdzielone
@@ -655,13 +767,16 @@ ${
 ${
   dossier.linkedIdentities.length === 0
     ? `<p>Rozszerzanie analizy (wspólne cechy profili, ten sam adres, adresy powiązane w blockchainie) nie wskazało innych tożsamości. Słabe tropy niewykazane: ${dossier.weakLeadsHidden}.</p>`
-    : inference(`<p>Inne nazwy, pod którymi może występować ta sama osoba, oraz osoby bliskie lub podstawione. Żadna z tych tożsamości nie jest scalona z osobą główną —
-        rozstrzyga analityk. Łączne szacunkowe wypłaty osoby głównej i tożsamości „prawdopodobnie ta sama osoba”: <strong>${esc(pln(dossier.totals.cashOutPlnTotalWithLikelySame))}</strong>
+    : inference(`<p>Inne nazwy, dla których istnieją przesłanki wspólnego operatora z kontami podmiotu, oraz możliwe osoby bliskie lub podstawione.
+        To hipotezy: żadna z tych tożsamości nie jest scalona z osobą główną — rozstrzyga analityk. Łączne szacunkowe wypłaty osoby głównej i tożsamości
+        o relacji „prawdopodobnie ta sama osoba” (nazwa relacji, nie ustalenie): <strong>${esc(pln(dossier.totals.cashOutPlnTotalWithLikelySame))}</strong>
         (sama osoba główna: ${esc(pln(dossier.totals.cashOutPlnTotal))}).</p>
       ${dossier.linkedIdentities
         .map(
           (identity) => `<div class="zrodlo">
-            <h4>${esc(identity.displayName)} — ${esc(identityRelationLabel(identity.relation))}, siła ${identity.score}/100${identity.decision === 'rejected' ? ' (analityk: inna osoba)' : ''}</h4>
+            <h4>${esc(identity.displayName)} — ${esc(identityRelationLabel(identity.relation))}, siła ${identity.score}/100${
+              identity.decision === 'rejected' ? ' (analityk: inna osoba)' : (identity as { status?: string }).status === 'confirmed' ? ' (potwierdzona decyzją analityka)' : ' (hipoteza — do weryfikacji)'
+            }</h4>
             ${identity.handles.length > 0 ? `<p>Nazwy kont: ${esc(identity.handles.join(', '))}. Profile: ${identity.profiles.map((profile) => link(profile.url, `${profile.service}`)).join(', ')}.</p>` : ''}
             <p><strong>Ścieżka dojścia:</strong> ${identity.path.length > 0 ? identity.path.map((step) => esc(step)).join(' → ') : '—'}</p>
             <table><tr><th>Przesłanka</th><th>Dowody</th></tr>
@@ -692,7 +807,8 @@ ${renderDecisions(dossier)}
 
 <div class="zastrzezenie">
   <strong>Zastrzeżenie.</strong> Raport jest materiałem analitycznym wspierającym pracę analityka, a nie rozstrzygnięciem.
-  Wskaźnik Pewności i ustalenie osoby wyrażają siłę publicznie dostępnych przesłanek; nie dowodzą własności adresu, tożsamości ani osiągnięcia przychodu.
+  Wskaźnik Pewności, wskaźniki A, B i C oraz ustalenie osoby wyrażają siłę publicznie dostępnych przesłanek; nie dowodzą własności adresu, tożsamości ani osiągnięcia przychodu.
+  Hipotezy wspólnego operatora pozostają hipotezami, dopóki nie potwierdzi ich analityk.
   Wnioski oznaczone jako „Wniosek do weryfikacji” oraz szacunki kwot wymagają potwierdzenia w toku czynności prowadzonych przez uprawniony organ.
   Pełne dane pozwalające odtworzyć analizę (wyniki, reguły, kopie treści) zawiera pakiet <code>report.json</code>.
 </div>

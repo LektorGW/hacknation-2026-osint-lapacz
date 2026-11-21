@@ -3,6 +3,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import { linkKey } from '@olcys/core';
 import type { Decision, Identifier } from '@olcys/core';
 import { AI_RULES } from './ai-rules.ts';
 import { ALIAS_RULES } from './aliases.ts';
@@ -67,7 +68,7 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     return storage.listDecisions(request.params.id);
   });
 
-  app.post<{ Params: { id: string }; Body: { target: 'profile' | 'address' | 'evidence'; key: string; decision: Decision; note?: string } }>(
+  app.post<{ Params: { id: string }; Body: { target: 'profile' | 'address' | 'evidence' | 'link' | 'cashout'; key: string; decision: Decision; note?: string } }>(
     '/api/cases/:id/decisions',
     {
       schema: {
@@ -78,7 +79,9 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
           additionalProperties: false,
           properties: {
             // `evidence`: decyzja dla pojedynczego śladu (klucz = identyfikator śladu), np. cofnięcie wpływu modelu.
-            target: { type: 'string', enum: ['profile', 'address', 'evidence'] },
+            // `link`: hipoteza wspólnego operatora dwóch kont (klucz = `konto<->konto`, identyfikatory `ProfileCard.id`).
+            // `cashout`: analityk ma dokumentację wyjścia do walut tradycyjnych spoza blockchaina (klucz = `network:address`, podstawa w notatce).
+            target: { type: 'string', enum: ['profile', 'address', 'evidence', 'link', 'cashout'] },
             key: { type: 'string', minLength: 1, maxLength: 500 },
             decision: { type: 'string', enum: ['confirmed', 'rejected'] },
             note: { type: 'string', maxLength: 2000 },
@@ -88,8 +91,16 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     },
     async (request, reply) => {
       const caseSummary = await requireCase(request.params.id);
-      const key = request.body.key.trim();
+      let key = request.body.key.trim();
       if (!key) throw new HttpError(400, 'Klucz decyzji nie może być pusty.');
+      if (request.body.target === 'link') {
+        const accounts = key.split('<->').map((part) => part.trim());
+        if (accounts.length !== 2 || !accounts[0] || !accounts[1] || accounts[0].toLowerCase() === accounts[1].toLowerCase()) {
+          throw new HttpError(400, 'Klucz decyzji o parze kont ma postać „konto<->konto” i wskazuje dwa różne konta.');
+        }
+        // Postać kanoniczna: niezależna od kolejności kont i wielkości liter.
+        key = linkKey(accounts[0], accounts[1]);
+      }
       const note = request.body.note?.trim();
       const record: DecisionRecord = {
         id: randomUUID(),
@@ -120,8 +131,9 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     },
     async (request, reply) => {
       await requireCase(request.params.id);
-      if (!(await storage.deleteDecision(request.params.id, request.params.decisionId))) {
-        throw new HttpError(404, 'Nie znaleziono decyzji w tej sprawie.');
+      // Wycofanie nie usuwa wpisu: decyzja zostaje w rejestrze z czasem i autorem wycofania (ślad audytowy).
+      if (!(await storage.deleteDecision(request.params.id, request.params.decisionId, { at: now().toISOString(), by: DECISION_AUTHOR }))) {
+        throw new HttpError(404, 'Nie znaleziono obowiązującej decyzji w tej sprawie.');
       }
       context.invalidateDossiers();
       return reply.code(204).send();

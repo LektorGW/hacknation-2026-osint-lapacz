@@ -176,3 +176,57 @@ test('harmonogram cyklicznych analiz: włączenie i wyłączenie', async () => {
   assert.equal(removed.json().schedule, undefined);
   assert.equal((await app.inject({ method: 'POST', url: `/api/cases/${created.id}/schedule`, payload: { everyMinutes: 0 } })).statusCode, 400);
 });
+
+test('stan usługi podaje tryb danych i rodzaj każdego źródła', async () => {
+  const health = (await app.inject('/api/health')).json();
+  // Atrapy mają identyfikatory zwykłych źródeł publicznych, więc tryb to „live”.
+  assert.equal(health.mode, 'live');
+  assert.equal(health.modeLabel, 'Źródła publiczne (live).');
+  assert.deepEqual(health.sources, [
+    { id: 'github', label: 'Atrapa github', kind: 'public', demo: false, enabledByDefault: true },
+    { id: 'dodatkowy', label: 'Atrapa dodatkowy', kind: 'public', demo: false, enabledByDefault: false },
+    { id: 'corpus', label: health.sources[2].label, kind: 'internal', demo: false, enabledByDefault: true },
+  ]);
+  assert.deepEqual(health.chainProviders, [{ id: 'atrapa-chain', label: 'Atrapa eksploratora', kind: 'public', demo: false }]);
+
+  // Same źródła piaskownicy: tryb demonstracyjny, każde źródło oznaczone.
+  const storage = createStorage(await createPgliteDriver());
+  await storage.migrate();
+  const sandbox = await buildApp({
+    storage,
+    connectors: [fakeConnector('sandbox-forum', 'forum.sandbox', ['nick'], () => []), fakeConnector('lab-x', 'x.lab.test', ['nick'], () => [])],
+    chainProviders: [{ ...fakeProvider(), id: 'sandbox-explorer' }],
+    now: FIXED_NOW,
+  });
+  try {
+    const demo = (await sandbox.inject('/api/health')).json();
+    assert.equal(demo.mode, 'sandbox');
+    assert.deepEqual(demo.sources.map((item: { id: string; kind: string; demo: boolean }) => [item.id, item.kind, item.demo]), [['sandbox-forum', 'sandbox', true], ['lab-x', 'lab', true], ['corpus', 'internal', false]]);
+    assert.deepEqual(demo.chainProviders.map((item: { id: string; demo: boolean }) => [item.id, item.demo]), [['sandbox-explorer', true]]);
+  } finally {
+    await sandbox.close();
+    await storage.close();
+  }
+});
+
+test('limity rozszerzania z żądania trafiają do analizy i do zapisanych parametrów', async () => {
+  const created = await createCase();
+  const response = await app.inject({ method: 'POST', url: `/api/cases/${created.id}/runs`, payload: { limits: { maxRequests: 1, discoveryDepth: 1, maxIdentifiers: 5, maxCounterparties: 2, maxChainAddresses: 3 } } });
+  assert.equal(response.statusCode, 201);
+  const run = response.json();
+  assert.equal(run.status, 'completed');
+
+  const { intel } = (await app.inject(`/api/runs/${run.id}/report.json`)).json();
+  const { limits, requests, stops, run: parameters } = intel.expansion;
+  assert.deepEqual([limits.maxRequests, limits.discoveryDepth, limits.maxIdentifiers, limits.maxCounterparties, limits.maxChainAddresses], [1, 1, 5, 2, 3]);
+  // Budżet jednego zapytania: profil pobrano, reszta ma jawny powód zatrzymania.
+  assert.deepEqual(requests, { connectors: 1, chain: 0, budget: 1 });
+  assert.ok(stops.some((stop: { reason: string }) => stop.reason === 'request_budget'));
+  assert.deepEqual(parameters.connectors, ['github', 'corpus']);
+  assert.ok(run.findings.every((finding: { chain?: unknown; chainSkipped?: boolean }) => finding.chain === undefined && finding.chainSkipped === true));
+
+  // Wartości spoza zakresu są odrzucane.
+  for (const limits of [{ maxRequests: 0 }, { discoveryDepth: 99 }, { maxIdentifiers: 1.5 }]) {
+    assert.equal((await app.inject({ method: 'POST', url: `/api/cases/${created.id}/runs`, payload: { limits } })).statusCode, 400);
+  }
+});

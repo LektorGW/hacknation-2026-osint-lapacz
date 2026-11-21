@@ -10,14 +10,18 @@
 //   associated             — słaba: jednokierunkowy przelew lub finansowanie, podobna nazwa konta.
 // Tożsamości o innym imieniu i nazwisku nigdy nie scalamy z osobą główną automatycznie —
 // to może być ta sama osoba, osoba bliska albo podstawiona. Rozstrzyga analityk.
+//
+// Jednostką jest KONTO (serwis + nazwa konta), nie nick: ten sam nick w dwóch serwisach to dwa konta
+// i dwie karty, dopóki między tymi kontami nie ma rzeczywistej przesłanki (wiązanie pary ≥ progu łączenia
+// z `PERSON_RULES`, bez sprzecznych nazwisk). Przesłanki, adresy i sumy konta X nie przechodzą na konto Y
+// tylko dlatego, że nazywa się tak samo. Każda karta jest hipotezą narzędzia.
 
 import type { Decision, Finding, PersonCandidate, ProfileCard, ScoreRules } from '@olcys/core';
 import { OWNERSHIP_CATEGORIES } from './analysis.ts';
 import type { ProfileNode } from './entity.ts';
 import { formatAmount, plural, roundPln, shortAddress, sumByYear } from './format.ts';
-import { normalize } from './identity.ts';
 import type { AuthorComparison } from './intel.ts';
-import { looksLikePersonName, tieBetween } from './persons.ts';
+import { PERSON_RULES, createTieScorer, looksLikePersonName, nameConflict } from './persons.ts';
 import { linkKindText } from './pivot.ts';
 import type { PivotLead } from './pivot.ts';
 import { normalizeServiceLabel } from './services.ts';
@@ -35,7 +39,9 @@ export const ALIAS_RULES = {
   description:
     'Mocna przesłanka (ten sam e-mail, telefon, adres publikowany jako własny, wspólny adres wpłat giełdy z publikacją adresu) daje relację „prawdopodobnie ta sama osoba” (85–97). ' +
     'Średnia (wspólny adres wpłat bez publikacji, strona, awatar, przelewy w obie strony, to samo nazwisko i miejscowość) — „możliwe: ta sama osoba albo bliska” (55–75, podobny styl najwyżej +10). ' +
-    'Słaba (jednokierunkowy przelew, finansowanie, podobna nazwa konta) — „powiązana” (30–45). Tożsamości nie są scalane z osobą główną bez decyzji analityka.',
+    'Słaba (jednokierunkowy przelew, finansowanie, podobna nazwa konta) — „powiązana” (30–45). Tożsamości nie są scalane z osobą główną bez decyzji analityka. ' +
+    'Karta dotyczy jednego konta (serwis + nazwa); konta o tym samym nicku w różnych serwisach trafiają na jedną kartę tylko przy rzeczywistej przesłance między nimi. ' +
+    'Każda powiązana tożsamość jest hipotezą narzędzia.',
 } as const;
 
 export type IdentityRelation = 'same_person_likely' | 'possibly_same_or_close' | 'associated';
@@ -46,7 +52,12 @@ export interface IdentityEvidence {
 }
 
 export interface LinkedIdentity {
+  /** `tozsamosc:<ProfileCard.id konta wiodącego>`. */
   id: string;
+  /** Powiązanie jest hipotezą narzędzia; `rejected` po decyzji analityka „inna osoba” (potwierdzona znika z listy — scala się z osobą główną). */
+  status: 'hypothesis' | 'confirmed' | 'rejected';
+  /** Konta tej tożsamości (`ProfileCard.id`); więcej niż jedno tylko przy przesłance łączącej te konta. */
+  accounts: string[];
   displayName: string;
   fullName?: string;
   handles: string[];
@@ -85,6 +96,8 @@ export interface AliasInput {
   authorComparisons?: AuthorComparison[];
   /** Decyzja analityka dla profilu (także spoza profili podmiotu). */
   decisionOf: (node: ProfileNode) => Decision | undefined;
+  /** Decyzja analityka o parze kont (wspólny operator), po identyfikatorach `ProfileCard.id`. */
+  linkDecisionOf?: (a: string, b: string) => Decision | undefined;
   rules: ScoreRules;
 }
 
@@ -100,7 +113,7 @@ interface Reason {
 }
 
 const NOTE =
-  'To może być ta sama osoba pod inną nazwą, osoba bliska albo podstawiona — do rozstrzygnięcia przez analityka. ' +
+  'Hipoteza narzędzia, nie ustalenie tożsamości. To może być ta sama osoba pod inną nazwą, osoba bliska albo podstawiona — do rozstrzygnięcia przez analityka. ' +
   'Decyzja „potwierdzony” dla profilu scala tożsamość z osobą główną i przelicza teczkę; „odrzucony” zostawia ją jako powiązaną.';
 
 const fold = (value: string) => value.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ł/g, 'l').trim().toLowerCase();
@@ -114,35 +127,35 @@ const ownedKeys = (node: ProfileNode): string[] => [
   ...new Set(node.sightings.filter((item) => OWNERSHIP_CATEGORIES.includes(item.category)).flatMap((item) => item.addresses)),
 ];
 
+interface AccountGroup {
+  nodes: ProfileNode[];
+  reasons: Reason[];
+  extraAddresses: { address: string; network: string; basis: string }[];
+}
+
 export function buildLinkedIdentities(input: AliasInput): { identities: LinkedIdentity[]; hidden: number } {
-  const groups = new Map<string, { nodes: ProfileNode[]; reasons: Reason[]; extraAddresses: { address: string; network: string; basis: string }[] }>();
-  const groupFor = (key: string) => {
-    let group = groups.get(key);
-    if (!group) {
-      group = { nodes: [], reasons: [], extraAddresses: [] };
-      groups.set(key, group);
-    }
-    return group;
-  };
-  const keyOf = (node: ProfileNode) => normalize(node.card.handle ?? node.card.url);
+  // Jedno konto (serwis + nazwa) = jeden wpis; przesłanki zbieramy osobno dla każdego konta.
+  const accounts: ProfileNode[] = [];
   for (const node of [...input.otherNodes, ...input.externalNodes]) {
-    const group = groupFor(keyOf(node));
-    if (!group.nodes.some((known) => known.card.id === node.card.id)) group.nodes.push(node);
+    if (!accounts.some((known) => known.card.id === node.card.id)) accounts.push(node);
   }
+  const reasonsOf = new Map<string, Reason[]>(accounts.map((node) => [node.card.id, []]));
+  const tieBetween = createTieScorer(input.allFindings, input.rules);
 
   const linkedKeys = new Set(input.linked.map((finding) => `${finding.network}:${finding.address}`));
   const add = (reasons: Reason[], reason: Reason) => {
     if (!reasons.some((known) => known.text === reason.text)) reasons.push(reason);
   };
 
-  for (const group of groups.values()) {
-    for (const node of group.nodes) {
+  {
+    for (const node of accounts) {
+      const group = { reasons: reasonsOf.get(node.card.id)! };
       const urls = new Set(node.sightings.map((item) => item.url));
       const owned = ownedKeys(node);
 
       // ---------- Wspólne cechy z profilami osoby głównej ----------
       for (const main of input.mainNodes) {
-        const { features } = tieBetween(main, node, input.allFindings, input.rules);
+        const { features } = tieBetween(main, node);
         const pair: IdentityEvidence[] = [{ kind: 'url', value: main.card.url }, { kind: 'url', value: node.card.url }];
         const origin = `profil ${label(main)} podmiotu`;
         const target = `profil ${label(node)} (${node.card.url})`;
@@ -220,9 +233,43 @@ export function buildLinkedIdentities(input: AliasInput): { identities: LinkedId
   // Adres powiązany w blockchainie, którego nikt nie opublikował, NIE jest tożsamością — teczka pokazuje
   // go przy adresie podmiotu jako „inny adres tego samego portfela / adres powiązany”, bez udawania osoby.
 
+  // ---------- Konta → tożsamości: łączy tylko przesłanka MIĘDZY kontami, nigdy sam nick ----------
+  const groupOf = accounts.map((_, index) => index);
+  const membersOf = (id: number) => accounts.map((_, index) => index).filter((index) => groupOf[index] === id);
+  const decided = (a: number, b: number) => input.linkDecisionOf?.(accounts[a]!.card.id, accounts[b]!.card.id);
+  const candidates: { a: number; b: number; weight: number }[] = [];
+  for (let a = 0; a < accounts.length; a++) {
+    for (let b = a + 1; b < accounts.length; b++) {
+      const weight = decided(a, b) === 'confirmed' ? 100 : tieBetween(accounts[a]!, accounts[b]!).weight;
+      if (weight >= PERSON_RULES.joinThreshold) candidates.push({ a, b, weight });
+    }
+  }
+  candidates.sort((x, y) => y.weight - x.weight || x.a - y.a || x.b - y.b);
+  for (const { a, b } of candidates) {
+    if (groupOf[a] === groupOf[b]) continue;
+    const [left, right] = [membersOf(groupOf[a]!), membersOf(groupOf[b]!)];
+    // Jedna sprzeczna para (różne deklarowane nazwiska, decyzja „to nie ten sam operator”) wstrzymuje połączenie.
+    const conflict = left.some((x) => right.some((y) => decided(x, y) === 'rejected' || (decided(x, y) !== 'confirmed' && nameConflict(accounts[x]!, accounts[y]!))));
+    if (conflict) continue;
+    for (const index of right) groupOf[index] = groupOf[a]!;
+  }
+  const strengthRank = (node: ProfileNode) => {
+    const own = reasonsOf.get(node.card.id)!;
+    const count = (strength: Strength) => own.filter((reason) => reason.strength === strength).length;
+    return count('strong') * 10_000 + count('medium') * 100 + count('weak');
+  };
+  const groups: AccountGroup[] = [...new Set(groupOf)].map((id) => {
+    // Konto wiodące: to z najmocniejszymi przesłankami względem osoby głównej — od niego pochodzi identyfikator karty.
+    const nodes = membersOf(id).map((index) => accounts[index]!).sort((x, y) => strengthRank(y) - strengthRank(x));
+    const reasons: Reason[] = [];
+    for (const node of nodes) for (const reason of reasonsOf.get(node.card.id)!) add(reasons, reason);
+    return { nodes, reasons, extraAddresses: [] };
+  });
+
   const identities: LinkedIdentity[] = [];
   let hidden = 0;
-  for (const [key, group] of groups) {
+  for (const group of groups) {
+    const lead = group.nodes[0]!;
     // Sam odczyt stylu przez model nie jest przesłanką — bez innej podstawy tożsamości nie ma.
     if (!group.reasons.some((reason) => reason.strength !== 'style')) {
       if (group.reasons.length > 0) hidden++;
@@ -271,10 +318,14 @@ export function buildLinkedIdentities(input: AliasInput): { identities: LinkedId
     const own = input.allFindings.filter((finding) => addresses.some((item) => item.basis === 'published' && item.address === finding.address));
     const order: Strength[] = ['strong', 'medium', 'weak', 'style'];
     const reasons = [...group.reasons].sort((a, b) => order.indexOf(a.strength) - order.indexOf(b.strength));
-    const decision = group.nodes.map((node) => input.decisionOf(node)).find((value) => value !== undefined);
+    // „Inna osoba”: decyzja o profilu tej tożsamości albo odrzucona hipoteza wspólnego operatora z kontem podmiotu.
+    const linkRejected = group.nodes.some((node) => input.mainNodes.some((main) => input.linkDecisionOf?.(main.card.id, node.card.id) === 'rejected'));
+    const decision = group.nodes.map((node) => input.decisionOf(node)).find((value) => value !== undefined) ?? (linkRejected ? ('rejected' as const) : undefined);
     identities.push({
-      id: `tozsamosc:${key}`,
-      displayName: fullName ?? handles[0] ?? `Nieznany właściciel adresu ${shortAddress(group.extraAddresses[0]?.address ?? key)}`,
+      id: `tozsamosc:${lead.card.id}`,
+      status: decision === 'rejected' ? 'rejected' : decision === 'confirmed' ? 'confirmed' : 'hypothesis',
+      accounts: group.nodes.map((node) => node.card.id),
+      displayName: fullName ?? handles[0] ?? `Nieznany właściciel adresu ${shortAddress(group.extraAddresses[0]?.address ?? lead.card.url)}`,
       ...(fullName ? { fullName } : {}),
       handles,
       relation,

@@ -258,14 +258,17 @@ test('esplora: kierunek, kwota i kontrahent transakcji; wypłata na adres giełd
   assert.equal(incoming?.counterparty, 'bc1qsender');
   assert.equal(incoming?.time, '2025-03-01T08:00:00.000Z');
   assert.equal(outgoing?.direction, 'out');
-  assert.equal(outgoing?.amount, 0.47);
+  // Kontrahentowi przypisujemy tylko to, co trafiło na JEGO adres (0,42 BTC) — bez 0,05 BTC wysłanego w tej samej transakcji komuś innemu.
+  assert.equal(outgoing?.amount, 0.42);
   assert.equal(outgoing?.counterparty, BINANCE);
   assert.equal(outgoing?.counterpartyClass, 'exchange');
   assert.equal(outgoing?.explorerUrl, `${ESPLORA}/tx/out1`);
 
   assert.equal(activity.cashOuts.length, 1);
   assert.equal(activity.cashOuts[0]?.kind, 'exchange_deposit');
-  assert.equal(activity.cashOuts[0]?.valuePln, 141000);
+  assert.equal(activity.cashOuts[0]?.amount, 0.42);
+  assert.equal(activity.cashOuts[0]?.valuePln, 126000);
+  assert.ok(activity.limitations.some((text) => /1 transakcji wychodzących miało więcej niż jednego odbiorcę.*łącznie 0\.05 BTC do 1 adresów/.test(text)));
   assert.ok(activity.limitations.some((text) => /uproszczeniem/.test(text)));
   assert.ok(activity.limitations.some((text) => /Pominięto 1 transakcji oczekujących/.test(text)));
 });

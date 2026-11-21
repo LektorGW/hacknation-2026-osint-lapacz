@@ -7,9 +7,15 @@
 //    (ten sam e-mail 100, wzajemne odnośniki 90, ten sam niewspółdzielony adres 80, …).
 // 2. Profil dostaje też wiązanie z „kotwicą”, czyli identyfikatorami podanymi przez
 //    analityka (profil znaleziony po e-mailu 100, nick potwierdzony w treści 80, …).
-// 3. Profile i kotwicę łączymy w skupienia po wiązaniach o wadze ≥ `joinThreshold`.
-//    Sam zgodny nick lub samo nazwisko nie wystarcza — taki profil zostaje osobnym
+// 3. Profile i kotwicę łączymy w skupienia po wiązaniach o wadze ≥ `joinThreshold` — od najmocniejszego
+//    do najsłabszego i tylko wtedy, gdy ŻADNA para profili z obu łączonych skupień nie jest sprzeczna
+//    (różne deklarowane imiona i nazwiska, decyzja analityka „to nie ten sam operator”). Łączenie nie jest
+//    więc przechodnie: A–B i B–C nie daje A–C, jeśli A i C sobie przeczą. Pominięte połączenia zostają
+//    w `blockedMerges`. Sam zgodny nick lub samo nazwisko nie wystarcza — taki profil zostaje osobnym
 //    kandydatem (np. imiennik) i jego ślady nie podnoszą wyniku osoby głównej.
+//    Ten sam adres wiąże profile tylko wtedy, gdy OBA publikują go jako własny i nie są to kopie tej samej
+//    treści; wzmianka, cytat albo przedruk to słaba przesłanka, a adresy giełd, kontraktów i adresy
+//    współdzielone nie liczą się wcale.
 // 4. Prawdopodobieństwo kandydata: podstawa z najmocniejszego powiązania z kotwicą,
 //    premia za kolejne mocne wiązania, kara za sprzeczności (różne miejscowości, nazwiska).
 // 5. Prawdopodobieństwo osoba–adres = W × p + premia, gdzie W to Wskaźnik Pewności adresu
@@ -18,8 +24,9 @@
 //    każdy kolejny profil kandydata publikujący adres (najwyżej 10); wynik nie przekracza W.
 // Wszystko tutaj jest wnioskowaniem narzędzia — do weryfikacji przez analityka.
 
-import { computeConfidence } from '@olcys/core';
+import { computeConfidence, linkKey, textFingerprint } from '@olcys/core';
 import type { Decision, Finding, Identifier, IdentityMatch, PersonCandidate, ScoreRules } from '@olcys/core';
+import { OWNERSHIP_CATEGORIES } from './analysis.ts';
 import type { ProfileNode } from './entity.ts';
 import { plural } from './format.ts';
 import { isCommonHandle, isUniqueType, matchRank, normalize } from './identity.ts';
@@ -36,6 +43,8 @@ export const PERSON_RULES = {
     same_phone: 100,
     mutual_links: 90,
     same_address: 80,
+    /** Ten sam adres, ale tylko wzmianka, cytat albo kopia tej samej treści — sam nie łączy profili. */
+    same_address_mention: 30,
     one_way_link: 50,
     /** Odnośnik jednostronny słabnie o tyle za każdy kolejny niepotwierdzony krok. */
     link_step_penalty: 10,
@@ -70,7 +79,13 @@ export const PERSON_RULES = {
   },
   address: { extra_profile_bonus: 5, max_bonus: 10 },
   description:
-    'Profile łączone są w osoby po wiązaniach o wadze co najmniej 50 (suma wag wspólnych cech pary profili). ' +
+    'Profile łączone są w osoby po wiązaniach o wadze co najmniej 50 (suma wag wspólnych cech pary profili), od najmocniejszego wiązania, ' +
+    'i tylko wtedy, gdy żadne dwa profile z łączonych grup sobie nie przeczą (różne deklarowane imiona i nazwiska albo decyzja analityka ' +
+    '„to nie ten sam operator”) — łączenie nie jest przechodnie, a pominięte połączenia są wykazane z powodem. ' +
+    'Ten sam adres wiąże profile (80) tylko wtedy, gdy oba publikują go jako własny i nie są to kopie tej samej treści; wzmianka, cytat ' +
+    'albo przedruk daje 30 i sama nie łączy (łączy dopiero z drugą zgodną cechą, np. tym samym nickiem); adresy giełd, kontraktów, zbiórek i adresy współdzielone nie są liczone. ' +
+    'Pewność przynależności profilu do osoby wynika z najsłabszego ogniwa na drodze do profilu wyznaczającego osobę. ' +
+    'Każdy kandydat jest hipotezą narzędzia, dopóki nie potwierdzi go analityk. ' +
     'Prawdopodobieństwo kandydata wynika z najmocniejszego powiązania z identyfikatorami analityka, premii za kolejne ' +
     'mocne wiązania i kar za sprzeczności. Prawdopodobieństwo osoba–adres = Wskaźnik Pewności adresu względem autora ' +
     '× pewność przynależności profilu do osoby, z premią za kolejne profile tej osoby publikujące adres.',
@@ -91,6 +106,8 @@ export interface PersonsInput {
   findings: Finding[];
   /** Decyzje analityka o profilach: `ProfileCard.id` → decyzja. */
   decisions: Map<string, Decision>;
+  /** Decyzje analityka o parach kont (wspólny operator): `linkKey(a, b)` → decyzja. */
+  linkDecisions?: Map<string, Decision>;
   rules: ScoreRules;
 }
 
@@ -99,6 +116,8 @@ export interface PersonsResult {
   persons: PersonCandidate[];
   /** `ProfileCard.id` → identyfikator kandydata. */
   personOfProfile: Map<string, string>;
+  /** Połączenia pominięte z powodu sprzeczności: `linkKey(a, b)` → powód. */
+  blockedPairs: Map<string, string>;
 }
 
 interface Tie {
@@ -113,7 +132,20 @@ interface Tie {
 export interface TieFeatures {
   email?: string;
   phone?: string;
+  /** Adresy publikowane przez OBA profile jako własne, w niezależnych treściach (`network:address`). */
   addresses: string[];
+  /** Wspólne adresy, które choć jeden profil tylko wymienia albo cytuje. */
+  mentionedAddresses?: string[];
+  /** Wspólne adresy z publikacji będących kopią tej samej treści. */
+  copiedAddresses?: string[];
+  /** Wspólne adresy NIELICZONE: giełdy, kontrakty, zbiórki, miksery, adresy współdzielone. */
+  excludedAddresses?: string[];
+  /** Ten sam rzadki nick wraz ze zgodną nazwą lub lokalizacją (liczony zamiast samego nicku i nazwy). */
+  rareHandle?: boolean;
+  /** Waga doliczona za odnośniki między profilami. */
+  linkWeight?: number;
+  /** Wartości, przez które profile wskazują się nawzajem (nick, adres profilu, e-mail). */
+  linkVia?: string[];
   website?: string;
   avatar?: boolean;
   sameName?: boolean;
@@ -146,7 +178,33 @@ function emailMatchesName(email: string, name: string): boolean {
   return local.length >= 5 && [first + last, last + first, first[0] + last, last + first[0]].includes(local);
 }
 
-function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): Tie {
+/** Dane wspólne dla wszystkich par: adresy nieliczone i odciski treści publikacji z adresami. */
+interface TieContext {
+  shared: Set<string>;
+  /** `adres|dokument` → odcisk fragmentu treści z adresem (do rozpoznania kopii). */
+  prints: Map<string, string | undefined>;
+}
+
+function tieContext(findings: Finding[], rules: ScoreRules): TieContext {
+  const prints = new Map<string, string | undefined>();
+  for (const finding of findings) {
+    for (const item of finding.evidence) prints.set(`${addressKey(finding)}|${sightingKey(item)}`, textFingerprint(item.excerpt));
+  }
+  return { shared: sharedAddressKeys(findings, rules), prints };
+}
+
+/** Jak dwa profile publikują ten sam adres: oba jako własny, jako kopię tej samej treści, czy tylko wzmiankę. */
+function sharedAddressKind(a: ProfileNode, b: ProfileNode, key: string, context: TieContext): 'owned' | 'copied' | 'mentioned' {
+  const owning = (node: ProfileNode) => node.sightings.filter((item) => item.addresses.includes(key) && OWNERSHIP_CATEGORIES.includes(item.category));
+  const [left, right] = [owning(a), owning(b)];
+  if (left.length === 0 || right.length === 0) return 'mentioned';
+  const print = (item: { url: string; archivedAt?: string }) => context.prints.get(`${key}|${sightingKey(item)}`);
+  // Wystarczy jedna para publikacji o różnej treści, by uznać deklaracje za niezależne.
+  const independent = left.some((x) => right.some((y) => print(x) === undefined || print(x) !== print(y)));
+  return independent ? 'owned' : 'copied';
+}
+
+function pairTie(a: ProfileNode, b: ProfileNode, context: TieContext): Tie {
   const { ties } = PERSON_RULES;
   const reasons: string[] = [];
   const features: TieFeatures = { addresses: [] };
@@ -170,22 +228,41 @@ function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): 
   // Odnośnik: profil wskazuje nazwę lub adres drugiego albo identyfikator, po którym tamten znaleziono.
   const pointedBy = (target: ProfileNode) =>
     new Set([...target.names, ...target.sightings.filter((item) => item.step > 0).map((item) => normalize(item.matchedIdentifier.value))]);
-  const links = (from: ProfileNode, to: ProfileNode) => [...pointedBy(to)].some((name) => from.refs.has(name));
-  const forward = links(a, b);
-  const backward = links(b, a);
+  const via = (from: ProfileNode, to: ProfileNode) => [...pointedBy(to)].filter((name) => from.refs.has(name));
+  const [forwardVia, backwardVia] = [via(a, b), via(b, a)];
+  const forward = forwardVia.length > 0;
+  const backward = backwardVia.length > 0;
   const mutual = forward && backward;
-  if (mutual) add(ties.mutual_links, 'wzajemne odnośniki między profilami');
-  else if (forward || backward) {
+  if (mutual) {
+    features.linkWeight = ties.mutual_links;
+    add(ties.mutual_links, 'wzajemne odnośniki między profilami');
+  } else if (forward || backward) {
     const target = forward ? b : a;
     const steps = Math.max(1, target.base.distance ?? 1);
     const points = Math.max(0, ties.one_way_link - (steps - 1) * ties.link_step_penalty);
+    features.linkWeight = points;
     add(points, steps > 1 ? `jednostronny odnośnik, ${steps} kroki bez odnośnika zwrotnego` : 'jednostronny odnośnik między profilami');
   }
+  if (forward || backward) features.linkVia = [...new Set([...forwardVia, ...backwardVia])];
 
-  const addresses = intersect(a.card.addresses, b.card.addresses).filter((key) => !sharedAddresses.has(key));
-  if (addresses.length > 0) {
-    features.addresses = addresses;
-    add(ties.same_address, 'ten sam adres kryptowalutowy, niepublikowany przez wiele innych osób');
+  const weak: string[] = [];
+  for (const key of intersect(a.card.addresses, b.card.addresses)) {
+    if (context.shared.has(key)) {
+      (features.excludedAddresses ??= []).push(key);
+      continue;
+    }
+    const kind = sharedAddressKind(a, b, key, context);
+    if (kind === 'owned') features.addresses.push(key);
+    else {
+      weak.push(key);
+      if (kind === 'copied') (features.copiedAddresses ??= []).push(key);
+      else (features.mentionedAddresses ??= []).push(key);
+    }
+  }
+  if (features.addresses.length > 0) {
+    add(ties.same_address, 'ten sam adres kryptowalutowy publikowany przez oba profile jako własny, niepublikowany przez wiele innych osób');
+  } else if (weak.length > 0) {
+    add(ties.same_address_mention, 'ten sam adres w skopiowanej publikacji / wzmiance — nie dowodzi wspólnego operatora');
   }
 
   const websites = intersect((a.card.attributes.urls ?? []).map(cleanUrl), (b.card.attributes.urls ?? []).map(cleanUrl));
@@ -208,6 +285,7 @@ function pairTie(a: ProfileNode, b: ProfileNode, sharedAddresses: Set<string>): 
     fold(a.card.attributes.location) === fold(b.card.attributes.location);
   const sameHandle = a.card.handle !== undefined && b.card.handle !== undefined && normalize(a.card.handle) === normalize(b.card.handle);
   if (sameHandle && !isCommonHandle(a.card.handle!) && (sameName || sameLocation)) {
+    features.rareHandle = true;
     add(ties.rare_handle_with_name_or_location, `ten sam rzadki nick i zgodna ${sameName ? 'nazwa wyświetlana' : 'lokalizacja'}`);
   } else {
     if (sameHandle) add(ties.same_handle, 'ten sam nick (sam w sobie nie dowodzi tej samej osoby)');
@@ -339,7 +417,13 @@ export function nameConflict(a: ProfileNode, b: ProfileNode): boolean {
 
 /** Wiązanie dwóch profili (wspólne cechy z wartościami) — do oceny powiązanych tożsamości. */
 export function tieBetween(a: ProfileNode, b: ProfileNode, findings: Finding[], rules: ScoreRules): { weight: number; reasons: string[]; features: TieFeatures } {
-  return pairTie(a, b, sharedAddressKeys(findings, rules));
+  return pairTie(a, b, tieContext(findings, rules));
+}
+
+/** Jak `tieBetween`, ale z danymi wspólnymi policzonymi raz — do porównywania wielu par. */
+export function createTieScorer(findings: Finding[], rules: ScoreRules): (a: ProfileNode, b: ProfileNode) => { weight: number; reasons: string[]; features: TieFeatures } {
+  const context = tieContext(findings, rules);
+  return (a, b) => pairTie(a, b, context);
 }
 
 /** Adresy, które nie świadczą o tej samej osobie: współdzielone albo należące do pośredników. */
@@ -355,7 +439,7 @@ const sharedAddressKeys = (findings: Finding[], rules: ScoreRules): Set<string> 
  * tylko dla nich pytamy model językowy o podobieństwo stylu.
  */
 export function comparablePairs(nodes: ProfileNode[], findings: Finding[], rules: ScoreRules): { a: ProfileNode; b: ProfileNode; weight: number }[] {
-  const shared = sharedAddressKeys(findings, rules);
+  const shared = tieContext(findings, rules);
   const { minTieWeight, maxTieWeight } = AI_RULES.authorComparison;
   const pairs: { a: ProfileNode; b: ProfileNode; weight: number }[] = [];
   for (let i = 0; i < nodes.length; i++) {
@@ -373,7 +457,7 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
   const count = nodes.length;
   const ANCHOR = count;
 
-  const sharedAddresses = sharedAddressKeys(input.findings, rules);
+  const sharedAddresses = tieContext(input.findings, rules);
 
   // ---------- Wiązania ----------
   const rejected = nodes.map((node) => input.decisions.get(node.card.id) === 'rejected');
@@ -401,38 +485,107 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
     }
   }
 
-  // ---------- Skupienia (union-find) ----------
-  const parent = Array.from({ length: count + 1 }, (_, index) => index);
-  const find = (index: number): number => (parent[index] === index ? index : (parent[index] = find(parent[index]!)));
-  const join = (a: number, b: number) => {
-    parent[find(a)] = find(b);
+  // ---------- Skupienia z ograniczeniami ----------
+  // Każde połączenie sprawdza WSZYSTKIE pary profili z obu skupień: jedna sprzeczność wstrzymuje
+  // połączenie, więc łańcuch A–B, B–C nie skleja A z C, gdy A i C sobie przeczą.
+  const groupOf = Array.from({ length: count + 1 }, (_, index) => index);
+  const membersOf = new Map<number, number[]>(groupOf.map((id) => [id, [id]]));
+  const union = (a: number, b: number) => {
+    const [from, to] = [groupOf[a]!, groupOf[b]!];
+    if (from === to) return;
+    for (const index of membersOf.get(from)!) groupOf[index] = to;
+    membersOf.set(to, [...membersOf.get(to)!, ...membersOf.get(from)!]);
+    membersOf.delete(from);
   };
   const confirmed = nodes.map((node) => input.decisions.get(node.card.id) === 'confirmed');
+  const linkDecision = (i: number, j: number): Decision | undefined => input.linkDecisions?.get(linkKey(nodes[i]!.card.id, nodes[j]!.card.id));
+  const declaredName = (index: number): string | undefined => {
+    const name = nodes[index]!.card.attributes.displayName?.trim();
+    return name !== undefined && looksLikePersonName(name) ? fold(name) : undefined;
+  };
+  const tag = (index: number) => `${nodes[index]!.card.service}${nodes[index]!.card.handle ? ` („${nodes[index]!.card.handle}”)` : ''}`;
+  /** Sprzeczność twarda między dwoma skupieniami albo `undefined`, gdy wolno je połączyć. */
+  const conflictBetween = (a: number, b: number): { pair: [number, number]; reason: string } | undefined => {
+    const [left, right] = [membersOf.get(groupOf[a]!)!, membersOf.get(groupOf[b]!)!].map((items) => items.filter((index) => index !== ANCHOR));
+    const names = (items: number[]) => new Set(items.map(declaredName).filter((name): name is string => name !== undefined));
+    const [leftNames, rightNames] = [names(left!), names(right!)];
+    for (const x of left!) {
+      for (const y of right!) {
+        const decided = linkDecision(x, y);
+        if (decided === 'rejected') return { pair: [x, y], reason: `decyzja analityka: konta ${tag(x)} i ${tag(y)} nie mają wspólnego operatora` };
+        // Decyzja analityka „to ta sama osoba” znosi blokadę różnych nazwisk dla par, których dotyczy;
+        // nazwisko już przyjęte w skupieniu (decyzją analityka) nie jest sprzecznością.
+        if (decided === 'confirmed' || confirmed[x] || confirmed[y]) continue;
+        if (nameConflict(nodes[x]!, nodes[y]!) && !leftNames.has(declaredName(y)!) && !rightNames.has(declaredName(x)!)) {
+          return {
+            pair: [x, y],
+            reason: `sprzeczne deklarowane imiona i nazwiska: „${nodes[x]!.card.attributes.displayName!.trim()}” (${tag(x)}) i „${nodes[y]!.card.attributes.displayName!.trim()}” (${tag(y)})`,
+          };
+        }
+      }
+    }
+    return undefined;
+  };
+  const blocked: { pair: [number, number]; weight: number; reason: string }[] = [];
+  /** Pary połączone decyzją analityka o wspólnym operatorze. */
+  const forcedLinks = new Set<string>();
+  const pairKey = (i: number, j: number) => (i < j ? `${i}|${j}` : `${j}|${i}`);
+
   // Profile w kolejności od najmocniej związanego z identyfikatorami analityka: pierwszy wyznacza
   // imię i nazwisko osoby głównej; profil podający INNĄ osobę nie jest do niej dołączany automatycznie.
   const byAnchor = nodes.map((_, index) => index).sort((a, b) => anchors[b]!.weight - anchors[a]!.weight || matchRank(nodes[b]!.base.match) - matchRank(nodes[a]!.base.match) || a - b);
-  const anchored: number[] = [];
-  for (const i of byAnchor) {
-    if (confirmed[i] || anchors[i]!.weight < PERSON_RULES.joinThreshold) continue;
-    if (anchored.some((other) => nameConflict(nodes[i]!, nodes[other]!))) continue;
-    anchored.push(i);
-    join(i, ANCHOR);
-  }
-  for (let i = 0; i < count; i++) {
-    for (let j = i + 1; j < count; j++) {
-      // Decyzja analityka „to ta sama osoba” znosi blokadę różnych nazwisk dla potwierdzonego profilu.
-      const blocked = nameConflict(nodes[i]!, nodes[j]!) && !confirmed[i] && !confirmed[j];
-      if (pair(i, j).weight >= PERSON_RULES.joinThreshold && !blocked) join(i, j);
-    }
-  }
-  // Profil potwierdzony przez analityka trafia do osoby głównej: do profilu, który ją wyznacza
-  // (najmocniej związanego z identyfikatorami analityka), oraz do samych identyfikatorów.
+
+  // 1. Decyzje analityka. Profil potwierdzony trafia do osoby głównej: do profilu, który ją wyznacza
+  //    (najmocniej związanego z identyfikatorami analityka), oraz do samych identyfikatorów.
   const mainSeed = byAnchor.find((index) => !confirmed[index] && !rejected[index]);
   for (let i = 0; i < count; i++) {
     if (!confirmed[i]) continue;
-    join(i, ANCHOR);
-    if (mainSeed !== undefined) join(mainSeed, i);
+    union(i, ANCHOR);
+    if (mainSeed !== undefined) union(mainSeed, i);
   }
+  //    Para kont potwierdzona jako wspólny operator trafia do jednego kandydata mimo różnych nazwisk.
+  for (let i = 0; i < count; i++) {
+    for (let j = i + 1; j < count; j++) {
+      if (linkDecision(i, j) !== 'confirmed' || rejected[i] || rejected[j] || groupOf[i] === groupOf[j]) continue;
+      const conflict = conflictBetween(i, j);
+      if (conflict && linkDecision(...conflict.pair) === 'rejected') {
+        blocked.push({ pair: [i, j], weight: PERSON_RULES.anchor.analyst_confirmed, reason: conflict.reason });
+        continue;
+      }
+      forcedLinks.add(pairKey(i, j));
+      union(i, j);
+    }
+  }
+  // 2. Powiązania z identyfikatorami analityka — one wyznaczają osobę główną.
+  for (const i of byAnchor) {
+    if (confirmed[i] || anchors[i]!.weight < PERSON_RULES.joinThreshold || groupOf[i] === groupOf[ANCHOR]) continue;
+    const conflict = conflictBetween(i, ANCHOR);
+    if (conflict) {
+      blocked.push({ pair: conflict.pair, weight: anchors[i]!.weight, reason: `profil ${tag(i)} odnaleziono po identyfikatorach analityka, ale nie dołączono go do osoby głównej — ${conflict.reason}` });
+      continue;
+    }
+    union(i, ANCHOR);
+  }
+  // 3. Wiązania par profili, od najmocniejszego do najsłabszego.
+  const candidates: { i: number; j: number; weight: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    for (let j = i + 1; j < count; j++) {
+      if (pair(i, j).weight >= PERSON_RULES.joinThreshold) candidates.push({ i, j, weight: pair(i, j).weight });
+    }
+  }
+  candidates.sort((a, b) => b.weight - a.weight || a.i - b.i || a.j - b.j);
+  for (const { i, j, weight } of candidates) {
+    if (groupOf[i] === groupOf[j]) continue;
+    const conflict = conflictBetween(i, j);
+    if (conflict) {
+      blocked.push({ pair: [i, j], weight, reason: conflict.reason });
+      continue;
+    }
+    union(i, j);
+  }
+  const find = (index: number): number => groupOf[index]!;
+  /** Waga wiązania do oceny przynależności: para połączona decyzją analityka liczy się jak pewna. */
+  const effective = (i: number, j: number): number => (forcedLinks.has(pairKey(i, j)) ? 100 : pair(i, j).weight);
   const clusters = new Map<number, number[]>();
   for (let i = 0; i < count; i++) clusters.set(find(i), [...(clusters.get(find(i)) ?? []), i]);
 
@@ -477,9 +630,15 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
     }
     for (const [i, j] of indexes.flatMap((i, at) => indexes.slice(at + 1).map((j) => [i, j] as const))) {
       const tie = pair(i, j);
-      if (tie.weight >= PERSON_RULES.joinThreshold) {
+      if (forcedLinks.has(pairKey(i, j))) {
+        reasons.push(`Połączono profile ${nodes[i]!.card.service} i ${nodes[j]!.card.service} decyzją analityka o wspólnym operatorze.`);
+      } else if (tie.weight >= PERSON_RULES.joinThreshold) {
         reasons.push(`Połączono profile ${nodes[i]!.card.service} i ${nodes[j]!.card.service}: ${tie.reasons.join('; ')}.`);
       }
+    }
+    const blockedHere = blocked.filter((item) => item.pair.some((index) => indexes.includes(index)));
+    for (const item of blockedHere) {
+      reasons.push(sentence(`Nie połączono profili ${tag(item.pair[0])} i ${tag(item.pair[1])} mimo wiązania o wadze ${item.weight}: ${item.reason}`));
     }
     const conflicts = probability > 0 ? contradictions(members) : [];
     if (conflicts.length > 0) {
@@ -489,12 +648,35 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
     }
     probability = Math.max(0, Math.min(100, probability));
 
-    const membership = new Map<number, number>();
-    for (const index of indexes) {
-      const toOthers = Math.max(0, ...indexes.filter((other) => other !== index).map((other) => pair(index, other).weight));
-      membership.set(index, index === seed ? 1 : Math.max(anchors[index]!.weight, toOthers) / 100);
+    // Przynależność profilu = najsłabsze ogniwo na najlepszej drodze do profilu wyznaczającego osobę
+    // (albo bezpośrednie powiązanie z identyfikatorami analityka). Profil dołączony pośrednio, przez
+    // słabsze wiązanie innego profilu, nie dziedziczy pewności po swoim najmocniejszym sąsiedzie.
+    const reach = new Map<number, number>(indexes.map((index) => [index, index === seed ? 100 : 0]));
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const from of indexes) {
+        for (const to of indexes) {
+          const through = Math.min(reach.get(from)!, effective(from, to));
+          if (from !== to && through > reach.get(to)!) {
+            reach.set(to, through);
+            changed = true;
+          }
+        }
+      }
     }
-    return { anchored, indexes, members, probability, reasons, membership, seed };
+    const membership = new Map<number, number>();
+    for (const index of indexes) membership.set(index, index === seed ? 1 : Math.max(anchors[index]!.weight, reach.get(index)!) / 100);
+    const status: NonNullable<PersonCandidate['status']> = indexes.every((index) => rejected[index])
+      ? 'rejected'
+      : indexes.some((index) => confirmed[index]) || indexes.some((i) => indexes.some((j) => forcedLinks.has(`${i}|${j}`)))
+        ? 'confirmed'
+        : 'hypothesis';
+    const blockedMerges = blockedHere.map((item) => ({
+      profileIds: [nodes[item.pair[0]]!.card.id, nodes[item.pair[1]]!.card.id] as [string, string],
+      weight: item.weight,
+      reason: item.reason,
+    }));
+    return { anchored, indexes, members, probability, reasons, membership, seed, status, blockedMerges };
   });
 
   drafts.sort(
@@ -535,7 +717,7 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
       if (decision === 'confirmed') match = 'verified_link';
       else if (draft.anchored && matchRank(match) < matchRank('exact_identifier')) {
         // W skupieniu z identyfikatorami analityka profil dziedziczy pewność po wiązaniu, które go tam wprowadziło.
-        const strength = Math.max(anchors[index]!.weight, topTie);
+        const strength = index === draft.seed ? Math.max(anchors[index]!.weight, topTie) : Math.round(share * 100);
         const mutual = draft.indexes.some((other) => other !== index && pair(index, other).mutual);
         match = mutual ? 'verified_link' : strength >= STRONG ? 'exact_identifier' : 'linked_profile';
       }
@@ -586,8 +768,11 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
       attributes: collectAttributes(draft.members),
       profileIds: draft.members.map((node) => node.card.id),
       addresses,
+      status: draft.status,
+      ...(draft.blockedMerges.length > 0 ? { blockedMerges: draft.blockedMerges } : {}),
     });
   });
 
-  return { persons, personOfProfile };
+  const blockedPairs = new Map(blocked.map((item) => [linkKey(nodes[item.pair[0]]!.card.id, nodes[item.pair[1]]!.card.id), item.reason] as const));
+  return { persons, personOfProfile, blockedPairs };
 }

@@ -26,7 +26,13 @@ export interface CaseSummary {
 }
 
 /** Decyzja analityka wraz z autorem (na razie stałym — narzędzie nie ma kont użytkowników). */
-export type DecisionRecord = AnalystDecision & { author: string };
+export type DecisionRecord = AnalystDecision & {
+  author: string;
+  /** Czas wycofania decyzji (ISO 8601). Wycofana decyzja zostaje w rejestrze, ale nie wpływa na wynik. */
+  withdrawnAt?: string;
+  /** Kto wycofał decyzję. */
+  withdrawnBy?: string;
+};
 
 /** Ostatnia zakończona analiza sprawy — do zestawień między sprawami. */
 export interface LatestRun {
@@ -96,10 +102,13 @@ export interface Storage {
   /** Ostatnia zakończona analiza każdej sprawy. */
   listLatestRuns(): Promise<LatestRun[]>;
   addDecision(decision: DecisionRecord): Promise<void>;
-  /** Decyzje sprawy w kolejności podejmowania. */
+  /** Decyzje sprawy w kolejności podejmowania — łącznie z wycofanymi (`withdrawnAt`), bo rejestr jest śladem audytowym. */
   listDecisions(caseId: string): Promise<DecisionRecord[]>;
-  /** Zwraca `false`, gdy sprawa nie ma takiej decyzji. */
-  deleteDecision(caseId: string, decisionId: string): Promise<boolean>;
+  /**
+   * Wycofuje decyzję: wpis zostaje w rejestrze z czasem i autorem wycofania, ale przestaje wpływać na wynik.
+   * Zwraca `false`, gdy sprawa nie ma takiej decyzji albo decyzja jest już wycofana.
+   */
+  deleteDecision(caseId: string, decisionId: string, withdrawal?: { at?: string; by?: string }): Promise<boolean>;
   saveSweep(sweep: Sweep): Promise<void>;
   getSweep(id: string): Promise<Sweep | null>;
   listSweeps(): Promise<Sweep[]>;
@@ -416,11 +425,15 @@ export function createStorage(driver: SqlDriver): Storage {
         ...(row.note == null ? {} : { note: String(row.note) }),
         decidedAt: toIso(row.decided_at),
         author: String(row.author),
+        ...(row.withdrawn_at == null ? {} : { withdrawnAt: toIso(row.withdrawn_at), withdrawnBy: String(row.withdrawn_by ?? 'analityk') }),
       }));
     },
 
-    async deleteDecision(caseId, decisionId) {
-      const rows = await driver.query('DELETE FROM decisions WHERE case_id = $1 AND id = $2 RETURNING id', [caseId, decisionId]);
+    async deleteDecision(caseId, decisionId, withdrawal = {}) {
+      const rows = await driver.query(
+        'UPDATE decisions SET withdrawn_at = $3, withdrawn_by = $4 WHERE case_id = $1 AND id = $2 AND withdrawn_at IS NULL RETURNING id',
+        [caseId, decisionId, withdrawal.at ?? new Date().toISOString(), withdrawal.by ?? 'analityk'],
+      );
       return rows.length > 0;
     },
 
