@@ -1,7 +1,7 @@
 // Punkt startowy API: jedyne miejsce, w którym podłączane są prawdziwe łączniki
 // źródeł i dostawcy danych blockchain. Konfiguracja wyłącznie ze zmiennych środowiskowych.
 
-import { createChainProviders, getActivityFromProviders } from '@olcys/chain';
+import { createChainProviders, getActivityFromProviders, matchService } from '@olcys/chain';
 import { createConnectors } from '@olcys/sources';
 import { buildApp } from './app.ts';
 import { createDriverFromEnv, createStorage } from './storage.ts';
@@ -18,9 +18,11 @@ await storage.migrate();
 
 const app = await buildApp({
   storage,
-  connectors: createConnectors({ sandboxUrl, enableLive, torProxyUrl }),
+  // Token służy tylko do podniesienia limitu zapytań publicznego API; nie jest logowany ani zapisywany.
+  connectors: createConnectors({ sandboxUrl, enableLive, torProxyUrl, githubToken: env.GITHUB_TOKEN || undefined }),
   chainProviders: createChainProviders({ sandboxUrl, enableLive }),
   resolveActivity: getActivityFromProviders,
+  matchService,
   logger: true,
 });
 app.addHook('onClose', () => storage.close());

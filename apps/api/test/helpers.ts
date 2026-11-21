@@ -1,8 +1,15 @@
 // Atrapy łączników i dostawców danych blockchain — testy nie korzystają z sieci.
 
+import { DEFAULT_RULES } from '@olcys/core';
+import type { AnalysisResult } from '../src/analysis.ts';
+import { buildDossier } from '../src/dossier.ts';
+import type { DossierView } from '../src/dossier.ts';
+import type { OtherCase } from '../src/relations.ts';
+import type { DecisionRecord } from '../src/storage.ts';
 import type {
   AddressClass,
   AnalysisRun,
+  CashOutIndicator,
   ChainActivity,
   ChainProvider,
   Finding,
@@ -12,6 +19,8 @@ import type {
   SourceConnector,
   SourceDocument,
   StoredEvidence,
+  SubjectQuery,
+  Transfer,
 } from '@olcys/core';
 
 // Prawdziwe, publicznie znane adresy z poprawną sumą kontrolną.
@@ -157,4 +166,88 @@ export function run(id: string, findings: Finding[]): AnalysisRun {
     findings,
     log: [{ time: '2026-11-21T09:00:00.000Z', message: 'Start' }],
   };
+}
+
+// ---------- Pomoc do testów teczki ----------
+
+export const BTC_C = '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2';
+export const BTC_D = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
+type TransferInput = Partial<Transfer> & { counterparty: string; time: string; amount: number };
+
+/** Przelew testowy; identyfikator transakcji wynika z numeru, żeby dało się go sprawdzić w wyniku. */
+export function transfer(index: number, input: TransferInput): Transfer {
+  const txid = index.toString(16).padStart(64, '0');
+  return {
+    txid,
+    direction: 'out',
+    counterpartyClass: 'unknown',
+    asset: 'BTC',
+    explorerUrl: `https://explorer.example/tx/${txid}`,
+    ...input,
+  };
+}
+
+/** Wskaźnik wypłaty odpowiadający przelewowi wychodzącemu. */
+export function cashOut(source: Transfer, valuePln: number, extra: Partial<CashOutIndicator> = {}): CashOutIndicator {
+  return {
+    kind: 'exchange_deposit',
+    txid: source.txid,
+    time: source.time,
+    asset: source.asset,
+    amount: source.amount,
+    counterparty: source.counterparty,
+    counterpartyLabel: source.counterpartyLabel,
+    valuePln,
+    valuation: 'kurs testowy',
+    explanation: 'Przelew na adres giełdy.',
+    explorerUrl: source.explorerUrl,
+    ...extra,
+  };
+}
+
+/** Dostawca z ręcznie opisaną aktywnością wybranych adresów; pozostałe są prywatne i bez przelewów. */
+export function chainWith(
+  activities: Record<string, { transfers?: Transfer[]; cashOuts?: CashOutIndicator[]; addressClass?: AddressClass; label?: string }>,
+): ChainProvider {
+  return {
+    id: 'atrapa-chain',
+    label: 'Atrapa eksploratora',
+    supports: () => true,
+    getActivity: async (network, address) => {
+      const spec = activities[address] ?? {};
+      const cashOuts = spec.cashOuts ?? [];
+      const byYear: Record<string, number> = {};
+      for (const item of cashOuts) byYear[item.time.slice(0, 4)] = (byYear[item.time.slice(0, 4)] ?? 0) + (item.valuePln ?? 0);
+      return {
+        ...fakeActivity(network, address, spec.addressClass ?? 'private'),
+        profile: { ...fakeActivity(network, address, spec.addressClass ?? 'private').profile, label: spec.label },
+        transfers: spec.transfers ?? [],
+        cashOuts,
+        cashOutPlnByYear: byYear,
+      };
+    },
+  };
+}
+
+/** Teczka z wyniku analizy — tak, jak składa ją API, ale bez bazy. */
+export function dossierOf(
+  result: AnalysisResult,
+  query: SubjectQuery,
+  options: { decisions?: DecisionRecord[]; otherCases?: OtherCase[]; now?: Date } = {},
+): DossierView {
+  const analysisRun: AnalysisRun = { ...run('run-test', result.findings), query, log: result.log };
+  return buildDossier({
+    caseSummary: { id: 'sprawa-1', name: 'Sprawa testowa', createdAt: '2026-11-21T08:00:00.000Z', query, runs: [] },
+    run: analysisRun,
+    intel: result.intel,
+    decisions: options.decisions ?? [],
+    otherCases: options.otherCases ?? [],
+    rules: DEFAULT_RULES,
+    now: options.now ?? FIXED_NOW(),
+  });
+}
+
+export function decision(target: 'profile' | 'address', key: string, value: 'confirmed' | 'rejected', note?: string): DecisionRecord {
+  return { id: `d-${target}-${key}-${value}`, caseId: 'sprawa-1', target, key, decision: value, note, decidedAt: '2026-11-21T10:00:00.000Z', author: 'analityk' };
 }

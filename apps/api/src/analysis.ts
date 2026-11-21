@@ -9,6 +9,7 @@ import { unlabeledCounterparties } from './counterparties.ts';
 import { assessIdentity, assessLinkedProfile, matchRank, normalize as normalizeName } from './identity.ts';
 import type { IdentityAssessment } from './identity.ts';
 import { addressKey, sightingKey } from './intel.ts';
+import { mentionsInDocument } from './services.ts';
 import type { DiscoveryStep, RunIntel, Sighting, SightingRole } from './intel.ts';
 import type {
   ChainActivity,
@@ -209,6 +210,8 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         step,
         addresses: [...addresses],
         role,
+        // Wzmianek o usługach szukamy tylko w treściach samego podmiotu.
+        ...(role === 'subject' ? { serviceMentions: mentionsInDocument(doc) } : {}),
       });
       return;
     }
@@ -216,6 +219,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     // Dokument przypisany podmiotowi nie wraca do roli „inna osoba”.
     if (role !== 'subject') return;
     if (existing.role !== 'subject' || matchRank(identity.match) > matchRank(existing.identity.match)) {
+      if (existing.role !== 'subject') existing.serviceMentions = mentionsInDocument(doc);
       existing.role = 'subject';
       existing.identity = identity;
       existing.matchedIdentifier = doc.matchedIdentifier;
@@ -392,6 +396,10 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const next = new Map<string, Pending>();
     for (const { item, docs } of batches) {
       for (const doc of docs) {
+        // Dokument znany z wcześniejszego kroku wraca, bo sam podał identyfikator, po którym teraz
+        // szukamy. To nie jest nowe potwierdzenie — zostaje pierwotna ocena.
+        const seen = sightings.get(sightingKey(doc));
+        if (seen && seen.role === 'subject' && seen.step < step) continue;
         const identity: IdentityAssessment =
           step === 0
             ? { ...assessIdentity(doc, personIdentifiers), distance: 0 }
@@ -402,6 +410,15 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     }
     frontier = [...next.values()];
     if (frontier.length > 0) log(`Krok ${step + 1} wyszukiwania: nowych identyfikatorów ${frontier.length}.`);
+  }
+
+  // Nazwy kont znalezionych profili też są nazwami podmiotu — ale tylko pośrednio:
+  // to samo konto w innym serwisie nie musi należeć do tej samej osoby.
+  for (const sighting of sightings.values()) {
+    const author = sighting.author ? normalizeName(sighting.author) : '';
+    if (author && !knownNames.has(author)) {
+      knownNames.set(author, sighting.identity.match === 'name_only' ? 'name_only' : 'linked_profile');
+    }
   }
 
   // ---------- Wystąpienia adresów u innych autorów ----------

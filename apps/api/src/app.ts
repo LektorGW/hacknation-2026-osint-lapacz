@@ -2,30 +2,26 @@
 // otwiera portu — nasłuch uruchamia `server.ts`, a testy używają `app.inject`.
 
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { DEFAULT_RULES, validateAddress } from '@olcys/core';
-import type { AnalysisRun, ChainProvider, Identifier, ScoreRules, SourceConnector } from '@olcys/core';
+import type { AnalysisRun, Identifier, IdentifierType, SourceConnector } from '@olcys/core';
 import { runAnalysis } from './analysis.ts';
-import type { ActivityResolver } from './analysis.ts';
 import { detectReplacements, diffRuns } from './diff.ts';
+import { buildDossier } from './dossier.ts';
+import type { DossierView } from './dossier.ts';
+import { registerDossierRoutes } from './dossier-routes.ts';
+import { HttpError, IDENTIFIER_TYPES, TOOL_VERSION, idParams, identifierItems } from './http-common.ts';
+import type { AppDeps, RouteContext } from './http-common.ts';
+import { looksLikePersonName } from './persons.ts';
 import { renderReportHtml } from './report.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { CaseSummary, Storage } from './storage.ts';
+import { registerSweepRoutes } from './sweep-routes.ts';
 
-export interface AppDeps {
-  storage: Storage;
-  connectors: SourceConnector[];
-  chainProviders: ChainProvider[];
-  /** Strategia wyboru dostawcy danych blockchain; bez niej analiza używa własnej, prostej. */
-  resolveActivity?: ActivityResolver;
-  rules?: ScoreRules;
-  now?: () => Date;
-  /** Włącza log serwera (domyślnie wyłączony, żeby nie zaśmiecać testów). */
-  logger?: boolean;
-}
+export type { AppDeps } from './http-common.ts';
+export { TOOL_VERSION } from './http-common.ts';
 
 export interface CaseSchedule {
   everyMinutes: number;
@@ -35,25 +31,15 @@ export interface CaseSchedule {
 /** Sprawa w odpowiedzi API: podsumowanie + ewentualny harmonogram cyklicznych analiz. */
 export type CaseView = CaseSummary & { schedule?: CaseSchedule };
 
-export const TOOL_VERSION: string = (
-  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
-).version;
-
-const IDENTIFIER_TYPES = ['full_name', 'nick', 'login', 'email', 'messenger_id', 'crypto_address', 'profile_url', 'ens_name'];
-
-const idParams = {
-  type: 'object',
-  required: ['id'],
-  properties: { id: { type: 'string', minLength: 1, maxLength: 64 } },
-} as const;
-
-/** Błąd z kodem HTTP i komunikatem dla analityka. */
-class HttpError extends Error {
-  statusCode: number;
-  constructor(statusCode: number, message: string) {
-    super(message);
-    this.statusCode = statusCode;
-  }
+/** Rozpoznaje rodzaj identyfikatora po jego postaci — analityk wpisuje jedną wartość. */
+export function detectIdentifierType(value: string): IdentifierType {
+  const text = value.trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return 'email';
+  if (/^https?:\/\//i.test(text)) return 'profile_url';
+  if (validateAddress(text)) return 'crypto_address';
+  if (/^[^\s]+\.eth$/i.test(text)) return 'ens_name';
+  if (looksLikePersonName(text)) return 'full_name';
+  return 'nick';
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -97,13 +83,54 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return found;
   };
 
-  /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
-  const executeRun = async (caseSummary: CaseSummary, connectorIds?: string[]): Promise<AnalysisRun> => {
+  const selectConnectors = (connectorIds?: string[]): SourceConnector[] => {
     const unknown = (connectorIds ?? []).filter((id) => !connectors.some((connector) => connector.id === id));
     if (unknown.length > 0) throw new HttpError(400, `Nieznane łączniki: ${unknown.join(', ')}.`);
-    const selected = connectorIds
+    return connectorIds
       ? connectors.filter((connector) => connectorIds.includes(connector.id))
       : connectors.filter((connector) => connector.enabledByDefault);
+  };
+
+  const cleanIdentifiers = (raw: Identifier[]): Identifier[] => {
+    const identifiers = raw.map((item) => ({ type: item.type, value: item.value.trim() }));
+    for (const identifier of identifiers) {
+      if (!identifier.value) throw new HttpError(400, 'Identyfikator nie może być pusty.');
+      if (identifier.type === 'crypto_address' && !validateAddress(identifier.value)) {
+        throw new HttpError(400, `„${identifier.value}” nie jest poprawnym adresem obsługiwanej sieci (Bitcoin, Ethereum, TRON).`);
+      }
+    }
+    return identifiers;
+  };
+
+  // Teczka liczy się z zapisanej analizy i decyzji; wynik pamiętamy do najbliższej zmiany danych.
+  const dossiers = new Map<string, DossierView>();
+  const invalidateDossiers = () => dossiers.clear();
+  const loadDossier = async (run: AnalysisRun): Promise<DossierView> => {
+    const cached = dossiers.get(run.id);
+    if (cached) return cached;
+    const [caseSummary, intel, decisions, latest] = await Promise.all([
+      requireCase(run.caseId),
+      storage.getRunIntel(run.id),
+      storage.listDecisions(run.caseId),
+      storage.listLatestRuns(),
+    ]);
+    const dossier = buildDossier({
+      caseSummary,
+      run,
+      intel,
+      decisions,
+      otherCases: latest.filter((item) => item.caseId !== run.caseId),
+      rules,
+      now: now(),
+      matchService: deps.matchService,
+    });
+    if (run.status === 'completed') dossiers.set(run.id, dossier);
+    return dossier;
+  };
+
+  /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
+  const executeRun = async (caseSummary: CaseSummary, connectorIds?: string[]): Promise<AnalysisRun> => {
+    const selected = selectConnectors(connectorIds);
 
     const run: AnalysisRun = {
       id: randomUUID(),
@@ -132,6 +159,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       run.finishedAt = now().toISOString();
       await storage.saveRun(run);
       await storage.saveDocuments(run.id, result.documents);
+      await storage.saveRunIntel(run.id, result.intel);
+      // Nowa analiza zmienia też powiązania między sprawami w teczkach innych spraw.
+      invalidateDossiers();
     } catch (error) {
       run.status = 'failed';
       run.finishedAt = now().toISOString();
@@ -184,15 +214,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
               type: 'array',
               minItems: 1,
               maxItems: 20,
-              items: {
-                type: 'object',
-                required: ['type', 'value'],
-                additionalProperties: false,
-                properties: {
-                  type: { type: 'string', enum: IDENTIFIER_TYPES },
-                  value: { type: 'string', minLength: 1, maxLength: 200 },
-                },
-              },
+              items: identifierItems,
             },
           },
         },
@@ -200,14 +222,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     },
     async (request, reply) => {
       const name = request.body.name.trim();
-      const identifiers = request.body.identifiers.map((item) => ({ type: item.type, value: item.value.trim() }));
       if (!name) throw new HttpError(400, 'Nazwa sprawy nie może być pusta.');
-      for (const identifier of identifiers) {
-        if (!identifier.value) throw new HttpError(400, 'Identyfikator nie może być pusty.');
-        if (identifier.type === 'crypto_address' && !validateAddress(identifier.value)) {
-          throw new HttpError(400, `„${identifier.value}” nie jest poprawnym adresem obsługiwanej sieci (Bitcoin, Ethereum, TRON).`);
-        }
-      }
+      const identifiers = cleanIdentifiers(request.body.identifiers);
       const created = await storage.createCase(name, { identifiers }, now().toISOString());
       return reply.code(201).send(created);
     },
@@ -281,7 +297,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/runs/:id/report.html', { schema: { params: idParams } }, async (request, reply) => {
     const run = await requireRun(request.params.id);
     const caseSummary = await requireCase(run.caseId);
-    const html = renderReportHtml(caseSummary, run, detectReplacements(run), {
+    const dossier = await loadDossier(run);
+    const html = renderReportHtml(caseSummary, run, dossier, detectReplacements({ ...run, findings: dossier.findings }), {
       connectors: connectorInfo(),
       rules,
       version: TOOL_VERSION,
@@ -305,6 +322,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       rules,
       connectors: connectorInfo().filter((connector) => run.connectors.includes(connector.id)),
       replacements: detectReplacements(run),
+      // Materiał do teczki: widziane profile, ścieżka odkrywania identyfikatorów, wzmianki o usługach.
+      intel: await storage.getRunIntel(run.id),
+      decisions: await storage.listDecisions(run.caseId),
       // Kopie treści, z których policzono skróty SHA-256 śladów.
       documents: await storage.listDocuments(run.id),
     };
@@ -349,6 +369,51 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     clearSchedule(caseSummary.id);
     return withSchedule(caseSummary);
   });
+
+  // ---------- Jedno wywołanie: identyfikator → sprawa → analiza → teczka ----------
+
+  app.post<{ Body: { value: string; type?: IdentifierType } }>(
+    '/api/quick',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['value'],
+          additionalProperties: false,
+          properties: {
+            value: { type: 'string', minLength: 1, maxLength: 200 },
+            type: { type: 'string', enum: IDENTIFIER_TYPES },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const value = request.body.value.trim();
+      if (!value) throw new HttpError(400, 'Identyfikator nie może być pusty.');
+      const identifiers = cleanIdentifiers([{ type: request.body.type ?? detectIdentifierType(value), value }]);
+      const created = await storage.createCase(value, { identifiers }, now().toISOString());
+      const run = await executeRun(created);
+      return reply.code(201).send({ case: withSchedule(await requireCase(created.id)), dossier: await loadDossier(run) });
+    },
+  );
+
+  const context: RouteContext = {
+    storage,
+    connectors,
+    deps,
+    rules,
+    now,
+    requireCase,
+    requireRun,
+    connectorInfo,
+    selectConnectors,
+    executeRun,
+    cleanIdentifiers,
+    loadDossier,
+    invalidateDossiers,
+  };
+  registerDossierRoutes(app, context);
+  registerSweepRoutes(app, context);
 
   return app;
 }

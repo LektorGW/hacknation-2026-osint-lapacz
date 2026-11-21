@@ -2,12 +2,14 @@
 //
 // JEDYNE miejsce ze wzorem. Priorytet to suma ważona czterech składników, każdy 0–100:
 //
-//   priorytet = 0,40·P + 0,35·S + 0,15·A + 0,10·Z      (zaokrąglony do liczby całkowitej)
+//   priorytet = 0,35·P + 0,30·S + 0,15·U + 0,10·A + 0,10·Z   (zaokrąglony do liczby całkowitej)
 //
 //   P — Wskaźnik Pewności najlepszego niewykluczonego adresu.
 //   S — skala szacowanych wypłat w PLN, logarytmicznie: 100·log10(1+PLN)/log10(1+1 000 000),
 //       najwyżej 100 (pełna skala od 1 mln zł). Logarytm, bo różnica między 10 a 100 tys. zł
 //       jest dla sprawy ważniejsza niż między 1,0 a 1,1 mln zł.
+//   U — powiązania z usługami wypłat (giełdy, P2P, bramki, karty): siła najmocniejszego
+//       powiązania + 10 za każdą kolejną taką usługę, najwyżej 100; brak = 0.
 //   A — aktualność ostatniej możliwej wypłaty: 100 do roku wstecz, potem liniowo do 0
 //       po 5 latach (okres przedawnienia zobowiązań podatkowych); brak wypłat = 0.
 //   Z — niezależne źródła (różne serwisy) najlepszego adresu: 100·min(3, liczba)/3.
@@ -16,13 +18,16 @@
 // analityka, ze Wskaźnikiem Pewności co najmniej 40% albo podane przez analityka.
 // Priorytet jest wynikiem obliczeń pomocniczym w kolejkowaniu spraw, a nie oceną podmiotu.
 
-import type { Finding } from '@olcys/core';
+import type { Finding, ServiceLink } from '@olcys/core';
 import { formatDate, roundPln, sumByYear } from './format.ts';
 import { addressKey } from './intel.ts';
+import { isCashOutService } from './services.ts';
 
 export const PRIORITY_RULES = {
-  formula: 'priorytet = 0,40·P + 0,35·S + 0,15·A + 0,10·Z',
-  weights: { confidence: 0.4, scale: 0.35, recency: 0.15, sources: 0.1 },
+  formula: 'priorytet = 0,35·P + 0,30·S + 0,15·U + 0,10·A + 0,10·Z',
+  weights: { confidence: 0.35, scale: 0.3, services: 0.15, recency: 0.1, sources: 0.1 },
+  /** Dodatek za każdą kolejną usługę wypłat ponad najmocniejszą. */
+  extraServicePoints: 10,
   /** Kwota wypłat w PLN, od której składnik skali wynosi 100. */
   scaleFullPln: 1_000_000,
   /** Do ilu dni wstecz ostatnia wypłata jest w pełni aktualna. */
@@ -36,6 +41,7 @@ export const PRIORITY_RULES = {
   components: {
     confidence: 'P — Wskaźnik Pewności najlepszego niewykluczonego adresu (0–100).',
     scale: 'S — skala szacowanych wypłat w PLN: 100·log10(1+PLN)/log10(1+1 000 000), najwyżej 100.',
+    services: 'U — powiązania z usługami wypłat: siła najmocniejszego powiązania + 10 za każdą kolejną usługę, najwyżej 100.',
     recency: 'A — aktualność ostatniej możliwej wypłaty: 100 do roku wstecz, liniowo do 0 po 5 latach; brak wypłat = 0.',
     sources: 'Z — niezależne źródła najlepszego adresu: 100·min(3, liczba)/3.',
   },
@@ -48,6 +54,8 @@ export interface PriorityInput {
   /** Czas ostatniej możliwej wypłaty (ISO 8601). */
   lastCashOutAt?: string;
   independentSources: number;
+  /** Siły powiązań (0–100) z usługami wypłat na waluty tradycyjne. */
+  serviceStrengths: number[];
   now: Date;
 }
 
@@ -79,8 +87,16 @@ export function computePriority(input: PriorityInput): PriorityResult {
   const sourceCount = Math.max(0, input.independentSources);
   const sources = (100 * Math.min(PRIORITY_RULES.sourcesFull, sourceCount)) / PRIORITY_RULES.sourcesFull;
 
+  const strengths = [...input.serviceStrengths].sort((a, b) => b - a);
+  const services =
+    strengths.length === 0 ? 0 : Math.min(100, strengths[0]! + (strengths.length - 1) * PRIORITY_RULES.extraServicePoints);
+
   const priority = Math.round(
-    weights.confidence * confidence + weights.scale * scale + weights.recency * recency + weights.sources * sources,
+    weights.confidence * confidence +
+      weights.scale * scale +
+      weights.services * services +
+      weights.recency * recency +
+      weights.sources * sources,
   );
 
   const reasons = [
@@ -88,6 +104,9 @@ export function computePriority(input: PriorityInput): PriorityResult {
     pln > 0
       ? `Skala szacowanych wypłat: ${roundPln(pln)} → ${Math.round(scale)}/100 w skali logarytmicznej (pełna skala od 1 mln zł) × ${weight(weights.scale)} = ${points(weights.scale * scale)} pkt.`
       : 'Skala szacowanych wypłat: nie stwierdzono wypłat z adresów powiązanych — 0 pkt.',
+    strengths.length === 0
+      ? 'Powiązania z usługami wypłat (giełdy, P2P, bramki, karty): nie stwierdzono — 0 pkt.'
+      : `Powiązania z usługami wypłat: ${strengths.length}, najmocniejsze ${strengths[0]}/100 → ${Math.round(services)}/100 × ${weight(weights.services)} = ${points(weights.services * services)} pkt.`,
     ageDays === undefined
       ? 'Aktualność: brak wypłat do oceny — 0 pkt.'
       : `Aktualność: ostatnia możliwa wypłata ${formatDate(input.lastCashOutAt!)} (${ageDays} dni temu) → ${Math.round(recency)}/100 × ${weight(weights.recency)} = ${points(weights.recency * recency)} pkt.`,
@@ -115,7 +134,12 @@ export interface FindingsSummary {
  * odrzucony ma już `confidence.excluded`). `analystAddresses`: klucze `network:address`
  * adresów podanych przez analityka jako identyfikatory.
  */
-export function summarizeFindings(findings: Finding[], analystAddresses: Set<string>, now: Date): FindingsSummary {
+export function summarizeFindings(
+  findings: Finding[],
+  analystAddresses: Set<string>,
+  now: Date,
+  serviceLinks: ServiceLink[] = [],
+): FindingsSummary {
   const active = findings.filter((finding) => !finding.confidence.excluded);
   const linked = active.filter(
     (finding) => finding.confidence.score >= PRIORITY_RULES.linkedMinScore || analystAddresses.has(addressKey(finding)),
@@ -134,6 +158,7 @@ export function summarizeFindings(findings: Finding[], analystAddresses: Set<str
     cashOutPlnTotal,
     lastCashOutAt,
     independentSources: new Set((best?.evidence ?? []).map((item) => item.service.toLowerCase())).size,
+    serviceStrengths: serviceLinks.filter((link) => isCashOutService(link.kind)).map((link) => link.strength),
     now,
   });
   return {

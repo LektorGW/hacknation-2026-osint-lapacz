@@ -5,6 +5,7 @@
 
 import type { Identifier, IdentityMatch, ProfileAttributes, SourceCategory } from '@olcys/core';
 import type { IdentityAssessment } from './identity.ts';
+import type { ServiceMention } from './services.ts';
 
 export type SightingRole =
   /** Dokument przypisany badanemu podmiotowi (z oceną tożsamości). */
@@ -34,6 +35,8 @@ export interface Sighting {
   /** Adresy w treści (`network:address`). */
   addresses: string[];
   role: SightingRole;
+  /** Wzmianki o giełdach, portfelach i innych usługach w treści dokumentu podmiotu. */
+  serviceMentions?: ServiceMention[];
 }
 
 /** Wpis „ścieżki dojścia”: który profil wskazał który identyfikator. */

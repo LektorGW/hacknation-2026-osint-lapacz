@@ -1,0 +1,158 @@
+// Kluczowe ustalenia: 3–7 zdań zrozumiałych dla laika, układanych REGUŁAMI z danych
+// teczki (bez modelu językowego). Kolejność odpowiada wadze dla analityka:
+// kto to jest → z jakimi giełdami jest powiązany → jakie adresy i kwoty → zastrzeżenia.
+
+import type { Dossier, Finding, PersonCandidate, ProfileCard, RelatedPerson, ServiceLink, SourceCategory } from '@olcys/core';
+import type { AddressReplacement } from './diff.ts';
+import { formatDate, plural, roundPln, shortAddress } from './format.ts';
+import { describeServiceLink, isCashOutService } from './services.ts';
+
+type KeyFinding = Dossier['keyFindings'][number];
+
+export interface KeyFindingsInput {
+  persons: PersonCandidate[];
+  profiles: ProfileCard[];
+  serviceLinks: ServiceLink[];
+  findings: Finding[];
+  linked: Finding[];
+  cashOutPlnByYear: Record<string, number>;
+  replacements: AddressReplacement[];
+  relatedPersons: RelatedPerson[];
+  priority: number;
+  connectorCount: number;
+}
+
+const MAX_FINDINGS = 7;
+const MIN_FINDINGS = 3;
+
+const PLACE: Record<SourceCategory, string> = {
+  cryptographic_proof: 'w zapisie potwierdzonym kryptograficznie w serwisie',
+  own_profile: 'na własnym profilu w serwisie',
+  sale_offer: 'w ogłoszeniu w serwisie',
+  settlement_message: 'w wiadomości rozliczeniowej w serwisie',
+  forum_post: 'we wpisie na forum',
+  mass_comment: 'w masowym komentarzu w serwisie',
+};
+
+const list = (items: string[]): string => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} i ${items.at(-1)}`);
+
+function personSentences(input: KeyFindingsInput): KeyFinding[] {
+  const [main, ...others] = input.persons;
+  if (!main || main.probability === 0) return [];
+  const profiles = input.profiles.filter((profile) => main.profileIds.includes(profile.id));
+  const services = [...new Set(profiles.map((profile) => profile.service))];
+  // Pierwsza przesłanka to podstawa oceny; bez prefiksu punktowego czyta się ją jak zdanie.
+  const basis = (main.reasons[0] ?? '').replace(/^Podstawa \d+: /, '').replace(/\.$/, '');
+  const who = main.fullName
+    ? `Najbardziej prawdopodobna osoba: ${main.fullName}`
+    : `Najbardziej prawdopodobna osoba posługuje się nazwą „${profiles.find((profile) => profile.handle)?.handle ?? '—'}” (imienia i nazwiska źródła nie ujawniają)`;
+  const result: KeyFinding[] = [
+    {
+      text: `${who} — prawdopodobieństwo ${main.probability}%; ${profiles.length} ${plural(profiles.length, 'profil', 'profile', 'profili')} w: ${list(services)}. Podstawa: ${basis}.`,
+      layer: 'inference',
+    },
+  ];
+  const foreign = others.filter((person) => person.probability > 0);
+  if (foreign.length > 0) {
+    const names = input.profiles
+      .filter((profile) => foreign.some((person) => person.profileIds.includes(profile.id)))
+      .map((profile) => `${profile.handle ?? profile.url} w ${profile.service}`);
+    result.push({
+      text: `Część śladów (${plural(names.length, 'profil', 'profile', 'profile')}: ${list(names.slice(0, 3))}) należy prawdopodobnie do innej osoby — brak wiązania z osobą główną, dlatego nie wliczono ich do jej wyniku.`,
+      layer: 'inference',
+    });
+  }
+  return result;
+}
+
+function serviceSentences(links: ServiceLink[]): KeyFinding[] {
+  const layerOf = (link: ServiceLink): KeyFinding['layer'] =>
+    link.inferredOnly ? 'inference' : link.outPln !== undefined || link.inPln !== undefined ? 'calculation' : 'fact';
+  const cashOut = links.filter((link) => isCashOutService(link.kind));
+  const shown = cashOut.slice(0, 2);
+  const result = shown.map((link) => ({ text: describeServiceLink(link), layer: layerOf(link) }));
+  if (cashOut.length > shown.length) {
+    result.push({
+      text: `Pozostałe usługi wypłat powiązane z podmiotem: ${list(cashOut.slice(2).map((link) => link.name))}.`,
+      layer: 'calculation',
+    });
+  }
+  const wallets = links.filter((link) => link.kind === 'wallet');
+  if (wallets.length > 0) {
+    result.push({ text: `Podmiot wymienia w publicznych treściach portfele: ${list(wallets.map((link) => link.name))} — informacja o sposobie przechowywania środków.`, layer: 'fact' });
+  }
+  return result;
+}
+
+function addressSentence(best: Finding | undefined): KeyFinding[] {
+  if (!best || best.evidence.length === 0) return [];
+  const places = [...new Set(best.evidence.map((item) => `${PLACE[item.category]} ${item.service}`))];
+  return [
+    {
+      text: `Adres ${shortAddress(best.address)} opublikowano ${list(places.slice(0, 3))} (Wskaźnik Pewności ${best.confidence.score}% — ${best.confidence.tier}).`,
+      layer: 'calculation',
+    },
+  ];
+}
+
+export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
+  const active = input.findings.filter((finding) => !finding.confidence.excluded);
+  const best = [...active].sort((a, b) => b.confidence.score - a.confidence.score)[0];
+  const result: KeyFinding[] = [...personSentences(input), ...serviceSentences(input.serviceLinks), ...addressSentence(best)];
+
+  const years = Object.entries(input.cashOutPlnByYear).sort(([a], [b]) => a.localeCompare(b));
+  const total = years.reduce((sum, [, value]) => sum + value, 0);
+  if (total > 0) {
+    result.push({
+      text:
+        `Łączna szacunkowa wartość możliwych wypłat na waluty tradycyjne z ${input.linked.length} ${plural(input.linked.length, 'adresu powiązanego', 'adresów powiązanych', 'adresów powiązanych')}: ${roundPln(total)}` +
+        (years.length > 1 ? ` (${years.map(([year, value]) => `${year}: ${roundPln(value)}`).join(', ')})` : ` w ${years[0]![0]} r.`) +
+        ' — szacunek po kursie z dnia transakcji, nie ustalenie przychodu.',
+      layer: 'calculation',
+    });
+  }
+
+  for (const replacement of input.replacements.slice(0, 1)) {
+    result.push({
+      text: `Między ${formatDate(replacement.archivedAt)} a ${formatDate(replacement.observedAt)} adres w publikacji ${replacement.url} został podmieniony (${shortAddress(replacement.from)} → ${shortAddress(replacement.to)}).`,
+      layer: 'fact',
+    });
+  }
+
+  const strongest = best?.evidence.length ? best.confidence.ledger.find((entry) => entry.rule.startsWith('identity.')) : undefined;
+  if (strongest && /same_handle|common_handle|name_only/.test(strongest.rule)) {
+    result.push({
+      text: 'Uwaga: powiązanie najlepszego adresu z podmiotem opiera się na samej zgodności nicku lub nazwiska — tożsamość profilu wymaga potwierdzenia drugim identyfikatorem.',
+      layer: 'inference',
+    });
+  }
+
+  if (input.relatedPersons.length > 0) {
+    const top = input.relatedPersons[0]!;
+    result.push({
+      text: `Wskazano ${input.relatedPersons.length} ${plural(input.relatedPersons.length, 'osobę potencjalnie powiązaną', 'osoby potencjalnie powiązane', 'osób potencjalnie powiązanych')} (najsilniej: „${top.handle}”, siła ${top.strength}/100) — to wskazówka do weryfikacji, nie ustalenie.`,
+      layer: 'inference',
+    });
+  }
+
+  const excluded = input.findings.length - active.length;
+  const fillers: KeyFinding[] = [
+    {
+      text:
+        input.findings.length === 0
+          ? `W ${input.connectorCount} przeszukanych źródłach nie znaleziono żadnego adresu kryptowalutowego powiązanego z podanymi identyfikatorami.`
+          : `Znaleziono ${input.findings.length} ${plural(input.findings.length, 'adres', 'adresy', 'adresów')}, z czego ${input.linked.length} uznano za powiązane z podmiotem, a ${excluded} odrzucono (adresy pośredników lub decyzja analityka).`,
+      layer: 'calculation',
+    },
+    { text: `Priorytet sprawy: ${input.priority}/100 (wynik obliczeń według jawnego wzoru).`, layer: 'calculation' },
+    ...(total > 0
+      ? []
+      : [{ text: 'W pobranych transakcjach adresów powiązanych nie stwierdzono przelewów do giełd ani innych usług wypłat na waluty tradycyjne.', layer: 'fact' as const }]),
+  ];
+  const trimmed = result.slice(0, MAX_FINDINGS);
+  // Uzupełnienie do minimum trzech zdań; priorytet dopisujemy zawsze, gdy jest miejsce.
+  for (const filler of fillers) {
+    if (trimmed.length < MIN_FINDINGS || (filler === fillers[1] && trimmed.length < MAX_FINDINGS)) trimmed.push(filler);
+  }
+  return trimmed;
+}

@@ -60,7 +60,7 @@ test('adres giełdy jest wykluczony, ale zostaje w wynikach na końcu listy', as
   assert.equal(excluded.evidence.length, 1);
 });
 
-test('odkryte identyfikatory uruchamiają dokładnie jedną dodatkową rundę', async () => {
+test('przy głębokości 1 odkryte identyfikatory uruchamiają dokładnie jedną dodatkową rundę', async () => {
   const github = fakeConnector('github', 'github.com', ['nick'], (identifier) =>
     identifier.value === 'krypto_janek'
       ? [
@@ -92,9 +92,10 @@ test('odkryte identyfikatory uruchamiają dokładnie jedną dodatkową rundę', 
     query: { identifiers: [nick] },
     connectors: [github, forum],
     chainProviders: [fakeProvider()],
+    discoveryDepth: 1,
   });
 
-  // Identyfikator wejściowy nie jest pytany drugi raz, a „trzeci_profil” wcale (brak trzeciej rundy).
+  // Identyfikator wejściowy nie jest pytany drugi raz, a „trzeci_profil” wcale (głębokość ograniczona do 1).
   assert.deepEqual(forum.calls.map((call) => call.value), ['krypto_janek', 'janek_btc']);
   assert.deepEqual(github.calls.map((call) => call.value), ['krypto_janek', 'janek_btc']);
 
