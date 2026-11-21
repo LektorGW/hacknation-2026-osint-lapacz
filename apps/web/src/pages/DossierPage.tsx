@@ -57,11 +57,12 @@ function StartScreen({ summary, onDone }: { summary: CaseSummary; onDone: () => 
 }
 
 /** Pola ścieżki dojścia dodawane przez usługę analizy do identyfikatorów (poza kontraktem). */
-type IdentifierPath = { step?: number; via?: string; followed?: boolean };
+/** API podaje `via` jako identyfikator, przez który dotarto do tej pozycji. */
+type IdentifierPath = { step?: number; via?: string | { value: string }; followed?: boolean };
 
 function Identifiers({ dossier }: { dossier: Dossier }) {
   const path = (item: IdentifierPath) =>
-    item.step === undefined ? '' : `odkryty w kroku ${item.step}${item.via ? ` przez ${item.via}` : ''}${item.followed === false ? ' · nieprzeszukany' : ''}`;
+    item.step === undefined ? '' : `odkryty w kroku ${item.step}${item.via ? ` przez „${typeof item.via === 'string' ? item.via : item.via.value}”` : ''}${item.followed === false ? ' · nieprzeszukany' : ''}`;
   return (
     <ul className="identifier-chips" aria-label="Identyfikatory podmiotu">
       {dossier.subject.identifiers.map(({ identifier, origin, sourceUrl, ...rest }) => (
