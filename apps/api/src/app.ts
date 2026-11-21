@@ -20,6 +20,7 @@ import { registerMonitorRoutes } from './monitor-routes.ts';
 import { looksLikePersonName } from './persons.ts';
 import { renderReportHtml } from './report.ts';
 import { createRunEngine } from './runs.ts';
+import { registerServiceReplyRoutes } from './service-reply-routes.ts';
 import type { RunDepth, RunLimitOverrides, RunPeriod } from './runs.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { CaseSummary, Storage } from './storage.ts';
@@ -153,17 +154,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const loadDossier = async (run: AnalysisRun): Promise<DossierView> => {
     const cached = dossiers.get(run.id);
     if (cached) return cached;
-    const [caseSummary, intel, decisions, latest] = await Promise.all([
+    const [caseSummary, intel, decisions, latest, serviceReplies] = await Promise.all([
       requireCase(run.caseId),
       storage.getRunIntel(run.id),
       storage.listDecisions(run.caseId),
       storage.listLatestRuns(),
+      storage.listServiceReplies(run.caseId),
     ]);
     const dossier = buildDossier({
       caseSummary,
       run,
       intel,
       decisions,
+      serviceReplies,
       otherCases: latest.filter((item) => item.caseId !== run.caseId),
       rules,
       now: now(),
@@ -458,6 +461,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       // Materiał do teczki: widziane profile, ścieżka odkrywania identyfikatorów, wzmianki o usługach.
       intel: await storage.getRunIntel(run.id),
       decisions: await storage.listDecisions(run.caseId),
+      // Odpowiedzi usług wprowadzone przez analityka (dokumenty spoza OSINT), łącznie z wycofanymi.
+      serviceReplies: await storage.listServiceReplies(run.caseId),
       // Kopie treści, z których policzono skróty SHA-256 śladów.
       documents: await storage.listDocuments(run.id),
     };
@@ -582,6 +587,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     corpusSettings,
   };
   registerDossierRoutes(app, context);
+  registerServiceReplyRoutes(app, context);
   registerSweepRoutes(app, context);
   registerMonitorRoutes(app, context);
 

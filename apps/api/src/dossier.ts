@@ -11,10 +11,12 @@ import type {
   Finding,
   Identifier,
   InvestigationIndicators,
+  PersonCandidate,
+  TimelineEvent,
   ScoreRules,
   StoredEvidence,
 } from '@olcys/core';
-import { buildLinkedIdentities } from './aliases.ts';
+import { buildLinkedIdentities, identityRelationLabel } from './aliases.ts';
 import type { LinkedIdentity } from './aliases.ts';
 import { insightEffect } from './ai-rules.ts';
 import type { InsightEvidence } from './ai-rules.ts';
@@ -23,7 +25,7 @@ import { buildCashOutAssessments } from './cashout-stage.ts';
 import type { AnalysisFinding } from './analysis.ts';
 import { detectReplacements } from './diff.ts';
 import { buildProfileNodes, decisionMatchesProfile, profileKey, sightingsOf } from './entity.ts';
-import { formatDate, sumByYear } from './format.ts';
+import { formatDate, shortAddress, sumByYear } from './format.ts';
 import { buildExplanations, buildUnconfirmedAddresses } from './explain.ts';
 import type { Explanation, ServiceLabel, UnconfirmedAddress } from './explain.ts';
 import { buildGraph } from './graph.ts';
@@ -31,7 +33,7 @@ import { addressKey, sightingKey } from './intel.ts';
 import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
 import { buildAccountWalletLinks, buildOperatorHypotheses } from './operator.ts';
-import { resolvePersons } from './persons.ts';
+import { PERSON_RULES, resolvePersons } from './persons.ts';
 import { summarizeFindings } from './priority.ts';
 import { collectFundingSources, collectSeizures, isIncidentSource, relatedAddressesOf } from './provenance.ts';
 import type { FundingSourceView, RelatedAddress, SeizureView } from './provenance.ts';
@@ -39,6 +41,9 @@ import { buildCashOutProof } from './proof.ts';
 import type { CashOutProof } from './proof.ts';
 import { buildRelatedPersons } from './relations.ts';
 import type { OtherCase, RelatedPersonView } from './relations.ts';
+import { buildReplyView, evaluateReply, formatFiat, payoutSummary, replyCitation, replyKeyFindings, replyRef, sameFullName } from './service-reply.ts';
+import type { ServiceReply, ServiceReplyRef, ServiceReplyView } from './service-reply.ts';
+import type { DocumentedExitSource } from './cashout-stage.ts';
 import { buildServiceLinks, detectServiceMentions } from './services.ts';
 import type { ExternalServiceMatcher, MentionSource } from './services.ts';
 import type { CaseSummary, DecisionRecord } from './storage.ts';
@@ -62,11 +67,21 @@ export type DossierFinding = Omit<Finding, 'evidence'> & {
   /** Ślady pominięte w ocenie — widoczne dla analityka, ale nieliczone. */
   excludedEvidence?: InsightEvidence[];
   decision?: Decision;
+  /** Własność adresu potwierdziła odpowiedź usługi (dokument spoza OSINT) — adres liczony jak potwierdzony przez analityka. */
+  confirmedByReply?: ServiceReplyRef;
   /**
    * Inne adresy powiązane z tym adresem w samym blockchainie (ten sam portfel, wspólny adres wpłat,
    * finansowanie), których nikt nie opublikował — adresy, nie osoby.
    */
   relatedAddresses?: RelatedAddress[];
+};
+
+/** Kandydat na osobę w teczce — z odwołaniem do odpowiedzi usługi, która go potwierdziła albo mu przeczy. */
+export type DossierPerson = PersonCandidate & {
+  /** Status „confirmed” wynika z odpowiedzi usługi (dane KYC zgodne z kandydatem), nie z decyzji analityka. */
+  confirmedByReply?: ServiceReplyRef;
+  /** Sprzeczności z odpowiedziami usług: konto w usłudze należy do innej osoby. */
+  replyContradictions?: string[];
 };
 
 /** Teczka w odpowiedzi API: kontrakt `Dossier` z lokalnymi, dodatkowymi polami. */
@@ -85,6 +100,13 @@ export interface DossierView extends Dossier {
     }[];
   };
   findings: DossierFinding[];
+  /** Kandydaci na osobę; główny może być potwierdzony odpowiedzią usługi albo mieć jawną sprzeczność z jej treścią. */
+  persons: DossierPerson[];
+  /**
+   * Odpowiedzi usług wprowadzone przez analityka — DOKUMENTY SPOZA OSINT, nie znaleziska narzędzia.
+   * Każda z wynikiem dopasowania do danych sprawy i skutkami; wycofane zostają z oznaczeniem.
+   */
+  serviceReplies: ServiceReplyView[];
   relatedPersons: RelatedPersonView[];
   decisions: DecisionRecord[];
   totals: Dossier['totals'] & {
@@ -126,6 +148,8 @@ export interface DossierInput {
   run: AnalysisRun;
   intel?: RunIntel | null;
   decisions: DecisionRecord[];
+  /** Odpowiedzi usług wprowadzone przez analityka (łącznie z wycofanymi). */
+  serviceReplies?: ServiceReply[];
   /** Ostatnie analizy innych spraw — do powiązań między sprawami. */
   otherCases: OtherCase[];
   rules: ScoreRules;
@@ -211,7 +235,7 @@ export function buildDossier(input: DossierInput): DossierView {
   const subjectFindings = (run.findings as AnalysisFinding[]).filter((finding) => analystAddresses.has(addressKey(finding)));
   const ownerUnknown = addressOnly && subjectFindings.length > 0 && subjectFindings.every((finding) => finding.widelyCited);
   if (ownerUnknown) persons.length = 0;
-  const main = persons[0];
+  let main: DossierPerson | undefined = persons[0];
   const mainProfileIds = new Set(main && main.probability > 0 ? main.profileIds : []);
   const mainNodes = nodes.filter((node) => mainProfileIds.has(node.card.id));
 
@@ -227,6 +251,53 @@ export function buildDossier(input: DossierInput): DossierView {
   const stillLinkedOnly = (finding: AnalysisFinding) =>
     finding.linkedOnly === true && !finding.evidence.some((item) => mainProfileIds.has(nodeOfDoc.get(sightingKey(item))?.card.id ?? ''));
   const linkedFindings = (run.findings as AnalysisFinding[]).filter(stillLinkedOnly);
+
+  // ---------- Odpowiedzi usług (dokumenty spoza OSINT wprowadzone przez analityka) ----------
+  // Wycofane i niedopasowane niczego nie zmieniają: bez obowiązującej, dopasowanej odpowiedzi teczka liczy się dokładnie jak dotąd.
+  const addressDecisionFor = (finding: Finding) => addressDecisions.get(addressKey(finding).toLowerCase()) ?? addressDecisions.get(finding.address.toLowerCase());
+  const evaluations = (input.serviceReplies ?? [])
+    .filter((reply) => !reply.withdrawnAt)
+    .map((reply) =>
+      evaluateReply(
+        reply,
+        (run.findings as AnalysisFinding[]).filter((finding) => !stillLinkedOnly(finding)),
+        main,
+        run.query.identifiers,
+        (finding) => finding.confidence.excluded || addressDecisionFor(finding)?.decision === 'rejected',
+      ),
+    );
+  const replyConfirmedKeys = new Map<string, ServiceReplyRef>();
+  const replyNotes = new Map<string, string[]>();
+  for (const evaluation of evaluations) {
+    const { reply } = evaluation;
+    for (const match of evaluation.matches.filter((item) => !item.excluded)) {
+      if (evaluation.identity === 'confirmed') {
+        if (!replyConfirmedKeys.has(match.key)) replyConfirmedKeys.set(match.key, replyRef(reply));
+        continue;
+      }
+      const holder = reply.payload.customer?.fullName;
+      const note =
+        evaluation.identity === 'other_person'
+          ? `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT): konto w usłudze, na które trafiły środki z tego adresu, należy do innej osoby${holder ? ` („${holder}”)` : ''} — własność adresu NIE została potwierdzona tą odpowiedzią.`
+          : `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT) dotyczy transakcji tego adresu; nie rozstrzyga, czyj jest adres.`;
+      replyNotes.set(match.key, [...(replyNotes.get(match.key) ?? []), note]);
+    }
+  }
+  const confirming = evaluations.find((item) => item.identity === 'confirmed');
+  if (confirming && main) {
+    // Dane KYC z usługi zgodne z kandydatem głównym: kandydat potwierdzony tak, jak decyzją analityka, z dokumentem jako podstawą.
+    main = {
+      ...main,
+      status: 'confirmed',
+      probability: PERSON_RULES.probability.analyst_confirmed,
+      reasons: [
+        `Podstawa ${PERSON_RULES.probability.analyst_confirmed}: potwierdzone odpowiedzią ${replyCitation(confirming.reply)} — dokument spoza OSINT wprowadzony przez analityka. ${confirming.identityBasis.join(' ')}`,
+        ...main.reasons.map((reason) => reason.replace(/^Podstawa (\d+): /, 'Wcześniejsza ocena narzędzia ($1): ')),
+      ],
+      confirmedByReply: replyRef(confirming.reply),
+    };
+    persons[0] = main;
+  }
   const findings: DossierFinding[] = (run.findings as AnalysisFinding[]).filter((finding) => !stillLinkedOnly(finding)).map((finding) => {
     const kept: InsightEvidence[] = [];
     const dropped: InsightEvidence[] = [];
@@ -312,6 +383,14 @@ export function buildDossier(input: DossierInput): DossierView {
     } else if (decision) {
       annotations.push(`Adres potwierdzony przez analityka — ${decisionNote(decision)}. Adres jest liczony jak podany w sprawie: wchodzi do sum, usług i dowodu spieniężenia.`);
     }
+    const byReply = decision?.decision === 'rejected' || confidence.excluded ? undefined : replyConfirmedKeys.get(addressKey(finding));
+    if (byReply) {
+      annotations.push(
+        `Własność adresu potwierdzona odpowiedzią usługi ${byReply.serviceName}, sygn. ${byReply.reference} (dokument spoza OSINT wprowadzony przez analityka): konto, na które trafiły środki z tego adresu, należy do kandydata głównego. ` +
+          'Adres jest liczony jak potwierdzony przez analityka: wchodzi do sum, usług i dowodu spieniężenia.',
+      );
+    }
+    if (!confidence.excluded) annotations.push(...(replyNotes.get(addressKey(finding)) ?? []));
     const personAddress = main?.addresses.find((item) => item.key === addressKey(finding))?.probability ?? 0;
     return {
       ...finding,
@@ -321,13 +400,16 @@ export function buildDossier(input: DossierInput): DossierView {
       ...(annotations.length > 0 ? { annotations } : {}),
       ...(dropped.length > 0 ? { excludedEvidence: dropped } : {}),
       ...(decision ? { decision: decision.decision } : {}),
+      ...(byReply ? { confirmedByReply: byReply } : {}),
     };
   });
   sortFindings(findings);
 
   // ---------- Usługi, sumy, priorytet ----------
   // Adres potwierdzony decyzją analityka jest liczony tak samo jak adres podany w sprawie.
-  const confirmedAddresses = new Set(findings.filter((finding) => finding.decision === 'confirmed').map(addressKey));
+  // Tak samo liczony jest adres, którego własność potwierdziła odpowiedź usługi.
+  const confirmedByReply = new Map(findings.flatMap((finding) => (finding.confirmedByReply ? [[addressKey(finding), finding.confirmedByReply] as const] : [])));
+  const confirmedAddresses = new Set(findings.filter((finding) => finding.decision === 'confirmed' || finding.confirmedByReply).map(addressKey));
   const subjectAddresses = new Set([...analystAddresses, ...confirmedAddresses]);
   const { linked } = summarizeFindings(findings, subjectAddresses, input.now);
 
@@ -356,6 +438,7 @@ export function buildDossier(input: DossierInput): DossierView {
     linkedKeys,
     analystAddresses,
     confirmedAddresses,
+    confirmedByReply,
     main,
     unconfirmed: new Map(
       unconfirmedAddresses.map((item) => [
@@ -367,6 +450,30 @@ export function buildDossier(input: DossierInput): DossierView {
       ]),
     ),
   });
+  // Ustalenia, których transakcje obejmuje odpowiedź usługi, dostają jej wynik: potwierdzony właściciel konta albo inna osoba.
+  for (const evaluation of evaluations) {
+    const { reply } = evaluation;
+    const holderName = reply.payload.customer?.fullName;
+    for (const match of evaluation.matches.filter((item) => !item.excluded)) {
+      const covered = new Set(match.txids);
+      for (const proof of cashOutProof) {
+        if (proof.serviceReply || `${proof.network}:${proof.cluster?.seed ?? proof.address}` !== match.key || !proof.trail.hops.some((hop) => covered.has(hop.txid))) continue;
+        const outcome = evaluation.identity === 'confirmed' ? ('confirmed' as const) : evaluation.identity === 'other_person' ? ('other_person' as const) : ('holder_unverified' as const);
+        proof.serviceReply = {
+          ...replyRef(reply),
+          outcome,
+          ...(holderName ? { holderName } : {}),
+          fiatExitDocumented: evaluation.documentsFiatExit && linkedKeys.has(match.key),
+          note:
+            outcome === 'confirmed'
+              ? `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT): konto, na które trafiły te środki, należy do kandydata głównego${evaluation.documentsFiatExit ? '; usługa potwierdziła wypłatę na rachunek bankowy' : '; wypłaty na rachunek odpowiedź nie potwierdza'}.`
+              : outcome === 'other_person'
+                ? `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT): konto, na które trafiły te środki, należy do INNEJ osoby${holderName ? ` („${holderName}”)` : ''}. Ustalenie pokazuje przekazanie środków do usługi, a nie spieniężenie przez kandydata głównego.`
+                : `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT) dotyczy tych transakcji${evaluation.documentsFiatExit ? ' i potwierdza wypłatę na rachunek bankowy' : ''}; właściciela konta nie da się porównać z kandydatem głównym.`,
+        };
+      }
+    }
+  }
   const confirmedProofs = cashOutProof.filter((proof) => !proof.ownerUnconfirmed);
   const serviceLinks = buildServiceLinks({
     subjectFindings: linked,
@@ -422,6 +529,62 @@ export function buildDossier(input: DossierInput): DossierView {
         rules,
       });
 
+  // ---------- Odpowiedzi usług: widok ze skutkami, wypłaty na osi czasu, sprzeczności przy kandydacie ----------
+  const replyExits = new Map<string, DocumentedExitSource[]>();
+  const serviceReplies: ServiceReplyView[] = (input.serviceReplies ?? []).map((reply) => {
+    const evaluation = evaluations.find((item) => item.reply.id === reply.id);
+    const holder = reply.payload.customer?.fullName;
+    const other = evaluation?.identity === 'other_person' && holder !== undefined;
+    const identity = other ? linkedIdentities.find((item) => [item.fullName, item.displayName].some((name) => name !== undefined && sameFullName(name, holder!))) : undefined;
+    const candidate = other ? persons.slice(1).find((person) => person.fullName !== undefined && sameFullName(person.fullName, holder!)) : undefined;
+    const exitKeys = evaluation?.documentsFiatExit ? evaluation.matches.filter((item) => !item.excluded && linkedKeys.has(item.key)).map((item) => item.key) : [];
+    for (const key of exitKeys) {
+      const match = evaluation!.matches.find((item) => item.key === key)!;
+      replyExits.set(key, [
+        ...(replyExits.get(key) ?? []),
+        {
+          replyId: reply.id,
+          serviceName: reply.serviceName,
+          serviceId: reply.serviceId,
+          reference: reply.reference,
+          receivedAt: reply.receivedAt,
+          payouts: reply.payload.fiatPayouts.length,
+          payoutSummary: payoutSummary(reply.payload.fiatPayouts),
+          txids: match.txids,
+          ...(other ? { holderNote: `Według usługi właścicielem konta jest inna osoba („${holder}”), a nie kandydat główny — wypłatę na rachunek otrzymał właściciel konta.` } : {}),
+        },
+      ]);
+    }
+    return buildReplyView({
+      reply,
+      evaluation,
+      serviceKnown: serviceLinks.some((link) => link.id === reply.serviceId),
+      fiatExitKeys: exitKeys,
+      ...(identity ? { linkedIdentity: { id: identity.id, displayName: identity.displayName, relation: identityRelationLabel(identity.relation) } } : {}),
+      ...(candidate?.fullName ? { otherCandidate: candidate.fullName } : {}),
+      ...(main?.fullName ? { mainName: main.fullName } : {}),
+    });
+  });
+  const contradictions = serviceReplies.flatMap((view) => (view.contradiction ? [view.contradiction] : []));
+  if (main && contradictions.length > 0) {
+    main = { ...main, reasons: [...main.reasons, ...contradictions], replyContradictions: contradictions };
+    persons[0] = main;
+  }
+  const payoutEvents: TimelineEvent[] = serviceReplies
+    .filter((view) => !view.withdrawn && view.match.matched)
+    .flatMap((view) =>
+      view.payload.fiatPayouts.map((payout) => ({
+        time: payout.time,
+        kind: 'cash_out' as const,
+        title: `Wypłata na rachunek bankowy ${formatFiat(payout.amount, payout.currency)} — według odpowiedzi usługi ${view.serviceName} (dokument spoza OSINT)`,
+        detail:
+          `Odpowiedź sygn. ${view.reference}${payout.bankAccountMasked ? `; rachunek ${payout.bankAccountMasked}` : ''}${payout.relatedTxid ? `; powiązana wpłata: transakcja ${shortAddress(payout.relatedTxid)}` : ''}. ` +
+          'Informacja z dokumentu wprowadzonego przez analityka — nie z blockchaina ani ze źródeł publicznych.',
+        address: view.match.addresses.find((item) => !item.excluded)?.address,
+        layer: 'fact' as const,
+      })),
+    );
+
   // ---------- Trzy wskaźniki: konto → portfel, wspólny operator, wyjście do walut tradycyjnych ----------
   // Konta znane teczce: profile sprawy oraz konta powiązanych tożsamości (po jednym na serwis + nazwę).
   const accounts = ownerUnknown ? [] : [...nodes];
@@ -456,6 +619,8 @@ export function buildDossier(input: DossierInput): DossierView {
           .filter((decision) => decision.decision === 'confirmed')
           .flatMap((decision) => findings.filter((finding) => [addressKey(finding).toLowerCase(), finding.address.toLowerCase()].includes(decision.key.trim().toLowerCase())).map(addressKey)),
       ),
+      // …albo odpowiedź usługi z co najmniej jedną wypłatą na rachunek (samo potwierdzenie KYC nie wystarcza).
+      ...(replyExits.size > 0 ? { replyExits } : {}),
     }),
   };
   // Adresy powiązane w blockchainie, które mają publikację, są tożsamościami; pozostałe to „inne adresy”.
@@ -505,6 +670,7 @@ export function buildDossier(input: DossierInput): DossierView {
     persons,
     profiles,
     findings,
+    serviceReplies,
     relatedPersons,
     serviceLinks,
     cashOutProof,
@@ -536,8 +702,16 @@ export function buildDossier(input: DossierInput): DossierView {
       fundingSources,
       indicators,
       persons,
+      ...(serviceReplies.some((view) => !view.withdrawn) ? { serviceReplies } : {}),
     }),
-    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: confirmedProofs, seizures }),
+    timeline: buildTimeline({
+      linked,
+      profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)),
+      replacements,
+      proofs: confirmedProofs,
+      seizures,
+      ...(payoutEvents.length > 0 ? { extraEvents: payoutEvents } : {}),
+    }),
     totals: {
       linkedAddresses: summary.linkedAddresses,
       excludedAddresses: summary.excludedAddresses,
@@ -557,6 +731,7 @@ export function buildDossier(input: DossierInput): DossierView {
       widelyCited: subjectFindings.some((finding) => finding.widelyCited),
       mentions: input.intel?.mentions ?? [],
       explanations,
+      ...(serviceReplies.length > 0 ? { replyFindings: replyKeyFindings(serviceReplies) } : {}),
       linkedIdentities,
       seizures,
       fundingSources,

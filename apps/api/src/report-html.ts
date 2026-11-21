@@ -36,6 +36,8 @@ export function dateTime(iso: string | undefined): string {
 export const fact = (body: string) => layer('fakt', 'Fakt źródłowy', body);
 export const calc = (body: string) => layer('obliczenie', 'Wynik obliczeń', body);
 export const inference = (body: string) => layer('wniosek', 'Wniosek do weryfikacji', body);
+/** Czwarta warstwa: dokument wprowadzony przez analityka (odpowiedź usługi) — nie pochodzi ze źródeł publicznych ani z obliczeń narzędzia. */
+export const external = (body: string) => layer('dokument', 'Dokument spoza OSINT (odpowiedź usługi)', body);
 
 function layer(kind: string, label: string, body: string): string {
   return `<div class="warstwa ${kind}"><span class="etykieta">${label}</span>${body}</div>`;
@@ -48,7 +50,9 @@ const LAYER_TAG = {
 } as const;
 
 /** Krótki znacznik warstwy przy pojedynczym zdaniu lub wierszu tabeli. */
-export function layerTag(kind: keyof typeof LAYER_TAG): string {
+export function layerTag(kind: keyof typeof LAYER_TAG, text = ''): string {
+  // Zdanie oparte na odpowiedzi usługi ma własny znacznik: to dokument spoza OSINT, nie fakt ze źródła publicznego.
+  if (/dokument spoza OSINT/i.test(text)) return '<span class="znacznik dokument">Dokument spoza OSINT</span>';
   const [css, label] = LAYER_TAG[kind];
   return `<span class="znacznik ${css}">${label}</span>`;
 }
@@ -74,6 +78,8 @@ export const STYLE = `
   .fakt { border-color: #1b5e20; } .fakt .etykieta { background: #1b5e20; }
   .obliczenie { border-color: #0b3d91; border-style: dashed; border-left-style: solid; } .obliczenie .etykieta { background: #0b3d91; }
   .wniosek { border-color: #b45309; border-style: dotted; border-left-style: solid; } .wniosek .etykieta { background: #b45309; }
+  .dokument { border-color: #6a1b9a; border-style: double; border-left-style: solid; } .dokument .etykieta { background: #6a1b9a; }
+  .znacznik.dokument { background: #6a1b9a; }
   .adres { border: 2px solid #1a1a1a; padding: 3mm 4mm; margin: 6mm 0; }
   .adres.odrzucony { border-color: #888; }
   .wynik { font-family: Arial, sans-serif; font-size: 22pt; font-weight: bold; }

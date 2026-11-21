@@ -8,14 +8,15 @@
 //                           bramka, karta) — z etykietą, jej źródłem i identyfikatorami transakcji;
 //   cashout_signal        — mocniejszy wzorzec: udokumentowana ścieżka do usługi (także przez indywidualny
 //                           adres wpłat), zamiana na stablecoin i wpłata, powtarzalne wpłaty;
-//   documented_fiat_exit  — WYŁĄCZNIE gdy analityk przyjął dokumentację spoza blockchaina (`documentedExits`).
+//   documented_fiat_exit  — WYŁĄCZNIE gdy analityk przyjął dokumentację spoza blockchaina (`documentedExits`)
+//                           albo wprowadził odpowiedź usługi z wypłatą na rachunek (`replyExits`).
 // Same dane blockchain nigdy nie dają ostatniego szczebla: wypłatę na rachunek potwierdza tylko usługa.
 // Przelewy PRZYCHODZĄCE z usługi to źródło środków, nie wyjście do fiat.
 
 import { CASH_OUT_STAGE_LABEL, combineComponents } from '@olcys/core';
 import type { CashOutAssessment, CashOutIndicator, CashOutKind, CashOutStage, CashOutTrail, ClaimStatus, ComponentDraft, EvidenceRef, Finding, Transfer } from '@olcys/core';
 import { formatAmount, plural, roundPln, shortAddress } from './format.ts';
-import { resolveService } from './services.ts';
+import { resolveService, serviceIdOf } from './services.ts';
 
 export interface CashOutStageInput {
   /** Adresy teczki po korektach. */
@@ -24,6 +25,28 @@ export interface CashOutStageInput {
   linkedKeys: Set<string>;
   /** Adresy, dla których analityk potwierdził wyjście do fiat dokumentem spoza blockchaina (`network:address`). */
   documentedExits?: Set<string>;
+  /**
+   * Adresy, dla których wypłatę na rachunek potwierdziła ODPOWIEDŹ USŁUGI wprowadzona przez analityka
+   * (`network:address` → odpowiedzi). Ocena dla tej usługi przechodzi na ostatni szczebel z odpowiedzią jako dowodem.
+   */
+  replyExits?: Map<string, DocumentedExitSource[]>;
+}
+
+/** Odpowiedź usługi dokumentująca wypłatę na rachunek — podstawa ostatniego szczebla wskaźnika C. */
+export interface DocumentedExitSource {
+  replyId: string;
+  serviceName: string;
+  /** Identyfikator usługi w teczce (`ServiceLink.id`). */
+  serviceId: string;
+  reference: string;
+  receivedAt: string;
+  /** Liczba wypłat na rachunek potwierdzonych przez usługę i ich suma słownie. */
+  payouts: number;
+  payoutSummary: string;
+  /** Transakcje adresu objęte odpowiedzią. */
+  txids: string[];
+  /** Zastrzeżenie, gdy właścicielem konta jest według usługi inna osoba niż kandydat główny. */
+  holderNote?: string;
 }
 
 /** Jawne reguły wskaźnika C — jedyne miejsce z wagami i progami. */
@@ -69,6 +92,10 @@ export const BANK_SIDE_LIMITATION =
 
 const DOCUMENTED_LIMITATION =
   'Wyjście do walut tradycyjnych przyjęto na podstawie dokumentacji spoza blockchaina zaakceptowanej przez analityka; narzędzie nie weryfikuje treści tego dokumentu, ' +
+  'a transakcje w blockchainie pokazują wyłącznie przekazanie środków.';
+
+const REPLY_LIMITATION =
+  'Wyjście do walut tradycyjnych przyjęto na podstawie odpowiedzi usługi wprowadzonej przez analityka (dokument spoza OSINT); narzędzie nie weryfikuje autentyczności ani treści tego dokumentu, ' +
   'a transakcje w blockchainie pokazują wyłącznie przekazanie środków.';
 
 const SOURCE = 'moduł danych blockchain';
@@ -181,8 +208,9 @@ function build(
 }
 
 /** Składnik i zdanie dla oceny podniesionej dokumentem spoza blockchaina. */
-function documented(draft: Draft, key: string): CashOutAssessment {
+function documented(draft: Draft, key: string, replies: DocumentedExitSource[] = []): CashOutAssessment {
   const { assessment } = draft;
+  if (replies.length > 0) return documentedByReply(assessment, replies);
   const component: ComponentDraft = {
     rule: 'cashout.documented_offchain',
     weight: CASH_OUT_RULES.weights.documentedOffchain,
@@ -207,7 +235,42 @@ function documented(draft: Draft, key: string): CashOutAssessment {
   };
 }
 
-function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boolean, key: string): CashOutAssessment[] {
+/** Ocena podniesiona odpowiedzią usługi: dowodem jest dokument z sygnaturą, nie decyzja analityka o adresie. */
+function documentedByReply(assessment: CashOutAssessment, replies: DocumentedExitSource[]): CashOutAssessment {
+  const components: ComponentDraft[] = replies.map((reply) => ({
+    rule: 'cashout.documented_service_reply',
+    weight: CASH_OUT_RULES.weights.documentedOffchain,
+    direction: 'supports' as const,
+    source: `odpowiedź usługi ${reply.serviceName} (dokument spoza OSINT)`,
+    originKey: `reply:${reply.replyId}`,
+    evidence: [{ kind: 'decision' as const, value: `reply:${reply.replyId}` }, { kind: 'attribute' as const, value: `sygn. ${reply.reference}` }, ...txRefs(reply.txids)],
+    explanation:
+      `Usługa ${reply.serviceName} w odpowiedzi sygn. ${reply.reference} (otrzymanej ${reply.receivedAt.slice(0, 10)}) potwierdziła ${reply.payouts} ${plural(reply.payouts, 'wypłatę', 'wypłaty', 'wypłat')} na rachunek bankowy ` +
+      `(łącznie ${reply.payoutSummary}) z konta, na które trafiły środki z tego adresu. Dokument spoza OSINT wprowadzony przez analityka.`,
+    limitations: [
+      'Podstawą jest dokument, nie dane blockchain ani źródła publiczne; narzędzie nie weryfikuje jego autentyczności.',
+      ...(reply.holderNote ? [reply.holderNote] : []),
+    ],
+  }));
+  const previous: ComponentDraft[] = assessment.indicator.components.map(({ applied: _applied, independence: _independence, ...rest }) => ({ ...rest, weight: Math.abs(rest.weight) }));
+  const limitations = assessment.indicator.limitations.filter((item) => item !== BANK_SIDE_LIMITATION);
+  const cite = replies.map((reply) => `odpowiedź usługi ${reply.serviceName} (sygn. ${reply.reference})`).join(' oraz ');
+  return {
+    ...assessment,
+    stage: 'documented_fiat_exit',
+    status: 'confirmed',
+    indicator: combineComponents('cash_out', [...components, ...previous], {
+      confirmed: true,
+      limitations: unique([REPLY_LIMITATION, ...replies.flatMap((reply) => (reply.holderNote ? [reply.holderNote] : [])), ...limitations]),
+    }),
+    statement:
+      `${CASH_OUT_STAGE_LABEL.documented_fiat_exit[0]!.toUpperCase()}${CASH_OUT_STAGE_LABEL.documented_fiat_exit.slice(1)}: wypłatę na rachunek bankowy środków z adresu ${shortAddress(assessment.address)} ` +
+      `potwierdza ${cite} — dokument spoza OSINT wprowadzony przez analityka. Dane blockchain pokazują przy tym wyłącznie przekazanie środków` +
+      (assessment.txids.length > 0 ? ` (${przelew(assessment.txids.length)}).` : '; w pobranych danych nie ma transakcji przypisanych do tego wyjścia.'),
+  };
+}
+
+function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boolean, key: string, replies: DocumentedExitSource[] = []): CashOutAssessment[] {
   const chain = finding.chain;
   const drafts: Draft[] = [];
   const base = `cashout:${finding.network}:${finding.address}`;
@@ -672,10 +735,30 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
     });
   }
 
-  if (!isDocumented) return drafts.map((draft) => draft.assessment);
+  if (!isDocumented && replies.length === 0) return drafts.map((draft) => draft.assessment);
 
   // ---------- Dokument spoza blockchaina przyjęty przez analityka ----------
   const upgradable = drafts.filter((draft) => draft.upgradable);
+  if (replies.length > 0) {
+    // Odpowiedź usługi podnosi ocenę TEJ usługi; pozostałe oceny podnosi tylko decyzja analityka o adresie.
+    const repliesOf = (draft: Draft) => replies.filter((reply) => draft.assessment.serviceName !== undefined && serviceIdOf(draft.assessment.serviceName) === reply.serviceId);
+    if (upgradable.some((draft) => repliesOf(draft).length > 0)) {
+      return drafts.map((draft) => {
+        if (!draft.upgradable) return draft.assessment;
+        const own = repliesOf(draft);
+        return own.length > 0 ? documented(draft, key, own) : isDocumented ? documented(draft, key) : draft.assessment;
+      });
+    }
+    if (!isDocumented) {
+      // Nazwa usługi z odpowiedzi nie odpowiada żadnej ocenie: dopasowanie wynika z transakcji, więc dokument obejmuje oceny z wpłatami.
+      const scope = 'Nazwa usługi w odpowiedzi nie odpowiada etykiecie usługi w danych blockchain — zakres dokumentu trzeba sprawdzić w jego treści.';
+      const widen = (assessment: CashOutAssessment): CashOutAssessment => ({ ...assessment, indicator: { ...assessment.indicator, limitations: [...assessment.indicator.limitations, scope] } });
+      if (upgradable.length > 0) return drafts.map((draft) => (draft.upgradable ? widen(documented(draft, key, replies)) : draft.assessment));
+      const aggregate = drafts.find((draft) => draft.assessment.id === `${base}:onchain`);
+      const empty: Draft = { upgradable: true, assessment: build(`${base}:onchain`, finding, 'onchain_transfer', 'computed', [], [], '', { txids: [] }) };
+      return [widen(documented(aggregate ?? empty, key, replies)), ...drafts.filter((draft) => draft !== aggregate).map((draft) => draft.assessment)];
+    }
+  }
   if (upgradable.length > 0) {
     const several = upgradable.length > 1 ? ['Potwierdzenie analityka dotyczy adresu, a ocen dla usług jest kilka — zakres dokumentu (której usługi dotyczy) trzeba sprawdzić w jego treści.'] : [];
     return drafts.map((draft) => {
@@ -711,7 +794,7 @@ export function buildCashOutAssessments(input: CashOutStageInput): CashOutAssess
     // Adres giełdy, kontraktu, miksera, zbiórki lub instytucji nie jest portfelem prywatnym podmiotu — jego przepływy nie są „wyjściem” podmiotu.
     const addressClass = finding.chain?.profile.addressClass;
     if (addressClass !== undefined && addressClass !== 'private' && addressClass !== 'unknown') continue;
-    result.push(...assessFinding(finding, input.linkedKeys, input.documentedExits?.has(key) === true, key));
+    result.push(...assessFinding(finding, input.linkedKeys, input.documentedExits?.has(key) === true, key, input.replyExits?.get(key) ?? []));
   }
   return result.sort(
     (a, b) =>

@@ -1,8 +1,9 @@
 // Łączniki do publicznych źródeł Web2. Każdy łącznik wysyła wyłącznie zapytanie
 // do swojego źródła — dane analizy nie trafiają nigdzie indziej.
 
-import type { SourceConnector } from '@olcys/core';
+import type { ConnectorContext, Identifier, SourceConnector, SourceDocument } from '@olcys/core';
 import { createBitcointalkConnector } from './bitcointalk.ts';
+import { createBlueskyConnector } from './bluesky.ts';
 import { createEnsConnector } from './ens.ts';
 import { createFediverseConnector, loadFediverseInstances } from './fediverse.ts';
 import { createGithubActivityConnector, createGithubConnector, createGithubGistsConnector } from './github.ts';
@@ -16,6 +17,11 @@ import { createMonitorConnectors, loadMonitorSources, mergeMonitorSources } from
 import type { MonitorSourceConfig } from './monitor/index.ts';
 import type { DeepSearchOptions } from './deep/search.ts';
 import { createLabConnectors } from './lab.ts';
+import { createNostrConnector } from './nostr.ts';
+import type { NostrRelayQuery } from './nostr.ts';
+import { createOpenPgpConnector } from './openpgp.ts';
+import { applyOwnershipProofsToAll } from './proof-text.ts';
+import { createKrsConnector, createVatWhitelistConnector, withRegistryIdentifiers } from './registry.ts';
 import { createSandboxConnectors } from './sandbox.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
@@ -24,6 +30,10 @@ import { createWwwConnector } from './www.ts';
 
 export { htmlToText } from './html.ts';
 export { addressFromHref, findEnsNames, normalizeAddressText } from './address-text.ts';
+export { applyOwnershipProofs, applyOwnershipProofsToAll, findOwnershipProofs, publisherNamedIn, proofUrl, PROOF_NOTE_PREFIX, PROOF_URL_PARAM } from './proof-text.ts';
+export type { OwnershipProof, ProofFormat } from './proof-text.ts';
+export { findRegistryNumbers, isValidNip, isValidNrb, registryIdentifier, registryNumber, withRegistryIdentifiers } from './registry.ts';
+export type { RegistryNumber } from './registry.ts';
 export { deepTargets } from './deep/search.ts';
 export type { DeepSearchOptions, DeepTarget } from './deep/search.ts';
 export type { Fetcher } from './http.ts';
@@ -95,6 +105,19 @@ export interface SourcesConfig {
   fetcher?: Fetcher;
   /** Minimalny odstęp między żądaniami do jednego hosta w łącznikach live (domyślnie 400 ms). */
   minRequestIntervalMs?: number;
+  /**
+   * Przekaźniki Nostr (wss://…), z których łącznik `live-nostr` może pobrać profil konta. Domyślnie ze zmiennej
+   * NOSTR_RELAYS (lista po przecinku); bez niej odczyt z przekaźników jest wyłączony i działa samo NIP-05 (HTTP).
+   */
+  nostrRelays?: string[];
+  /** Zamiennik zapytania do przekaźnika Nostr (wyłącznie testy). */
+  nostrRelayQuery?: NostrRelayQuery;
+  /**
+   * Czy numery NIP / KRS podane wprost w publikacjach z prawdziwych serwisów mają trafiać do łączników rejestrów
+   * (`live-vat-whitelist`, `live-krs`) jako identyfikatory odkryte. Domyślnie tak; dane piaskownicy i laboratorium
+   * nigdy nie uruchamiają zapytań do prawdziwych rejestrów.
+   */
+  discoverRegistryNumbers?: boolean;
 }
 
 export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
@@ -106,7 +129,8 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
   const github = { token: config.githubToken?.trim() || undefined };
   const instances = config.fediverseInstances ?? loadFediverseInstances().instances;
   const registry = registrySources(config);
-  return [
+  const nostrRelays = config.nostrRelays ?? (process.env.NOSTR_RELAYS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  const connectors: SourceConnector[] = [
     createKeybaseConnector(http),
     createEnsConnector(http),
     createGithubConnector(http, github),
@@ -116,6 +140,11 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createFediverseConnector(http, config.fediverseInstances ? { instances } : {}),
     createTelegramConnector(http, config.telegramChannels ? { channels: config.telegramChannels } : {}),
     createBitcointalkConnector(http),
+    createBlueskyConnector(http),
+    createNostrConnector(http, { relays: nostrRelays, ...(config.nostrRelayQuery ? { relayQuery: config.nostrRelayQuery } : {}) }),
+    createOpenPgpConnector(http),
+    createVatWhitelistConnector(http),
+    createKrsConnector(http),
     createWwwConnector(http, { skipHosts: instances }),
     createWaybackConnector(http),
     createWaybackTwitterConnector(http),
@@ -125,6 +154,13 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createDeepSearchConnector(http, registry, config.deepSearch),
     ...monitorConnectors(config, http, github.token, registry),
   ];
+  if (config.discoverRegistryNumbers === false) return connectors;
+  // Numer NIP / KRS podany wprost we własnej publikacji prowadzi do urzędowego rejestru (tylko wyszukiwanie osoby, nie monitoring).
+  return connectors.map((connector) => {
+    if (connector.id.startsWith('mon-')) return connector;
+    const search = connector.search.bind(connector);
+    return Object.assign(connector, { search: async (identifier: Identifier, context: ConnectorContext) => (await search(identifier, context)).map(withRegistryIdentifiers) });
+  });
 }
 
 /** Rejestr źródeł: z konfiguracji albo z plików; czytany raz dla monitoringu i głębokiego wyszukiwania. */
@@ -143,11 +179,33 @@ function monitorConnectors(config: SourcesConfig, http: ReturnType<typeof create
   });
 }
 
+/**
+ * Każdy łącznik przepuszcza swoje dokumenty przez weryfikację podpisanych wiadomości (proof-text.ts):
+ * ważny dowód wymieniający konto publikujące daje dodatkowy dokument `cryptographic_proof`,
+ * a podpis nieważny albo skopiowany — tylko uwagę w treści. Weryfikacja jest lokalna (bez sieci).
+ */
+function withOwnershipProofs<T extends SourceConnector>(connector: T): T {
+  const wrapped = { ...connector } as T & {
+    discover?: (context: ConnectorContext, limit: number) => Promise<SourceDocument[]>;
+    discoverDetailed?: (context: ConnectorContext, limit: number, pass?: unknown) => Promise<{ documents: SourceDocument[] }>;
+  };
+  wrapped.search = async (identifier, context) => applyOwnershipProofsToAll(await connector.search(identifier, context));
+  const { discover, discoverDetailed } = connector as typeof wrapped;
+  if (typeof discover === 'function') wrapped.discover = async (context, limit) => applyOwnershipProofsToAll(await discover.call(connector, context, limit));
+  if (typeof discoverDetailed === 'function') {
+    wrapped.discoverDetailed = async (context, limit, pass) => {
+      const result = await discoverDetailed.call(connector, context, limit, pass);
+      return { ...result, documents: applyOwnershipProofsToAll(result.documents) };
+    };
+  }
+  return wrapped;
+}
+
 export function createConnectors(config: SourcesConfig): SourceConnector[] {
   const connectors: SourceConnector[] = [];
   if (config.sandboxUrl) connectors.push(...createSandboxConnectors(config.sandboxUrl));
   if (config.labUrl) connectors.push(...createLabConnectors(config.labUrl, config.fetcher ? { fetcher: config.fetcher } : {}));
   if (config.enableLive) connectors.push(...createLiveConnectors(config));
   if (config.torProxyUrl) connectors.push(createTorConnector(config.torProxyUrl));
-  return connectors;
+  return connectors.map(withOwnershipProofs);
 }

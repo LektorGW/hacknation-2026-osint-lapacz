@@ -61,6 +61,25 @@ ALTER TABLE decisions ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ;
 
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS withdrawn_by TEXT;
 
+-- Odpowiedzi usług (giełd, serwisów wymiany) na zapytania uprawnionego organu — dokumenty spoza OSINT wprowadzane przez analityka.
+-- Wycofanie nie usuwa wpisu (ślad audytowy). Identyfikator klienta i numer rachunku są w payload wyłącznie zamaskowane.
+CREATE TABLE IF NOT EXISTS service_replies (
+  id            TEXT PRIMARY KEY,
+  seq           SERIAL,
+  case_id       TEXT NOT NULL REFERENCES cases (id) ON DELETE CASCADE,
+  service_name  TEXT NOT NULL,
+  service_id    TEXT NOT NULL,
+  reference     TEXT NOT NULL,
+  received_at   TIMESTAMPTZ NOT NULL,
+  recorded_at   TIMESTAMPTZ NOT NULL,
+  recorded_by   TEXT NOT NULL,
+  payload       JSONB NOT NULL,
+  withdrawn_at  TIMESTAMPTZ,
+  withdrawn_by  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS service_replies_case_idx ON service_replies (case_id, seq);
+
 -- Przegląd źródeł (typowanie podmiotów): wynik z rankingiem w kolumnie result.
 CREATE TABLE IF NOT EXISTS sweeps (
   id          TEXT PRIMARY KEY,

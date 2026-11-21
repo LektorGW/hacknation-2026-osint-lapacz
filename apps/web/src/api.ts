@@ -20,6 +20,7 @@ import type { AiStatus, CorpusStats, Depth, FullDossier, Period, RunProgress } f
 import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './identify.ts';
 import type { RecheckResult } from './monitor.ts';
 import { serviceLinksFromFindings } from './services.ts';
+import type { ServiceReply, ServiceReplyBody, ServiceReplySample } from './service-reply.ts';
 
 export type ConnectorInfo = Pick<
   SourceConnector,
@@ -147,6 +148,12 @@ export interface Backend {
   quick(value: string, type: IdentifierType, options?: RunOptions): Promise<QuickResult | null>;
   /** Czy usługa wystawia „Materiał do zapytania” dla usługi powiązanej z podmiotem. */
   hasServiceRequest(runId: string, serviceId: string): Promise<boolean>;
+  /** Zapisuje odpowiedź usługi (dokument spoza OSINT); usługa analizy maskuje identyfikator klienta i numer rachunku. */
+  addServiceReply(caseId: string, body: ServiceReplyBody): Promise<ServiceReply>;
+  /** Wycofuje odpowiedź usługi — wpis zostaje w rejestrze, wynik wraca do stanu sprzed odpowiedzi. */
+  withdrawServiceReply(caseId: string, replyId: string): Promise<void>;
+  /** Przykładowa, syntetyczna odpowiedź z piaskownicy — pobierana przez usługę analizy, nigdy wprost z przeglądarki. */
+  getServiceReplySample(caseId: string, serviceId: string, variant?: 'inna-osoba'): Promise<ServiceReplySample>;
 }
 
 export class ApiError extends Error {
@@ -294,6 +301,12 @@ const httpBackend: Backend = {
       return false;
     }
   },
+  addServiceReply: (caseId, body) => feature('Odpowiedzi usług', post(`/api/cases/${enc(caseId)}/service-replies`, body)),
+  withdrawServiceReply: async (caseId, replyId) => {
+    await feature('Odpowiedzi usług', send(`/api/cases/${enc(caseId)}/service-replies/${enc(replyId)}`, { method: 'DELETE' }));
+  },
+  getServiceReplySample: (caseId, serviceId, variant) =>
+    request(`/api/cases/${enc(caseId)}/service-replies/sandbox-sample?service=${enc(serviceId)}${variant ? `&variant=${enc(variant)}` : ''}`),
 };
 
 // Dane demo ładowane są leniwie, żeby nie trafiały do głównej paczki.
@@ -362,6 +375,8 @@ function complete(dossier: Dossier): FullDossier {
     unconfirmedAddresses: partial.unconfirmedAddresses ?? [],
     linkedIdentities: partial.linkedIdentities ?? [],
     mentions: partial.mentions ?? [],
+    // Brak pola = starsza usługa bez rejestru odpowiedzi usług; formularz nie jest wtedy pokazywany.
+    ...(Array.isArray(partial.serviceReplies) ? { serviceReplies: partial.serviceReplies } : {}),
     graph: { nodes: partial.graph?.nodes ?? [], edges: partial.graph?.edges ?? [] },
   };
 }

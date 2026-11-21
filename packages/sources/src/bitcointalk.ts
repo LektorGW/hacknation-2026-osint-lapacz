@@ -1,6 +1,15 @@
-// Łącznik Bitcointalk: publiczna strona profilu użytkownika forum
-// (index.php?action=profile;u=<id>), dostępna bez logowania. Wyszukiwanie po
-// nicku wymaga konta, dlatego łącznik przyjmuje wyłącznie adres profilu.
+// Łącznik Bitcointalk: publiczna strona profilu użytkownika forum, dostępna bez logowania —
+// po numerze (index.php?action=profile;u=<id>) albo po nazwie użytkownika (action=profile;user=<nick>).
+//
+// Podstawa (sprawdzone 21.11.2026):
+//   • https://bitcointalk.org/robots.txt zawiera wyłącznie wiersz „Sitemap: …" — żadnych zakazów dla robotów;
+//   • zasada administratora forum (theymos, wątek „Scraping policy?", topic=5240891): „The rules are the same as
+//     for humans. […] No one is allowed to access the site more often than once per second on average." —
+//     łącznik wysyła jedno żądanie na identyfikator i zachowuje odstęp co najmniej 1,5 s między żądaniami;
+//   • strona profilu po numerze i po nazwie odpowiada gościom kodem 200.
+// Świadomie NIE są używane: lista i wyszukiwarka użytkowników (action=mlist — wymagają logowania),
+// wyszukiwarka postów (action=search — brak jasnej zgody na użycie automatyczne, ciężkie zapytanie POST)
+// ani kanał RSS (wyłączony przez forum).
 
 import type { Identifier, SourceConnector, SourceDocument } from '@olcys/core';
 import { findEmails, findLinks, htmlToText, innerByClass } from './html.ts';
@@ -10,6 +19,10 @@ import { dedupeIdentifiers, discoveredField, parseHttpUrl, profileUrlIdentifier,
 const ID = 'live-bitcointalk';
 const SERVICE = 'bitcointalk.org';
 const LABEL = 'Bitcointalk';
+/** Zasada forum: najwyżej jedno żądanie na sekundę; zostawiamy zapas. */
+const MIN_INTERVAL_MS = 1500;
+/** Nazwy użytkowników forum: litery, cyfry, odstęp i kilka znaków przestankowych. */
+const NICK = /^[\p{L}\p{N}][\p{L}\p{N} ._\-]{1,39}$/u;
 
 /** Pola tabeli profilu, które trafiają do dokumentu. */
 const FIELDS = ['Name', 'Position', 'Date Registered', 'Last Active', 'Website', 'Bitcoin address', 'Other contact info', 'Location', 'Email'];
@@ -54,33 +67,52 @@ function registeredAt(value: string | undefined): string | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
 }
 
+/** Nazwa użytkownika do wyszukania profilu; `null`, gdy identyfikator nie jest nickiem albo ma niedozwolone znaki. */
+export function bitcointalkNick(identifier: Identifier): string | null {
+  if (identifier.type !== 'nick' && identifier.type !== 'login') return null;
+  const nick = identifier.value.trim().replace(/^@/, '');
+  return NICK.test(nick) ? nick : null;
+}
+
 export function createBitcointalkConnector(http: HttpClient): SourceConnector {
   return {
     id: ID,
     service: SERVICE,
     label: LABEL,
     description:
-      'Publiczna strona profilu forum Bitcointalk pod podanym adresem (index.php?action=profile;u=<numer>, bez logowania): ' +
-      'nazwa użytkownika, pole „Bitcoin address", strona WWW i podpis pod postami. Wyszukiwanie po nicku wymaga konta, ' +
-      'więc nie jest wykonywane. Jedno żądanie na identyfikator.',
-    accepts: ['profile_url'],
+      'Publiczna strona profilu forum Bitcointalk (bez logowania): po adresie profilu (index.php?action=profile;u=<numer>) ' +
+      'albo po nicku (index.php?action=profile;user=<nick>). Pobierane: nazwa użytkownika, pole „Bitcoin address", strona WWW ' +
+      'i podpis pod postami. robots.txt forum niczego nie zakazuje; zasada forum to najwyżej 1 żądanie na sekundę — łącznik ' +
+      'wysyła jedno żądanie na identyfikator z odstępem co najmniej 1,5 s. Lista użytkowników i wyszukiwarka postów nie są używane.',
+    accepts: ['profile_url', 'nick', 'login'],
     enabledByDefault: true,
 
     async search(identifier, context) {
-      const userId = bitcointalkUserId(identifier);
-      if (!userId) return [];
-      const url = `https://bitcointalk.org/index.php?action=profile;u=${userId}`;
+      const byId = bitcointalkUserId(identifier);
+      const nick = byId ? null : bitcointalkNick(identifier);
+      if (!byId && !nick) return [];
+      const requestUrl = byId
+        ? `https://bitcointalk.org/index.php?action=profile;u=${byId}`
+        : `https://bitcointalk.org/index.php?action=profile;user=${encodeURIComponent(nick!)}`;
       const session = http.session(context, { label: LABEL, limit: 1 });
-      const page = await session.get(url, { encoding: 'iso-8859-1', allowedContentTypes: ['text/html'] });
+      const page = await session.get(requestUrl, { encoding: 'iso-8859-1', allowedContentTypes: ['text/html'], minIntervalMs: MIN_INTERVAL_MS });
       if (!page) return [];
       const profile = parseBitcointalkProfile(page.text);
       if (!profile) {
-        context.log(`${LABEL}: profil u=${userId} — brak danych profilu na stronie (profil nie istnieje lub jest ukryty).`);
+        context.log(`${LABEL}: profil ${byId ? `u=${byId}` : `„${nick}"`} — brak danych profilu na stronie (profil nie istnieje lub jest ukryty).`);
         return [];
       }
+      // Wyszukanie po nicku przyjmujemy tylko wtedy, gdy strona pokazuje dokładnie tę nazwę użytkownika.
+      if (nick && profile.fields.Name!.trim().toLowerCase() !== nick.toLowerCase()) {
+        context.log(`${LABEL}: strona zwrócona dla „${nick}" dotyczy użytkownika „${profile.fields.Name}" — pominięto.`);
+        return [];
+      }
+      // Numer użytkownika z odnośników na stronie daje trwały adres profilu (nick można zmienić).
+      const userId = byId ?? /action=profile;u=(\d{1,9})(?!\d)/.exec(page.text)?.[1] ?? null;
+      const url = userId ? `https://bitcointalk.org/index.php?action=profile;u=${userId}` : requestUrl;
 
       const text = [
-        `Profil Bitcointalk: ${profile.fields.Name} (u=${userId})`,
+        `Profil Bitcointalk: ${profile.fields.Name}${userId ? ` (u=${userId})` : ''}`,
         ...FIELDS.filter((field) => field !== 'Name' && profile.fields[field]).map((field) => `${field}: ${profile.fields[field]}`),
         profile.signature && `Podpis pod postami:\n${profile.signature}`,
       ]
@@ -115,7 +147,7 @@ export function createBitcointalkConnector(http: HttpClient): SourceConnector {
         ...discoveredField(dedupeIdentifiers(discovered, identifier, [SERVICE])),
       };
       context.log(
-        `${LABEL}: profil „${profile.fields.Name}" (u=${userId}) — pole „Bitcoin address": ${profile.fields['Bitcoin address'] ? 'jest' : 'brak'}.`,
+        `${LABEL}: profil „${profile.fields.Name}"${userId ? ` (u=${userId})` : ''} — pole „Bitcoin address": ${profile.fields['Bitcoin address'] ? 'jest' : 'brak'}.`,
       );
       return [document];
     },

@@ -130,7 +130,7 @@ export function renderServiceRequestHtml(
 ${inference(`<p>${
     main && main.probability > 0
       ? `Kandydat na osobę o najwyższym wskaźniku według analizy: <strong>${esc(main.fullName ?? 'imię i nazwisko nieustalone')}</strong> (wskaźnik ${main.probability}/100${
-          main.status === 'confirmed' ? ', potwierdzony decyzją analityka' : ', hipoteza'
+          main.status === 'confirmed' ? ((main as { confirmedByReply?: unknown }).confirmedByReply ? ', potwierdzony odpowiedzią usługi (dokument spoza OSINT)' : ', potwierdzony decyzją analityka') : ', hipoteza'
         }).`
       : 'Analiza nie ustaliła osoby.'
   } Ustalenie osoby jest wnioskiem narzędzia do weryfikacji; wskaźnik jest porządkowy (jawne reguły), nie jest skalibrowanym prawdopodobieństwem.</p>

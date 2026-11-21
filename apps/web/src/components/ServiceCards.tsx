@@ -6,6 +6,7 @@ import { BASIS_LABEL, NETWORK_LABEL, SERVICE_KIND_LABEL } from '../labels.ts';
 import { useAsync } from '../useAsync.ts';
 import { Bar, CopyButton, EmptyState, ExternalLink, Initial, LayerSection, LayerTag, ShortAddress } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
+import { OrphanReplies, ServiceReplyPanel } from './ServiceReplies.tsx';
 
 export const serviceAnchor = (id: string) => `usluga-${id}`;
 
@@ -193,6 +194,7 @@ export function ServiceCard({ link, compact = false }: { link: ServiceLink; comp
       </ul>
 
       <RequestHints link={link} />
+      {!compact && <ServiceReplyPanel link={link} />}
 
       {link.mentions.length > 0 && (
         <LayerSection layer="fact" title={`Wzmianki i konta w publicznych treściach (${link.mentions.length})`}>
@@ -228,6 +230,7 @@ export function ServiceList() {
       {links.map((link) => (
         <ServiceCard key={link.id} link={link} />
       ))}
+      <OrphanReplies />
     </div>
   );
 }

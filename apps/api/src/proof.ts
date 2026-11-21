@@ -13,6 +13,7 @@
 
 import type { CashOutTrail, Finding, PersonCandidate } from '@olcys/core';
 import { formatAmount, plural, roundPln, shortAddress } from './format.ts';
+import type { ServiceReplyRef } from './service-reply.ts';
 import { normalizeServiceLabel } from './services.ts';
 
 export const PROOF_RULES = {
@@ -63,6 +64,11 @@ export interface CashOutProof {
   /** Jedno zdanie dla laika. */
   statement: string;
   trail: CashOutTrail;
+  /**
+   * Odpowiedź usługi (dokument spoza OSINT) dotycząca tego ustalenia: `confirmed` — właścicielem konta jest kandydat główny;
+   * `other_person` — konto w usłudze należy do innej osoby (sprzeczność do rozstrzygnięcia przez analityka).
+   */
+  serviceReply?: ServiceReplyRef & { outcome: 'confirmed' | 'other_person' | 'holder_unverified'; holderName?: string; fiatExitDocumented: boolean; note: string };
 }
 
 export interface ProofInput {
@@ -76,6 +82,8 @@ export interface ProofInput {
   confirmedAddresses?: Set<string>;
   /** Adresy niepotwierdzone: `network:address` → prawdopodobieństwo osoba–adres i skąd adres pochodzi. */
   unconfirmed?: Map<string, { probability: number; origin: string }>;
+  /** Adresy, których własność potwierdziła odpowiedź usługi (`network:address` → odwołanie do odpowiedzi) — podzbiór `confirmedAddresses`. */
+  confirmedByReply?: Map<string, ServiceReplyRef>;
   main?: PersonCandidate;
 }
 
@@ -91,6 +99,7 @@ export function buildCashOutProof(input: ProofInput): CashOutProof[] {
     if (!input.linkedKeys.has(key) && !pending) continue;
     const confirmed = input.confirmedAddresses?.has(key) === true;
     const analyst = input.analystAddresses.has(key) || confirmed;
+    const byReply = input.analystAddresses.has(key) ? undefined : input.confirmedByReply?.get(key);
     const base = analyst ? 100 : pending ? pending.probability : (finding.subjectProbability ?? 0);
     for (const trail of finding.chain?.trails ?? []) {
       if (seen.has(trail.id)) continue;
@@ -117,7 +126,7 @@ export function buildCashOutProof(input: ProofInput): CashOutProof[] {
         tier: tierOf(combinedConfidence),
         components: [
           analyst
-            ? `P(osoba–adres) = 100%: adres ${confirmed ? 'potwierdzony decyzją analityka' : 'podany przez analityka'} jako adres podmiotu.`
+            ? `P(osoba–adres) = 100%: adres ${byReply ? `potwierdzony odpowiedzią usługi ${byReply.serviceName} (sygn. ${byReply.reference}) — dokument spoza OSINT wprowadzony przez analityka —` : confirmed ? 'potwierdzony decyzją analityka' : 'podany przez analityka'} jako adres podmiotu.`
             : pending
             ? `P(osoba–adres) = ${base}%: adres ${shortAddress(finding.address)} NIE jest potwierdzony jako należący do podmiotu (${pending.origin}).`
             : `P(osoba–adres) = ${base}%: łączne prawdopodobieństwo, że adres ${shortAddress(finding.address)} należy do osoby ze sprawy.`,

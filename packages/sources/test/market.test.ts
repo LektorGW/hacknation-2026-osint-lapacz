@@ -166,9 +166,10 @@ describe('typowanie (discover) w piaskownicy', () => {
 
   test('pełna lista targu obejmuje kilkanaście osób; pozostałe serwisy zwracają swoje rodzaje publikacji', async () => {
     const all = await (byId('sandbox-targ') as DiscoveringConnector).discover(context, 50);
-    assert.equal(all.length, 26);
-    assert.equal(new Set(all.map((document) => document.author)).size, 26);
-    assert.equal(all.filter((document) => addressesOf(document).length > 0).length, 24);
+    // 26 ogłoszeń części rynkowej i „powiązanych tożsamości" oraz 2 z części „dowody" (data/proofs.ts).
+    assert.equal(all.length, 28);
+    assert.equal(new Set(all.map((document) => document.author)).size, 28);
+    assert.equal(all.filter((document) => addressesOf(document).length > 0).length, 26);
 
     const forum = await (byId('sandbox-forum') as DiscoveringConnector).discover(context, 3);
     assert.deepEqual(forum.map((document) => document.author), ['marek88', 'nocny_gornik', 'mz_mineraly']);

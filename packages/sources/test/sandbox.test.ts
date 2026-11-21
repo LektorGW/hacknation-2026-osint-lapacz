@@ -4,10 +4,11 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
-import { computeConfidence, extractAddresses, validateAddress } from '@olcys/core';
+import { computeConfidence, extractAddresses, validateAddress, verifySignedMessage } from '@olcys/core';
 import type { AddressClass, Evidence, Identifier, SourceConnector, SourceDocument } from '@olcys/core';
 import { buildApp } from '../../../apps/sandbox/src/app.ts';
 import { ADDR } from '../../../apps/sandbox/data/scenario.ts';
+import { FORGED_PROOF, PROOF_ADDR, SIGNED_PROOFS } from '../../../apps/sandbox/data/proofs.ts';
 import { createConnectors } from '../src/index.ts';
 
 const app = buildApp();
@@ -248,6 +249,100 @@ describe('scenariusze piaskownicy', () => {
     const [offline] = createConnectors({ sandboxUrl: 'http://127.0.0.1:9' });
     assert.deepEqual(await offline!.search({ type: 'nick', value: 'dsroka' }, { log: (m) => void lines.push(m) }), []);
     assert.match(lines.join('\n'), /błąd podczas wyszukiwania/);
+  });
+});
+
+describe('scenariusze „dowody i ich podróbki" (data/proofs.ts)', () => {
+  /** Ślady z fragmentem treści wokół adresu — po nim ocena rozpoznaje kopie tej samej publikacji. */
+  const toEvidenceWithExcerpt = (documents: SourceDocument[], address: string): Evidence[] =>
+    toEvidence(documents).map((item, i) => ({
+      ...item,
+      excerpt: extractAddresses(documents[i]!.text).find((found) => found.address === address)!.context,
+    }));
+
+  test('dane scenariusza: podpisy Norberta Szpaka są poprawne, „dowód" fałszerza — nie', () => {
+    assert.deepEqual(verifySignedMessage(SIGNED_PROOFS.szpakBtc.address, SIGNED_PROOFS.szpakBtc.message, SIGNED_PROOFS.szpakBtc.signature), {
+      valid: true,
+      scheme: 'bitcoin-message/p2wpkh',
+    });
+    assert.equal(verifySignedMessage(SIGNED_PROOFS.szpakEth.address, SIGNED_PROOFS.szpakEth.message, SIGNED_PROOFS.szpakEth.signature).valid, true);
+    assert.equal(verifySignedMessage(FORGED_PROOF.address, FORGED_PROOF.message, FORGED_PROOF.signature).valid, false);
+  });
+
+  test('i) podpisana wiadomość na własnym profilu → dowód kryptograficzny, 95', async () => {
+    const documents = await searchAll({ type: 'login', value: 'szpak_nody' });
+    assert.deepEqual(
+      documents.map((d) => [d.category, d.url.replace(sandboxUrl, '')]),
+      [
+        ['own_profile', '/gitpub/szpak_nody'],
+        ['cryptographic_proof', `/gitpub/szpak_nody?podpis=${PROOF_ADDR.szpakBtc}`],
+        ['cryptographic_proof', `/gitpub/szpak_nody?podpis=${PROOF_ADDR.szpakEth}`],
+      ],
+    );
+    assert.ok(documents.every((d) => d.service === 'gitpub.sandbox' && d.author === 'szpak_nody' && d.identityMatch === 'exact_identifier'));
+    assert.equal((documents[0]!.text.match(/Podpis poprawny: wiadomość wymieniająca konto „szpak_nody"/g) ?? []).length, 2);
+    for (const address of [PROOF_ADDR.szpakBtc, PROOF_ADDR.szpakEth]) {
+      const hits = withAddress(documents, address);
+      assert.deepEqual(hits.map((d) => d.category), ['own_profile', 'cryptographic_proof']);
+      const result = computeConfidence({ evidence: toEvidence(hits), addressClass: 'private' });
+      assert.equal(result.score, 95);
+      assert.equal(result.ledger[0]!.rule, 'base.cryptographic_proof');
+      assert.equal(result.independentSources, 1);
+    }
+    // Dokument-dowód zawiera wyłącznie podpisany adres.
+    assert.deepEqual(extractAddresses(documents[1]!.text).map((found) => found.address), [PROOF_ADDR.szpakBtc]);
+  });
+
+  test('ii) sfałszowany dowód (cudzy podpis przy własnym adresie) → bez podniesienia, uwaga w treści', async () => {
+    const documents = await searchAll({ type: 'nick', value: 'krypto_baron' });
+    assert.deepEqual(documents.map((d) => [d.service, d.category]), [['spolecznosc.sandbox', 'own_profile']]);
+    assert.match(documents[0]!.text, /UWAGA: podpis nie weryfikuje się dla tego adresu/);
+    assert.ok(documents[0]!.text.includes(PROOF_ADDR.baronBtc));
+    const result = computeConfidence({ evidence: toEvidence(withAddress(documents, PROOF_ADDR.baronBtc)), addressClass: 'private' });
+    assert.equal(result.score, 85);
+    assert.equal(result.ledger[0]!.rule, 'base.own_profile');
+    // Adres prawdziwego właściciela podpisu nie pojawia się u fałszerza.
+    assert.ok(!allAddresses(documents).has(PROOF_ADDR.szpakBtc));
+  });
+
+  test('iii) ta sama oferta w trzech serwisach → jedno pochodzenie, bez premii za synergię', async () => {
+    const documents = await searchAll({ type: 'nick', value: 'fjaskula_usdt' });
+    const hits = withAddress(documents, PROOF_ADDR.jaskulaTron);
+    assert.deepEqual(hits.map((d) => [d.service, d.category]).sort(), [
+      ['forum.sandbox', 'forum_post'],
+      ['komunikator.sandbox', 'settlement_message'],
+      ['targ.sandbox', 'sale_offer'],
+    ]);
+    const result = computeConfidence({ evidence: toEvidenceWithExcerpt(hits, PROOF_ADDR.jaskulaTron), addressClass: 'private' });
+    assert.equal(result.provenance!.length, 1);
+    assert.equal(result.independentSources, 1);
+    assert.deepEqual(result.ledger.map((entry) => entry.rule), ['base.sale_offer', 'independence.copies_merged']);
+    assert.equal(result.score, 70);
+    // Bez rozpoznania kopii te same trzy serwisy dałyby 70 + 15 + 5 = 90.
+    assert.equal(computeConfidence({ evidence: toEvidence(hits), addressClass: 'private' }).score, 90);
+  });
+
+  test('iv) ten sam nick u dwóch różnych osób w dwóch serwisach — różne dane, różne adresy', async () => {
+    const documents = await searchAll({ type: 'nick', value: 'wilczek_x9' });
+    const targ = documents.find((d) => d.service === 'targ.sandbox')!;
+    const forum = documents.find((d) => d.service === 'forum.sandbox')!;
+    assert.equal(documents.length, 2);
+    assert.deepEqual([targ.profile!.displayName, targ.profile!.location, targ.profile!.emails], ['Adam Wilczek', 'Gdynia', ['adam@wilczek-rowery.example']]);
+    assert.deepEqual([forum.profile!.displayName, forum.profile!.location, forum.profile!.emails], ['Beata Wilczyńska', 'Przemyśl', ['beata.w@przemysl-net.example']]);
+    assert.deepEqual([...allAddresses([targ])], [PROOF_ADDR.wilczekBtc]);
+    assert.deepEqual([...allAddresses([forum])], [PROOF_ADDR.wilczynskaTron]);
+    // Łącznik niczego nie przesądza (oba trafienia to dokładny nick); rozdziela je analiza po atrybutach profilu.
+    assert.ok(documents.every((d) => d.identityMatch === 'exact_identifier'));
+    // W eksploratorze adresy obu osób nie mają wspólnych kontrahentów poza anonimowymi wpłacającymi.
+    const btc = (await explorer(PROOF_ADDR.wilczekBtc)).body;
+    assert.ok(btc.transfers.every((t: any) => t.counterparty !== PROOF_ADDR.wilczynskaTron));
+  });
+
+  test('adresy części „dowody" mają poprawne sumy kontrolne i są znane eksploratorowi', async () => {
+    for (const address of Object.values(PROOF_ADDR)) {
+      assert.ok(validateAddress(address)?.checksumVerified, address);
+      assert.equal((await explorer(address)).status, 200, address);
+    }
   });
 });
 

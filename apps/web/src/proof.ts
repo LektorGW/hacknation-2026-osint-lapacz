@@ -1,6 +1,7 @@
 // Dowód spieniężenia i postęp analizy: lokalne rozszerzenia kontraktu oraz czysta logika widoków.
 import type { FundingSource, Mention, RelatedAddress, Seizure } from './funds.ts';
 import type { LinkedIdentity } from './identities.ts';
+import type { ServiceReplyRef, ServiceReplyView } from './service-reply.ts';
 import type { CashOutTrail, Dossier, Finding, Identifier, Network, StoredEvidence, TextInsight } from '@olcys/core';
 
 // ---------- Kształty zwracane przez usługę analizy poza typami `@olcys/core` ----------
@@ -26,6 +27,8 @@ export interface CashOutProof {
   ownerUnconfirmed?: boolean;
   /** Łączna pewność po potwierdzeniu własności adresu. */
   confidenceIfConfirmed?: number;
+  /** Odpowiedź usługi (dokument spoza OSINT) dotycząca tego ustalenia: potwierdzony właściciel konta albo inna osoba. */
+  serviceReply?: ServiceReplyRef & { outcome: 'confirmed' | 'other_person' | 'holder_unverified'; holderName?: string; fiatExitDocumented: boolean; note: string };
 }
 
 export type EvidenceWithInsight = StoredEvidence & { insight?: TextInsight };
@@ -39,6 +42,8 @@ export type DossierFinding = Finding & {
   chainSkipped?: boolean;
   /** Inne adresy, które łączy z tym adresem sam blockchain. */
   relatedAddresses?: RelatedAddress[];
+  /** Własność adresu potwierdziła odpowiedź usługi (dokument spoza OSINT). */
+  confirmedByReply?: ServiceReplyRef;
 };
 
 export interface DossierExtras {
@@ -55,6 +60,8 @@ export interface DossierExtras {
   explanations?: Explanation[];
   unconfirmedAddresses?: UnconfirmedAddress[];
   linkedIdentities?: LinkedIdentity[];
+  /** Odpowiedzi usług wprowadzone przez analityka — dokumenty spoza OSINT; brak pola = usługa analizy bez tej funkcji. */
+  serviceReplies?: ServiceReplyView[];
 }
 
 export type FullDossier = Dossier & DossierExtras;

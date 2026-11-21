@@ -7,6 +7,7 @@
 
 import { MARKET_ADDR, marketAccounts, marketLabeledAddresses, marketLedger, marketPages, marketThreads } from './market.ts';
 import { RELATED_ADDR, relatedAccounts, relatedLabeledAddresses, relatedLedger, relatedPages } from './related.ts';
+import { PROOF_ADDR, proofAccounts, proofLabeledAddresses, proofLedger, proofPages, proofThreads } from './proofs.ts';
 
 export type Service = 'gitpub' | 'www' | 'targ' | 'forum' | 'spolecznosc' | 'komunikator';
 
@@ -712,12 +713,12 @@ export const snapshots: Snapshot[] = [
   },
 ];
 
-// ---------- Całość: scenariusze a–h oraz „rynek P2P" z data/market.ts ----------
+// ---------- Całość: scenariusze a–h, „rynek P2P" (data/market.ts), „powiązane tożsamości" (data/related.ts), „dowody" (data/proofs.ts) ----------
 
 /** Adresy części rynkowej — do testów i dokumentacji. */
-export { MARKET_ADDR, RELATED_ADDR };
+export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR };
 
-export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses];
+export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses];
 export const ledger: LedgerRow[] = [
   ...baseLedger,
   ...marketLedger(ADDR),
@@ -734,10 +735,20 @@ export const ledger: LedgerRow[] = [
     igorBtc: MARKET_ADDR.igorBtc,
     darekBtc: MARKET_ADDR.darekBtc,
   }),
+  // Część „dowody i ich podróbki" (data/proofs.ts).
+  ...proofLedger({
+    exchangeBtc: ADDR.exchangeBtc,
+    exchangeEth: ADDR.exchangeEth,
+    exchangeTron: ADDR.exchangeTron,
+    p2pTron: ADDR.p2pTron,
+    anonBtc: MARKET_ADDR.anonBtc6,
+    anonEth: MARKET_ADDR.anonEth4,
+    anonTron: MARKET_ADDR.anonTron4,
+  }),
 ];
-export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts];
-export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages];
-export const threads: Thread[] = [...baseThreads, ...marketThreads];
+export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts];
+export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages];
+export const threads: Thread[] = [...baseThreads, ...marketThreads, ...proofThreads];
 
 export const scenario = { accounts, pages, threads, snapshots, labeledAddresses, ledger };
 export type Scenario = typeof scenario;

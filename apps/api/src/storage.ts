@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { AnalysisRun, AnalystDecision, ProfileAttributes, SourceCategory, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
 import type { CapturedDocument } from './analysis.ts';
 import type { RunIntel } from './intel.ts';
+import type { ServiceReply } from './service-reply.ts';
 
 export interface RunSummary {
   id: string;
@@ -109,6 +110,12 @@ export interface Storage {
    * Zwraca `false`, gdy sprawa nie ma takiej decyzji albo decyzja jest już wycofana.
    */
   deleteDecision(caseId: string, decisionId: string, withdrawal?: { at?: string; by?: string }): Promise<boolean>;
+  /** Zapisuje odpowiedź usługi (dokument spoza OSINT wprowadzony przez analityka). */
+  addServiceReply(reply: ServiceReply): Promise<void>;
+  /** Odpowiedzi usług w sprawie w kolejności wprowadzania — łącznie z wycofanymi (ślad audytowy). */
+  listServiceReplies(caseId: string): Promise<ServiceReply[]>;
+  /** Wycofuje odpowiedź: wpis zostaje z czasem i autorem wycofania. `false`, gdy nie ma takiej obowiązującej odpowiedzi. */
+  withdrawServiceReply(caseId: string, replyId: string, withdrawal?: { at?: string; by?: string }): Promise<boolean>;
   saveSweep(sweep: Sweep): Promise<void>;
   getSweep(id: string): Promise<Sweep | null>;
   listSweeps(): Promise<Sweep[]>;
@@ -433,6 +440,38 @@ export function createStorage(driver: SqlDriver): Storage {
       const rows = await driver.query(
         'UPDATE decisions SET withdrawn_at = $3, withdrawn_by = $4 WHERE case_id = $1 AND id = $2 AND withdrawn_at IS NULL RETURNING id',
         [caseId, decisionId, withdrawal.at ?? new Date().toISOString(), withdrawal.by ?? 'analityk'],
+      );
+      return rows.length > 0;
+    },
+
+    async addServiceReply(reply) {
+      await driver.query(
+        `INSERT INTO service_replies (id, case_id, service_name, service_id, reference, received_at, recorded_at, recorded_by, payload)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+        [reply.id, reply.caseId, reply.serviceName, reply.serviceId, reply.reference, reply.receivedAt, reply.recordedAt, reply.recordedBy, JSON.stringify(reply.payload)],
+      );
+    },
+
+    async listServiceReplies(caseId) {
+      const rows = await driver.query('SELECT * FROM service_replies WHERE case_id = $1 ORDER BY seq', [caseId]);
+      return rows.map((row) => ({
+        id: String(row.id),
+        caseId: String(row.case_id),
+        serviceName: String(row.service_name),
+        serviceId: String(row.service_id),
+        reference: String(row.reference),
+        receivedAt: toIso(row.received_at),
+        recordedAt: toIso(row.recorded_at),
+        recordedBy: String(row.recorded_by),
+        payload: row.payload as ServiceReply['payload'],
+        ...(row.withdrawn_at == null ? {} : { withdrawnAt: toIso(row.withdrawn_at), withdrawnBy: String(row.withdrawn_by ?? 'analityk') }),
+      }));
+    },
+
+    async withdrawServiceReply(caseId, replyId, withdrawal = {}) {
+      const rows = await driver.query(
+        'UPDATE service_replies SET withdrawn_at = $3, withdrawn_by = $4 WHERE case_id = $1 AND id = $2 AND withdrawn_at IS NULL RETURNING id',
+        [caseId, replyId, withdrawal.at ?? new Date().toISOString(), withdrawal.by ?? 'analityk'],
       );
       return rows.length > 0;
     },

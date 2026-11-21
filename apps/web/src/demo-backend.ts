@@ -57,6 +57,8 @@ import type { DossierFinding, FullDossier } from './proof.ts';
 import { applyDemoIdentities } from './demo-identities.ts';
 import { applyDemoInvestigation } from './demo-indicators.ts';
 import type { DecisionRecord } from './decisions.ts';
+import { applyServiceReplies, recordFromBody, sampleFromDossier } from './service-reply.ts';
+import type { ServiceReply } from './service-reply.ts';
 import { ADDRESS_CASE_ADDR, addressCaseDossier, demoAddressCase, demoAddressRun, demoServiceCase, demoServiceRun, serviceCaseDossier } from './demo-cases.ts';
 import { IDENTITY_SCORE, addressKey, computePriority, dossierFromRun, profileKey } from './dossier.ts';
 import { fmtPln, sum } from './format.ts';
@@ -67,6 +69,8 @@ const NOW = new Date(DEMO_NOW);
 const cases: StoredCase[] = [demoCase, demoAddressCase, demoServiceCase];
 const runs: RawRun[] = [...demoRuns, demoAddressRun, demoServiceRun];
 const decisions: DecisionRecord[] = [];
+/** Odpowiedzi usług wprowadzone w trybie demo (w pamięci karty; wycofane zostają jak w rejestrze usługi analizy). */
+const serviceReplies: ServiceReply[] = [];
 const sweeps: Sweep[] = [];
 let sequence = 0;
 
@@ -417,7 +421,9 @@ function enrichDemo(dossier: Dossier, summary: StoredCase, applied: AnalystDecis
 /** Teczka demo ze wskaźnikami A/B/C, statusami relacji grafu i pełną historią decyzji (także wycofanych). */
 function buildDossier(raw: RawRun): FullDossier {
   const caseId = findCase(raw.caseId).id;
-  return { ...applyDemoInvestigation(buildBaseDossier(raw), decisionsOf(caseId)), decisions: historyOf(caseId) };
+  const dossier: FullDossier = { ...applyDemoInvestigation(buildBaseDossier(raw), decisionsOf(caseId)), decisions: historyOf(caseId) };
+  // Odpowiedzi usług (dokumenty spoza OSINT) nakładane na gotową teczkę — bez obowiązujących odpowiedzi nic się nie zmienia.
+  return applyServiceReplies(dossier, serviceReplies.filter((item) => item.caseId === caseId));
 }
 
 function buildBaseDossier(raw: RawRun): FullDossier {
@@ -875,4 +881,31 @@ export const demoBackend: Backend = {
     return { case: summarizeCase(target), run: { id, status: 'running' } };
   },
   hasServiceRequest: async () => false,
+
+  addServiceReply: async (caseId, body) => {
+    findCase(caseId);
+    if (serviceReplies.some((item) => item.caseId === caseId && !item.withdrawnAt && item.serviceId === body.serviceId && item.reference === body.reference)) {
+      throw new ApiError(`Odpowiedź usługi ${body.serviceName} o sygnaturze „${body.reference}” jest już zapisana w tej sprawie. Wycofaj ją, aby wprowadzić poprawioną.`, 409);
+    }
+    sequence += 1;
+    const created = recordFromBody(body, { id: `demo-odpowiedz-${sequence}`, caseId, recordedAt: new Date().toISOString(), recordedBy: 'analityk (demo)' });
+    serviceReplies.push(created);
+    return created;
+  },
+  withdrawServiceReply: async (caseId, replyId) => {
+    const found = serviceReplies.find((item) => item.caseId === caseId && item.id === replyId && !item.withdrawnAt);
+    if (!found) throw notFound('obowiązująca odpowiedź usługi');
+    found.withdrawnAt = new Date().toISOString();
+    found.withdrawnBy = 'analityk (demo)';
+  },
+  // Przykład składany z przelewów usługi w teczce demo — dane wbudowane w interfejs, bez piaskownicy.
+  getServiceReplySample: async (caseId, serviceId, variant) => {
+    const run = latestRun(findCase(caseId).id);
+    if (!run) throw notFound('zakończona analiza sprawy');
+    const dossier = buildDossier(run);
+    const link = dossier.serviceLinks.find((item) => item.id === serviceId);
+    const sample = link ? sampleFromDossier(dossier, link, variant) : null;
+    if (!sample) throw notFound('przelewy do tej usługi, z których można złożyć przykładową odpowiedź');
+    return sample;
+  },
 };

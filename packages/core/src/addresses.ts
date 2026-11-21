@@ -252,3 +252,32 @@ export function extractAddresses(text: string): DetectedAddress[] {
   }
   return [...found.values()].sort((a, b) => a.index - b.index);
 }
+
+/** Skrót, na który wskazuje adres — do porównania z kluczem publicznym odzyskanym z podpisu wiadomości. */
+export interface AddressPayload {
+  network: Network;
+  format: AddressFormat;
+  /** P2PKH/P2SH/Tron: 20 bajtów HASH160 (Tron: Keccak); SegWit: program świadka; EVM: 20 bajtów adresu. */
+  payload: Uint8Array;
+  /** Wersja programu świadka (tylko SegWit). */
+  witnessVersion?: number;
+}
+
+/** Rozkłada poprawny adres na sieć, format i surowy skrót; `null`, gdy adres jest niepoprawny albo laboratoryjny. */
+export function decodeAddressPayload(candidate: string): AddressPayload | null {
+  const valid = validateAddress(candidate);
+  if (!valid || valid.format === 'lab-hex') return null;
+  if (valid.format === 'evm') {
+    const hex = candidate.slice(2);
+    return { network: valid.network, format: valid.format, payload: Uint8Array.from(hex.match(/../g)!.map((pair) => parseInt(pair, 16))) };
+  }
+  if (valid.format === 'bech32' || valid.format === 'bech32m') {
+    const lower = candidate.toLowerCase();
+    const data = [...lower.slice(lower.lastIndexOf('1') + 1)].map((char) => BECH32_CHARSET.indexOf(char));
+    const program = convertBits(data.slice(1, -6), 5, 8);
+    if (!program) return null;
+    return { network: valid.network, format: valid.format, payload: Uint8Array.from(program), witnessVersion: data[0]! };
+  }
+  const decoded = base58CheckDecode(candidate);
+  return decoded ? { network: valid.network, format: valid.format, payload: decoded.payload } : null;
+}

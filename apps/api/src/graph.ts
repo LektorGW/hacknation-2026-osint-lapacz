@@ -33,6 +33,7 @@ import { identityRelationLabel } from './aliases.ts';
 import type { LinkedIdentity } from './aliases.ts';
 import type { CashOutProof } from './proof.ts';
 import type { FundingSourceView, SeizureView } from './provenance.ts';
+import type { ServiceReplyView } from './service-reply.ts';
 import { CONTRACTS_LINK_ID, isCashOutService, serviceIdOf, serviceKindLabel } from './services.ts';
 
 export interface GraphInput {
@@ -55,6 +56,8 @@ export interface GraphInput {
   indicators?: InvestigationIndicators;
   /** Kandydaci na osobę — każdy z więcej niż jednym kontem to osobna hipoteza operatora. Bez nich używane są `mainProfileIds`. */
   persons?: PersonCandidate[];
+  /** Odpowiedzi usług wprowadzone przez analityka (dokumenty spoza OSINT) — węzły źródeł z krawędziami potwierdzeń. */
+  serviceReplies?: ServiceReplyView[];
 }
 
 export type Graph = { nodes: GraphNode[]; edges: GraphEdge[] };
@@ -333,7 +336,9 @@ export function buildGraph(input: GraphInput): Graph {
       label: `Hipoteza operatora #${index + 1}`,
       sublabel:
         status === 'confirmed'
-          ? `wspólny operator ${list.length} kont — potwierdzony decyzją analityka`
+          ? (person as (PersonCandidate & { confirmedByReply?: { serviceName: string } }) | undefined)?.confirmedByReply
+            ? `wspólny operator ${list.length} kont — potwierdzony odpowiedzią usługi ${(person as PersonCandidate & { confirmedByReply: { serviceName: string } }).confirmedByReply.serviceName}`
+            : `wspólny operator ${list.length} kont — potwierdzony decyzją analityka`
           : status === 'rejected'
             ? `wspólny operator ${list.length} kont — odrzucony decyzją analityka`
             : `${HYPOTHESIS_NOTE} (kont: ${list.length})`,
@@ -637,6 +642,78 @@ export function buildGraph(input: GraphInput): Graph {
         status: 'hypothesis',
         evidence: refs([relation.via ? { kind: relation.kind === 'shared_attribute' ? 'attribute' : 'address', value: relation.via } : undefined]),
         explanation: relation.description,
+      });
+    }
+  }
+
+  // Odpowiedzi usług: dokument spoza OSINT jako węzeł źródła. Potwierdza to, co obejmuje jego treść —
+  // transakcje adresu, właściciela konta, wypłatę na rachunek — i nic ponadto. Wycofane i niedopasowane nie są rysowane.
+  for (const reply of input.serviceReplies ?? []) {
+    if (reply.withdrawn || !reply.match.matched) continue;
+    const id = `reply:${reply.id}`;
+    const proof: EvidenceRef[] = [{ kind: 'decision', value: id }, { kind: 'attribute', value: `sygn. ${reply.reference}` }];
+    addNode({
+      id,
+      kind: 'source',
+      label: `Odpowiedź usługi ${reply.serviceName}`,
+      sublabel: `dokument spoza OSINT — sygn. ${reply.reference}, otrzymano ${formatDate(reply.receivedAt)}`,
+      status: 'confirmed',
+    });
+    addEdge({
+      from: `svc:${reply.serviceId}`,
+      to: id,
+      kind: 'documented_by',
+      label: 'odpowiedź usługi (dokument spoza OSINT)',
+      status: 'confirmed',
+      evidence: refs(proof),
+      explanation: `Usługa ${reply.serviceName} odpowiedziała na zapytanie; odpowiedź wprowadził analityk (${reply.recordedBy}, ${formatDate(reply.recordedAt)}). Narzędzie nie weryfikuje autentyczności dokumentu.`,
+    });
+    for (const match of reply.match.addresses) {
+      if (match.excluded) continue;
+      addEdge({
+        from: `addr:${match.key}`,
+        to: id,
+        kind: 'documented_by',
+        label: reply.fiatExit.documented ? 'wpłaty i wypłata na rachunek potwierdzone odpowiedzią usługi' : 'wpłaty potwierdzone odpowiedzią usługi',
+        weight: 100,
+        status: 'confirmed',
+        evidence: refs([...proof, ...txRefs(match.txids)]),
+        explanation: `${reply.match.text} ${reply.fiatExit.text}`,
+      });
+    }
+    if (reply.identity.outcome === 'confirmed') {
+      const operator = [...nodes.values()].find((node) => node.kind === 'operator' && edges.has(`operates:subject>${node.id}`));
+      addEdge({
+        from: operator?.id ?? 'subject',
+        to: id,
+        kind: 'documented_by',
+        label: 'tożsamość potwierdzona odpowiedzią usługi',
+        weight: 100,
+        status: 'confirmed',
+        evidence: refs(proof),
+        explanation: reply.identity.text,
+      });
+      if (operator) addEdge({ from: 'subject', to: id, kind: 'documented_by', label: 'tożsamość potwierdzona odpowiedzią usługi', weight: 100, status: 'confirmed', evidence: refs(proof), explanation: reply.identity.text });
+    } else if (reply.identity.outcome === 'other_person') {
+      // Właściciel konta według usługi: powiązana tożsamość z teczki albo osoba dotąd w sprawie nieznana.
+      const known = reply.identity.linkedIdentityId ? `identity:${reply.identity.linkedIdentityId}` : undefined;
+      const holder = known && nodes.has(known) ? known : `holder:${reply.id}`;
+      addNode({
+        id: holder,
+        kind: 'person',
+        label: reply.identity.holderName ?? 'właściciel konta',
+        sublabel: 'właściciel konta według odpowiedzi usługi — inna osoba niż kandydat główny',
+        status: 'confirmed',
+      });
+      addEdge({
+        from: holder,
+        to: id,
+        kind: 'documented_by',
+        label: 'właściciel konta według odpowiedzi usługi',
+        weight: 100,
+        status: 'confirmed',
+        evidence: refs(proof),
+        explanation: reply.contradiction ?? reply.identity.text,
       });
     }
   }

@@ -30,6 +30,8 @@ export interface KeyFindingsInput {
   fundingSources?: FundingSourceView[];
   /** Powiązane tożsamości — najmocniejsza trafia do ustaleń. */
   linkedIdentities?: LinkedIdentity[];
+  /** Zdania o odpowiedziach usług (dokumenty spoza OSINT) — zaraz po ustaleniu osoby. */
+  replyFindings?: KeyFinding[];
   /** Wzmianki o identyfikatorach podmiotu u innych autorów. */
   mentions: MentionSummary[];
   /** Dowód spieniężenia — gdy jest, jego zdania idą zaraz po ustaleniu osoby. */
@@ -67,6 +69,18 @@ function personSentences(input: KeyFindingsInput): KeyFinding[] {
   const services = [...new Set(profiles.map((profile) => profile.service))];
   // Pierwsza przesłanka to podstawa oceny; bez prefiksu punktowego czyta się ją jak zdanie.
   const basis = (main.reasons[0] ?? '').replace(/^Podstawa \d+: /, '').replace(/\.$/, '');
+  const byReply = (main as PersonCandidate & { confirmedByReply?: { serviceName: string; reference: string } }).confirmedByReply;
+  if (byReply) {
+    // Kandydat potwierdzony dokumentem spoza OSINT: to już nie hipoteza narzędzia, ale podstawą jest dokument wprowadzony przez analityka.
+    return [
+      {
+        text:
+          `Osoba potwierdzona odpowiedzią usługi ${byReply.serviceName}, sygn. ${byReply.reference} (dokument spoza OSINT wprowadzony przez analityka): ` +
+          `${main.fullName ?? `„${profiles.find((profile) => profile.handle)?.handle ?? '—'}”`} — ${profiles.length} ${plural(profiles.length, 'profil', 'profile', 'profili')} w: ${list(services)}.`,
+        layer: 'fact',
+      },
+    ];
+  }
   const who = main.fullName
     ? `Najbardziej prawdopodobna osoba: ${main.fullName}`
     : `Najbardziej prawdopodobna osoba posługuje się nazwą „${profiles.find((profile) => profile.handle)?.handle ?? '—'}” (imienia i nazwiska źródła nie ujawniają)`;
@@ -201,7 +215,7 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
   }
   const origin = (input.fundingSources ?? []).find(isIncidentSource) ?? (input.fundingSources ?? []).find((item) => item.label !== undefined);
   if (origin) provenance.push({ text: fundingSentence(origin), layer: origin.hops > 1 ? 'inference' : 'fact' });
-  const result: KeyFinding[] = [...leadExplanations, ...addressLead, ...personSentences(input), ...provenance, ...pendingSentences, ...proofSentences, ...services, ...addressSentence(best)];
+  const result: KeyFinding[] = [...leadExplanations, ...addressLead, ...personSentences(input), ...(input.replyFindings ?? []), ...provenance, ...pendingSentences, ...proofSentences, ...services, ...addressSentence(best)];
 
   const identity = input.linkedIdentities?.[0];
   if (identity) {

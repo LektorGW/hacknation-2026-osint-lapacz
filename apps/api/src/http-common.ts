@@ -45,6 +45,10 @@ export interface AppDeps {
   /** Podmiana odliczania czasu harmonogramu monitoringu (testy). */
   monitorTimers?: MonitorTimers;
   now?: () => Date;
+  /** Adres piaskownicy (dane demonstracyjne). Tylko gdy jest ustawiony, API udostępnia przykładową, syntetyczną odpowiedź usługi. */
+  sandboxUrl?: string;
+  /** Podmiana `fetch` dla zapytań do piaskownicy (testy). */
+  fetch?: typeof fetch;
   /** Włącza log serwera (domyślnie wyłączony, żeby nie zaśmiecać testów). */
   logger?: boolean;
 }

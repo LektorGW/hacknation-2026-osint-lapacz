@@ -7,7 +7,7 @@ import { buildChain, proofSummary, splitProofs } from '../proof.ts';
 import { Explanations } from './Explanations.tsx';
 import type { CashOutProof, ChainNode } from '../proof.ts';
 import { useAsync } from '../useAsync.ts';
-import { CopyButton, EmptyState, ExternalLink, Gauge, LayerTag, ShortAddress, toLayer } from './common.tsx';
+import { CopyButton, EmptyState, ExternalDocTag, ExternalLink, Gauge, LayerTag, ShortAddress, toLayer } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 
 const BASIS_TEXT: Record<CashOutProof['addressBasis'], string> = {
@@ -124,6 +124,12 @@ function ProofCard({ proof }: { proof: CashOutProof }) {
             <span className="chip">{CASH_OUT_LABEL[trail.serviceKind] ?? trail.serviceKind}</span>
             <span className="chip">{BASIS_TEXT[proof.addressBasis]}</span>
           </p>
+          {proof.serviceReply && (
+            <p className={`reply-note ${proof.serviceReply.outcome === 'other_person' ? 'is-contradiction' : ''}`}>
+              <ExternalDocTag short /> {proof.serviceReply.outcome === 'other_person' && <strong>Sprzeczność do rozstrzygnięcia. </strong>}
+              {proof.serviceReply.note}
+            </p>
+          )}
           <p className="proof-formula">
             osoba–adres <strong>{proof.personAddressProbability}%</strong> × ścieżka <strong>{proof.trailConfidence}%</strong> ={' '}
             <strong>{proof.combinedConfidence}%</strong>

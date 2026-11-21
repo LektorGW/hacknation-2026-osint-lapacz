@@ -20,6 +20,8 @@ export interface TimelineInput {
   proofs?: CashOutProof[];
   /** Przelewy na adresy organów państwa (zajęcie środków). */
   seizures?: SeizureView[];
+  /** Zdarzenia spoza blockchaina i źródeł publicznych, np. wypłaty na rachunek z odpowiedzi usługi (dokument wprowadzony przez analityka). */
+  extraEvents?: TimelineEvent[];
 }
 
 export function buildTimeline(input: TimelineInput): TimelineEvent[] {
@@ -132,6 +134,8 @@ export function buildTimeline(input: TimelineInput): TimelineEvent[] {
       layer: proof.layer,
     });
   }
+
+  events.push(...(input.extraEvents ?? []));
 
   const stamp = (event: TimelineEvent) => {
     const value = new Date(event.time).getTime();

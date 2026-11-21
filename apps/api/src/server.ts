@@ -74,6 +74,8 @@ const app = await buildApp({
   summaryAi: summaryAssistant,
   aiLocal,
   normalizeText: typeof normalizeText === 'function' ? normalizeText : undefined,
+  // Przykładowa (syntetyczna) odpowiedź usługi do demonstracji pochodzi z piaskownicy.
+  sandboxUrl,
   corpus: {
     ...(env.CORPUS_RETENTION_DAYS ? { retentionDays: Number(env.CORPUS_RETENTION_DAYS) } : {}),
     ...(env.CORPUS_MAX_ROWS ? { maxRows: Number(env.CORPUS_MAX_ROWS) } : {}),

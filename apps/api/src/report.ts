@@ -18,7 +18,9 @@ import { identityRelationLabel } from './aliases.ts';
 import type { AddressReplacement } from './diff.ts';
 import type { DossierFinding, DossierView } from './dossier.ts';
 import { formatAmount as amount, formatPln as pln, shortAddress as short } from './format.ts';
-import { NETWORK_LABEL, STYLE, calc, dateTime, esc, fact, inference, layerTag, link } from './report-html.ts';
+import { NETWORK_LABEL, STYLE, calc, dateTime, esc, external, fact, inference, layerTag, link } from './report-html.ts';
+import { formatFiat, payoutSummary } from './service-reply.ts';
+import type { ServiceReplyView } from './service-reply.ts';
 import { renderIndicatorSections, renderMethodologyBox, renderProofSection } from './report-proof.ts';
 import { renderServiceSection } from './report-service.ts';
 import type { CaseSummary } from './storage.ts';
@@ -364,7 +366,7 @@ function renderKeyFindings(dossier: DossierView): string {
             .join('')}</ul>`
         : ''
     }
-    <ol>${dossier.keyFindings.map((item) => `<li>${layerTag(item.layer)} ${esc(item.text)}</li>`).join('')}</ol>
+    <ol>${dossier.keyFindings.map((item) => `<li>${layerTag(item.layer, item.text)} ${esc(item.text)}</li>`).join('')}</ol>
     <p><span class="priorytet">Priorytet sprawy: ${dossier.totals.priority}/100</span></p>
     <ul>${dossier.totals.priorityReasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>
     <p class="meta">Priorytet jest wynikiem obliczeń według jawnego wzoru i służy do porządkowania kolejki spraw; nie jest oceną podmiotu.</p>
@@ -391,10 +393,18 @@ function renderPersons(dossier: DossierView): string {
     ${dossier.persons
       .map((person, index) => {
         const profiles = dossier.profiles.filter((profile) => person.profileIds.includes(profile.id));
-        const state = person.status === 'confirmed' ? 'potwierdzony decyzją analityka' : person.status === 'rejected' ? 'odrzucony decyzją analityka' : 'hipoteza — do weryfikacji';
+        const state =
+          person.status === 'confirmed'
+            ? person.confirmedByReply
+              ? `potwierdzony odpowiedzią usługi ${person.confirmedByReply.serviceName}, sygn. ${person.confirmedByReply.reference} — dokument spoza OSINT`
+              : 'potwierdzony decyzją analityka'
+            : person.status === 'rejected'
+              ? 'odrzucony decyzją analityka'
+              : 'hipoteza — do weryfikacji';
         return `<div class="zrodlo">
           <h4>${index === 0 ? 'Osoba główna' : `Inny kandydat ${index}`}: ${esc(person.fullName ?? 'imię i nazwisko nieustalone')} — wskaźnik ${person.probability}/100 (${state})</h4>
           ${person.nameVariants.length > 0 ? `<p>Inne zapisy nazwy: ${esc(person.nameVariants.join(', '))}.</p>` : ''}
+          ${(person.replyContradictions ?? []).map((text) => `<p><strong>${esc(text)}</strong></p>`).join('')}
           <p>Przesłanki, krok po kroku:</p><ol>${person.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ol>
           <p>Profile: ${profiles.map((profile) => `${esc(profile.handle ?? '—')} (${esc(profile.service)})`).join(', ') || '—'}.</p>
           ${
@@ -463,7 +473,7 @@ function renderTimeline(dossier: DossierView): string {
       <tr><th>Czas</th><th>Warstwa</th><th>Zdarzenie</th><th class="liczba">Szacunek PLN</th></tr>
       ${shown
         .map(
-          (event) => `<tr><td class="meta" style="white-space:nowrap">${dateTime(event.time)}</td><td>${layerTag(event.layer)}</td>
+          (event) => `<tr><td class="meta" style="white-space:nowrap">${dateTime(event.time)}</td><td>${layerTag(event.layer, event.title)}</td>
             <td>${event.url ? link(event.url, event.title) : esc(event.title)}${event.detail ? `<br><span class="meta">${esc(event.detail)}</span>` : ''}</td>
             <td class="liczba">${event.valuePln !== undefined ? esc(pln(event.valuePln)) : '—'}</td></tr>`,
         )
@@ -480,6 +490,101 @@ const DECISION_TARGET_LABEL: Record<string, string> = {
 };
 
 /** Rejestr decyzji do audytu: także decyzje wycofane — z datą i autorem wycofania. */
+const IDENTITY_OUTCOME_LABEL: Record<ServiceReplyView['identity']['outcome'], string> = {
+  confirmed: 'właściciel konta zgodny z kandydatem głównym — osoba potwierdzona',
+  other_person: 'konto należy do INNEJ osoby — kandydat główny niepotwierdzony',
+  inconclusive: 'dane klienta nieporównywalne z kandydatem głównym',
+  no_customer_data: 'odpowiedź bez danych klienta',
+  not_applied: 'nie dotyczy (odpowiedź niedopasowana albo wycofana)',
+};
+
+/**
+ * Odpowiedzi usług: dokumenty spoza OSINT wprowadzone przez analityka. Osobna warstwa raportu — nie są ani faktem
+ * ze źródeł publicznych, ani wnioskiem narzędzia; narzędzie pokazuje tylko, do czego je dopasowało i co zmieniły.
+ */
+function renderServiceReplies(dossier: DossierView): string {
+  const replies = dossier.serviceReplies ?? [];
+  if (replies.length === 0) {
+    return `<p>Analityk nie wprowadził żadnej odpowiedzi usługi. Właściciela konta w usłudze i wypłatę na rachunek bankowy może potwierdzić wyłącznie usługa
+      w odpowiedzi na zapytanie uprawnionego organu — do tego czasu ustalenia o wyjściu do walut tradycyjnych pozostają sygnałami z blockchaina.</p>`;
+  }
+  const active = replies.filter((reply) => !reply.withdrawn);
+  const withdrawn = replies.filter((reply) => reply.withdrawn);
+  const one = (reply: ServiceReplyView) => {
+    const customer = reply.payload.customer;
+    const matched = reply.match.addresses.filter((item) => !item.excluded);
+    return `<div class="zrodlo">
+      <h4>Odpowiedź usługi ${esc(reply.serviceName)} — sygn. ${esc(reply.reference)}${reply.payload.syntetyczne ? ' (dane syntetyczne z piaskownicy)' : ''}</h4>
+      <p class="meta">Otrzymana: ${dateTime(reply.receivedAt)}; wprowadzona do sprawy: ${dateTime(reply.recordedAt)} przez: ${esc(reply.recordedBy)}${
+        reply.payload.documentHash ? `; SHA-256 treści dokumentu: <span class="mono">${esc(reply.payload.documentHash)}</span>` : '; treści dokumentu nie dołączono (brak skrótu)'
+      }${reply.serviceKnown ? '' : '; usługa nie występuje wśród usług powiązanych w sprawie (zapis wymuszony przez analityka)'}.</p>
+      ${
+        customer
+          ? `<table><tr><th>Dane klienta według usługi</th><th>Wartość</th></tr>
+            ${customer.fullName ? `<tr><td>imię i nazwisko</td><td>${esc(customer.fullName)}</td></tr>` : ''}
+            ${customer.identifierMasked ? `<tr><td>identyfikator (${esc(customer.identifierKind ?? 'inne')}) — zamaskowany</td><td class="mono">${esc(customer.identifierMasked)}</td></tr>` : ''}
+            ${customer.accountId ? `<tr><td>identyfikator konta w usłudze</td><td class="mono">${esc(customer.accountId)}</td></tr>` : ''}
+            ${customer.emails?.length ? `<tr><td>e-mail</td><td>${esc(customer.emails.join(', '))}</td></tr>` : ''}
+            ${customer.phones?.length ? `<tr><td>telefon</td><td>${esc(customer.phones.join(', '))}</td></tr>` : ''}
+            ${customer.registeredAt ? `<tr><td>konto założone</td><td>${dateTime(customer.registeredAt)}</td></tr>` : ''}
+          </table>`
+          : '<p>Odpowiedź nie zawiera danych klienta.</p>'
+      }
+      <p><strong>Dopasowanie do danych sprawy:</strong> ${esc(reply.match.text)}</p>
+      ${
+        matched.length > 0
+          ? `<table><tr><th>Adres sprawy</th><th>Podstawa dopasowania</th><th>Transakcje objęte odpowiedzią</th></tr>
+            ${matched
+              .map(
+                (item) => `<tr><td class="mono">${esc(item.address)}<br><span class="meta">${esc(NETWORK_LABEL[item.network] ?? item.network)}</span></td>
+                  <td>${esc(item.by.map((by) => (by === 'txid' ? 'identyfikator transakcji' : 'adres wpłat / adres usługi')).join(', '))}</td>
+                  <td class="mono">${item.txids.map((txid) => esc(txid)).join('<br>') || '—'}</td></tr>`,
+              )
+              .join('')}
+          </table>`
+          : ''
+      }
+      ${
+        reply.payload.fiatPayouts.length > 0
+          ? `<table><tr><th>Wypłata na rachunek (według usługi)</th><th class="liczba">Kwota</th><th>Rachunek (zamaskowany)</th><th>Powiązana wpłata</th></tr>
+            ${reply.payload.fiatPayouts
+              .map(
+                (payout) => `<tr><td style="white-space:nowrap">${dateTime(payout.time)}</td><td class="liczba">${esc(formatFiat(payout.amount, payout.currency))}</td>
+                  <td class="mono">${esc(payout.bankAccountMasked ?? '—')}</td><td class="mono">${esc(payout.relatedTxid ?? '—')}</td></tr>`,
+              )
+              .join('')}
+          </table><p class="meta">Łącznie: ${esc(payoutSummary(reply.payload.fiatPayouts))}.</p>`
+          : '<p>Odpowiedź nie zawiera wypłat na rachunek bankowy.</p>'
+      }
+      <p><strong>Skutki dla ustaleń:</strong></p>
+      <ul>
+        <li>Ustalenie osoby: ${esc(IDENTITY_OUTCOME_LABEL[reply.identity.outcome])}. ${esc(reply.identity.text)}${
+          reply.identity.basis.length > 0 ? `<ul>${reply.identity.basis.map((text) => `<li>${esc(text)}</li>`).join('')}</ul>` : ''
+        }</li>
+        <li>Wskaźnik C (wyjście do walut tradycyjnych): ${esc(reply.fiatExit.text)}</li>
+        ${reply.contradiction ? `<li><strong>${esc(reply.contradiction)}</strong></li>` : ''}
+      </ul>
+      ${reply.payload.note ? `<p class="meta">Notatka analityka: ${esc(reply.payload.note)}</p>` : ''}
+    </div>`;
+  };
+  return external(`<p>Poniższe informacje <strong>nie pochodzą ze źródeł publicznych ani z blockchaina</strong>: to treść odpowiedzi usług na zapytania uprawnionego organu,
+      wprowadzona do sprawy przez analityka. Narzędzie nie weryfikuje autentyczności dokumentów; pokazuje, do których transakcji sprawy je dopasowało
+      i jak zmieniły ustalenia. Identyfikator klienta i numer rachunku są przechowywane wyłącznie w postaci zamaskowanej.</p>
+    ${active.length === 0 ? '<p>Brak obowiązujących odpowiedzi — wszystkie zostały wycofane.</p>' : active.map(one).join('')}
+    ${
+      withdrawn.length > 0
+        ? `<h4>Odpowiedzi wycofane (ślad audytowy — nie wpływają na wynik)</h4>
+          <table><tr><th>Usługa</th><th>Sygnatura</th><th>Otrzymana</th><th>Wprowadzona</th><th>Wycofana</th></tr>
+          ${withdrawn
+            .map(
+              (reply) => `<tr><td>${esc(reply.serviceName)}</td><td>${esc(reply.reference)}</td><td>${dateTime(reply.receivedAt)}</td>
+                <td>${dateTime(reply.recordedAt)} (${esc(reply.recordedBy)})</td><td>${dateTime(reply.withdrawnAt)}${reply.withdrawnBy ? ` przez: ${esc(reply.withdrawnBy)}` : ''}</td></tr>`,
+            )
+            .join('')}</table>`
+        : ''
+    }`);
+}
+
 function renderDecisions(dossier: DossierView): string {
   const decisions = (dossier.decisions ?? []) as (DossierView['decisions'][number] & { withdrawnAt?: string; withdrawnBy?: string })[];
   if (decisions.length === 0) {
@@ -649,6 +754,9 @@ ${
 <h2>Powiązania z giełdami, portfelami i usługami</h2>
 ${renderServiceSection(dossier.serviceLinks)}
 
+<h2>Odpowiedzi usług (dokumenty spoza OSINT)</h2>
+${renderServiceReplies(dossier)}
+
 ${renderIndicatorSections(dossier.indicators, dossier.persons)}
 
 <h2>Jak czytać ten raport</h2>
@@ -657,6 +765,7 @@ ${renderMethodologyBox()}
 ${fact('<p>Informacja pobrana wprost z publicznego źródła lub z blockchaina. Można ją sprawdzić pod podanym adresem; skrót SHA-256 pozwala potwierdzić, że zapisana kopia treści nie została zmieniona.</p>')}
 ${calc('<p>Liczba policzona przez narzędzie według jawnych reguł (np. Wskaźnik Pewności, suma w PLN, priorytet). Każdy krok obliczenia jest pokazany i można go powtórzyć.</p>')}
 ${inference('<p>Interpretacja narzędzia (np. ustalenie osoby, wskaźnik wypłaty, osoby powiązane). Nie jest ustaleniem faktycznym — wymaga potwierdzenia przez analityka, np. danymi od giełdy lub innego pośrednika.</p>')}
+${(dossier.serviceReplies ?? []).length > 0 ? external('<p>Informacja z odpowiedzi usługi wprowadzonej przez analityka. Nie pochodzi ze źródeł publicznych ani z blockchaina i nie jest wnioskiem narzędzia; za dokument odpowiada analityk, a jego wycofanie przywraca wynik sprzed wprowadzenia.</p>') : ''}
 
 <h2>1. Dane wejściowe i parametry wyszukiwania</h2>
 ${fact(`

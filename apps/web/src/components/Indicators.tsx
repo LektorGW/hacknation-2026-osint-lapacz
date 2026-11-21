@@ -83,8 +83,18 @@ export function EvidenceRefItem({ item }: { item: EvidenceRef }) {
         </span>
       );
     }
-    case 'decision':
-      return <span className="chip">decyzja analityka: {shorten(item.value, 14, 6)}</span>;
+    case 'decision': {
+      // Dowodem może być odpowiedź usługi (dokument spoza OSINT), a nie decyzja analityka o adresie.
+      const reply = item.value.startsWith('reply:') ? (dossier.serviceReplies ?? []).find((entry) => `reply:${entry.id}` === item.value) : undefined;
+      if (reply) {
+        return (
+          <span className="chip chip-external" title="Dokument spoza OSINT wprowadzony przez analityka — narzędzie nie weryfikuje jego autentyczności.">
+            odpowiedź usługi {reply.serviceName}, sygn. {reply.reference} (dokument spoza OSINT)
+          </span>
+        );
+      }
+      return <span className="chip">{item.value.startsWith('reply:') ? 'odpowiedź usługi (dokument spoza OSINT)' : `decyzja analityka: ${shorten(item.value, 14, 6)}`}</span>;
+    }
     default:
       return <span className="chip">{item.value}</span>;
   }

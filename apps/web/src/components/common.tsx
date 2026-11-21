@@ -36,6 +36,18 @@ export function LayerTag({ layer }: { layer: Layer }) {
   );
 }
 
+/** Znacznik czwartej warstwy: informacja z odpowiedzi usługi wprowadzonej przez analityka — nie ze źródeł publicznych. */
+export function ExternalDocTag({ short = false }: { short?: boolean }) {
+  return (
+    <span
+      className="layer-tag layer-external"
+      title="Dokument spoza OSINT: odpowiedź usługi (giełdy) wprowadzona do sprawy przez analityka. Nie pochodzi ze źródeł publicznych ani z blockchaina; narzędzie nie weryfikuje jej autentyczności."
+    >
+      {short ? 'Dokument spoza OSINT' : 'Dokument spoza OSINT (odpowiedź usługi)'}
+    </span>
+  );
+}
+
 export function LayerLegend() {
   return (
     <details className="legend">

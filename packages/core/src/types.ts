@@ -222,6 +222,10 @@ export interface ProfileAttributes {
   bio?: string;
   /** Data założenia konta (ISO 8601). */
   createdAt?: string;
+  /** Nazwa organizacji (firmy) z urzędowego rejestru — to nie jest imię i nazwisko osoby. */
+  organization?: string;
+  /** Wpisy w rejestrach publicznych, np. `KRS 0000012345`, `NIP 1234567890 (wykaz podatników VAT: Czynny)`. */
+  registryEntries?: string[];
 }
 
 /** Łącznik, który potrafi sam wskazać świeże publikacje z adresami (np. nowe oferty P2P). */

@@ -7,7 +7,9 @@ import { proofSummary } from '../proof.ts';
 import { identityHeadline, likelySameTotal } from '../identities.ts';
 import { fmtPln, shorten, sum } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
-import { DualScore, Gauge, Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
+import { isExternalDocumentText } from '../service-reply.ts';
+import type { ServiceReplyRef } from '../service-reply.ts';
+import { DualScore, ExternalDocTag, Gauge, Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { ServiceChips } from './ServiceCards.tsx';
 import { AddressSummary, isAddressCase } from './AddressSummary.tsx';
@@ -22,6 +24,10 @@ const ATTRIBUTE_LABEL: Record<PersonCandidate['attributes'][number]['kind'], str
   organization: 'Organizacja',
   registry_entry: 'Wpis w rejestrze',
 };
+
+/** Odpowiedź usługi, która potwierdziła kandydata (pole lokalne teczki, poza kontraktem core). */
+const replyRef = (person: PersonCandidate | undefined): ServiceReplyRef | undefined => (person as (PersonCandidate & { confirmedByReply?: ServiceReplyRef }) | undefined)?.confirmedByReply;
+const contradictionsOf = (person: PersonCandidate): string[] => (person as PersonCandidate & { replyContradictions?: string[] }).replyContradictions ?? [];
 
 function profilesOf(dossier: Dossier, person: PersonCandidate): ProfileCard[] {
   return person.profileIds.flatMap((id) => dossier.profiles.find((profile) => profile.id === id) ?? []);
@@ -80,7 +86,9 @@ function PersonDetermination() {
       <header className="determination-head">
         <h2 id="ustalenie">Ustalenie</h2>
         <LayerTag layer="inference" />
-        <span className="muted">wynik automatycznego łączenia profili — bez udziału analityka</span>
+        <span className="muted">
+          {replyRef(person) ? 'osoba potwierdzona odpowiedzią usługi — dokumentem spoza OSINT wprowadzonym przez analityka' : 'wynik automatycznego łączenia profili — bez udziału analityka'}
+        </span>
       </header>
 
       {dossier.summary && (
@@ -112,11 +120,22 @@ function PersonDetermination() {
               <Gauge value={person.probability} label="prawdopodobieństwo, że to osoba, której dotyczy sprawa" size={132} />
               <div>
                 <p className="person-name">{person.fullName ?? 'Imię i nazwisko: nie ustalono — źródła nie ujawniają'}</p>
+                {replyRef(person) && (
+                  <p className="reply-note">
+                    <ExternalDocTag short /> <strong>Potwierdzone odpowiedzią usługi {replyRef(person)!.serviceName}</strong>, sygn. {replyRef(person)!.reference}.{' '}
+                    <a href={tabHref('uslugi')}>Treść odpowiedzi</a>
+                  </p>
+                )}
+                {contradictionsOf(person).map((text) => (
+                  <p key={text} className="reply-note is-contradiction">
+                    <ExternalDocTag short /> <strong>Konto w usłudze należy do innej osoby.</strong> {text} <a href={tabHref('uslugi')}>Treść odpowiedzi</a>
+                  </p>
+                ))}
                 {person.nameVariants.length > 0 && (
                   <p className="muted person-variants">występuje też jako: {person.nameVariants.join(', ')}</p>
                 )}
                 <ul className="reasons">
-                  {person.reasons.map((reason) => (
+                  {person.reasons.filter((reason) => !contradictionsOf(person).includes(reason)).map((reason) => (
                     <li key={reason}>{reason}</li>
                   ))}
                 </ul>
@@ -213,8 +232,8 @@ function PersonDetermination() {
           <h3>Kluczowe ustalenia</h3>
           <ol>
             {keyFindings.map((item) => (
-              <li key={item.text} className={`key-finding layer-${toLayer(item.layer)}`}>
-                <LayerTag layer={toLayer(item.layer)} />
+              <li key={item.text} className={`key-finding layer-${isExternalDocumentText(item.text) ? 'external' : toLayer(item.layer)}`}>
+                {isExternalDocumentText(item.text) ? <ExternalDocTag short /> : <LayerTag layer={toLayer(item.layer)} />}
                 <span>{item.text}</span>
               </li>
             ))}

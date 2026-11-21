@@ -5,6 +5,7 @@ import type { AnalysisResult } from '../src/analysis.ts';
 import { buildDossier } from '../src/dossier.ts';
 import type { DossierView } from '../src/dossier.ts';
 import type { OtherCase } from '../src/relations.ts';
+import type { ServiceReply, ServiceReplyPayload } from '../src/service-reply.ts';
 import type { DecisionRecord } from '../src/storage.ts';
 import type {
   AddressClass,
@@ -240,7 +241,7 @@ export function chainWith(
 export function dossierOf(
   result: AnalysisResult,
   query: SubjectQuery,
-  options: { decisions?: DecisionRecord[]; otherCases?: OtherCase[]; now?: Date; serviceLabels?: { address: string; network: string; label: string }[]; deep?: boolean } = {},
+  options: { decisions?: DecisionRecord[]; serviceReplies?: ServiceReply[]; otherCases?: OtherCase[]; now?: Date; serviceLabels?: { address: string; network: string; label: string }[]; deep?: boolean } = {},
 ): DossierView {
   const analysisRun: AnalysisRun = { ...run('run-test', result.findings), query, log: result.log };
   return buildDossier({
@@ -248,6 +249,7 @@ export function dossierOf(
     run: analysisRun,
     intel: result.intel,
     decisions: options.decisions ?? [],
+    serviceReplies: options.serviceReplies,
     otherCases: options.otherCases ?? [],
     rules: DEFAULT_RULES,
     now: options.now ?? FIXED_NOW(),

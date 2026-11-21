@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { validateAddress } from '@olcys/core';
 import { scenario } from '../data/scenario.ts';
+import { registerExchangeReply } from './exchange-reply.ts';
 import type { Account, DocKind, Service, Snapshot, Thread } from '../data/scenario.ts';
 
 /**
@@ -410,6 +411,8 @@ ${cards}
 <p class="meta">Wykonaj analizę w fazie „before", przełącz na „after" i wykonaj ją ponownie, aby porównać wyniki.</p>`),
     ),
   );
+
+  registerExchangeReply(app);
 
   app.get<{ Params: { phase: string } }>('/_demo/faza/:phase', (request, reply) => {
     if (request.params.phase !== 'before' && request.params.phase !== 'after') {

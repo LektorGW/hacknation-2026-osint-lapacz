@@ -6,7 +6,7 @@ import { CASH_OUT_STAGE_LABEL, INDICATOR_SCALE, SCORE_INTERPRETATION } from '@ol
 import { formatAmount, formatPln } from './format.ts';
 import type { CashOutProof } from './proof.ts';
 import { PROOF_RULES } from './proof.ts';
-import { calc, dateTime, esc, fact, inference, link } from './report-html.ts';
+import { calc, dateTime, esc, external, fact, inference, link } from './report-html.ts';
 
 const BASIS_LABEL: Record<CashOutProof['addressBasis'], string> = {
   published: 'adres opublikowany przez podmiot',
@@ -54,6 +54,7 @@ function renderProof(proof: CashOutProof, number: number): string {
     <p class="meta">Adres początkowy: <span class="mono">${esc(proof.address)}</span> — ${esc(BASIS_LABEL[proof.addressBasis])}${
       proof.cluster ? `; portfel ustalony od adresu <span class="mono">${esc(proof.cluster.seed)}</span> (${esc(proof.cluster.reason)})` : ''
     }.</p>
+    ${proof.serviceReply ? external(`<p>${proof.serviceReply.outcome === 'other_person' ? '<strong>Sprzeczność do rozstrzygnięcia.</strong> ' : ''}${esc(proof.serviceReply.note)}</p>`) : ''}
     ${score}${hops}${open}
   </section>`;
 }

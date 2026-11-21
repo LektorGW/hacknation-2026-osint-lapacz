@@ -4,7 +4,8 @@ import { CLASS_LABEL, NETWORK_LABEL } from '../labels.ts';
 import { mentionServices } from '../funds.ts';
 import { proofSummary } from '../proof.ts';
 import type { FullDossier } from '../proof.ts';
-import { CopyButton, Gauge, LayerTag, toLayer } from './common.tsx';
+import { isExternalDocumentText } from '../service-reply.ts';
+import { CopyButton, ExternalDocTag, Gauge, LayerTag, toLayer } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { ServiceChips } from './ServiceCards.tsx';
 
@@ -131,8 +132,8 @@ export function AddressSummary() {
           <h3>Kluczowe ustalenia</h3>
           <ol>
             {keyFindings.map((item) => (
-              <li key={item.text} className={`key-finding layer-${toLayer(item.layer)}`}>
-                <LayerTag layer={toLayer(item.layer)} />
+              <li key={item.text} className={`key-finding layer-${isExternalDocumentText(item.text) ? 'external' : toLayer(item.layer)}`}>
+                {isExternalDocumentText(item.text) ? <ExternalDocTag short /> : <LayerTag layer={toLayer(item.layer)} />}
                 <span>{item.text}</span>
               </li>
             ))}
