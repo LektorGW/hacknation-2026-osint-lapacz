@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent, ReactNode, RefObject } from 'react';
 import type { ClaimStatus, Dossier, GraphEdge, GraphNode, GraphNodeKind } from '@olcys/core';
 import { EmptyState, ExternalLink } from '../components/common.tsx';
+import { graphLayerFromHash, useHash } from '../router.ts';
 import { Disclosure } from '../components/ui/Disclosure.tsx';
 import { Score, ScoreSteps } from '../components/ui/Score.tsx';
 import { Term } from '../components/ui/Term.tsx';
@@ -491,7 +492,12 @@ export function GraphView() {
   const all = dossier.graph;
   const stage = useRef<HTMLDivElement>(null);
   const full = useFullscreen(stage);
-  const [layer, setLayer] = useState<LayerView>('both');
+  // Most z podsumowania sprawy otwiera graf od razu w wybranej warstwie (`?warstwa=osint|blockchain`).
+  const requestedLayer = graphLayerFromHash(useHash());
+  const [layer, setLayer] = useState<LayerView>(requestedLayer ?? 'both');
+  useEffect(() => {
+    if (requestedLayer) setLayer(requestedLayer);
+  }, [requestedLayer]);
   const [radial, setRadial] = useState(false);
   const [statuses, setStatuses] = useState<ReadonlySet<ClaimStatus>>(new Set(CLAIM_STATUSES));
   const [hiddenKinds, setHiddenKinds] = useState<ReadonlySet<GraphNodeKind>>(new Set());

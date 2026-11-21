@@ -10,7 +10,9 @@ import type { FullDossier } from '../../proof.ts';
 import { isExternalDocumentText } from '../../service-reply.ts';
 import type { ServiceReplyRef } from '../../service-reply.ts';
 import { identityStatus } from '../../identities.ts';
+import { withGraphLayer } from '../../router.ts';
 import type { DossierTab } from '../../router.ts';
+import { edgeLayer } from '../../graph/investigation.ts';
 import { FINDING_GROUPS, countText, groupKeyFindings, noPersonReason, searchInput, splitLead, summarySentence } from '../../ux.ts';
 import { isAddressCase } from '../../components/AddressSummary.tsx';
 import { useDossier } from '../../components/DossierContext.tsx';
@@ -66,6 +68,24 @@ function nextActions(dossier: FullDossier, linked: Finding[]): Action[] {
   return actions.slice(0, 3);
 }
 
+/**
+ * „Most” między kafelkami podsumowania: klikalne połączenie, które otwiera graf w jednej warstwie —
+ * osoba ↔ adresy to ślady z otwartych źródeł (OSINT), adresy ↔ wyjścia to przepływy w blockchainie.
+ */
+function Bridge({ href, title, detail, empty, kind }: { href: string; title: string; detail: string; empty: boolean; kind: 'osint' | 'chain' }) {
+  return (
+    <a className={`bridge bridge-${kind} ${empty ? 'is-empty' : ''}`} href={href} title={`${title}: pokaż na grafie`}>
+      <span className="bridge-line" aria-hidden="true" />
+      <span className="bridge-pill">
+        <span className="bridge-title">{title}</span>
+        <span className="bridge-detail">{detail}</span>
+        <span className="bridge-cta">pokaż na grafie →</span>
+      </span>
+      <span className="bridge-line" aria-hidden="true" />
+    </a>
+  );
+}
+
 function jumpTo(anchor: string) {
   const element = document.getElementById(anchor);
   element?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
@@ -109,6 +129,14 @@ export function CaseHero() {
   });
   // Kafel „Badany adres” zostaje tylko dla spraw z adresem dopisanym obok danej o osobie.
   const addressTile = addressCase && !addressInput;
+  // Mosty: ile śladów OSINT łączy osobę z adresami i ile przepływów w blockchainie prowadzi od adresów do wyjść.
+  const sources = new Set(dossier.findings.flatMap((finding) => finding.evidence.map((item) => item.url))).size;
+  const accounts = dossier.profiles.length;
+  const chainEdges = dossier.graph.edges.filter((edge) => edgeLayer(edge) === 'chain').length;
+  const graphHref = tabHref('graf');
+  const osintDetail =
+    sources + accounts > 0 ? `${countText(accounts, 'konto', 'konta', 'kont')} · ${countText(sources, 'źródło', 'źródła', 'źródeł')}` : 'brak śladów w źródłach';
+  const chainDetail = chainEdges > 0 ? countText(chainEdges, 'przepływ', 'przepływy', 'przepływów') : 'brak przepływów do usług';
   const inputTag = (
     <span className="input-tag" title="To jest wejście wyszukiwania — dana wpisana przez analityka">
       wejście
@@ -169,6 +197,8 @@ export function CaseHero() {
           </a>
         </article>
 
+        <Bridge kind="osint" href={withGraphLayer(graphHref, 'osint')} title="Ślady OSINT" detail={osintDetail} empty={sources + accounts === 0} />
+
         <article className={`answer ${addressInput ? 'is-input' : ''}`}>
           <h3 className="answer-label">
             <Term id="adres-krypto">Adresy krypto</Term>
@@ -205,6 +235,8 @@ export function CaseHero() {
             Adresy i ślady <span aria-hidden="true">→</span>
           </a>
         </article>
+
+        <Bridge kind="chain" href={withGraphLayer(graphHref, 'blockchain')} title="Śledzenie w blockchainie" detail={chainDetail} empty={chainEdges === 0} />
 
         <article className="answer">
           <h3 className="answer-label">Dokąd trafiły pieniądze</h3>

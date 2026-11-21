@@ -74,7 +74,8 @@ export const toTab = (value: string | undefined): DossierTab =>
   DOSSIER_TABS.find((tab) => tab.id === value)?.id ?? (value ? TAB_ALIASES[value] : undefined) ?? DEFAULT_TAB;
 
 export function parseRoute(hash: string): Route {
-  const [first, rawSecond, third] = hash.replace(/^#\/?/, '').split('/');
+  // Część po „?” to parametry widoku (np. warstwa grafu) — nie wpływa na wybór strony i zakładki.
+  const [first, rawSecond, third] = hash.replace(/^#\/?/, '').split('?')[0]!.split('/');
   const second = decode(rawSecond);
   if (first === 'sprawa' && second) return { page: 'case', caseId: second, tab: toTab(third) };
   if (first === 'analiza' && second) return { page: 'run', runId: second, tab: toTab(third) };
@@ -96,6 +97,20 @@ export const href = {
   monitor: () => '#/monitoring',
   rules: () => '#/zasady',
 };
+
+/** Warstwa grafu zapisana w adresie strony: `…/graf?warstwa=osint` albo `…/graf?warstwa=blockchain`. */
+export type GraphLayerParam = 'identity' | 'chain' | 'both';
+
+const LAYER_PARAM: Record<string, GraphLayerParam> = { osint: 'identity', blockchain: 'chain', obie: 'both' };
+
+export function graphLayerFromHash(hash: string): GraphLayerParam | undefined {
+  const query = hash.split('?')[1];
+  if (!query) return undefined;
+  return LAYER_PARAM[new URLSearchParams(query).get('warstwa') ?? ''];
+}
+
+/** Odnośnik do grafu otwartego od razu we wskazanej warstwie. */
+export const withGraphLayer = (graphHref: string, layer: 'osint' | 'blockchain'): string => `${graphHref}?warstwa=${layer}`;
 
 export function navigate(target: string): void {
   location.hash = target;

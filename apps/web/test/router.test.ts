@@ -60,3 +60,12 @@ test('ekran „Statystyki” ma własny adres', () => {
   assert.deepEqual(parseRoute(href.stats()), { page: 'stats' });
   assert.deepEqual(parseRoute('#/statystyki/cokolwiek'), { page: 'stats' });
 });
+
+test('warstwa grafu z adresu strony: most z podsumowania otwiera OSINT albo blockchain', async () => {
+  const { graphLayerFromHash, parseRoute, withGraphLayer } = await import('../src/router.ts');
+  assert.equal(graphLayerFromHash('#/sprawa/abc/graf?warstwa=osint'), 'identity');
+  assert.equal(graphLayerFromHash('#/sprawa/abc/graf?warstwa=blockchain'), 'chain');
+  assert.equal(graphLayerFromHash('#/sprawa/abc/graf'), undefined);
+  assert.equal(graphLayerFromHash('#/sprawa/abc/graf?warstwa=cos'), undefined);
+  assert.deepEqual(parseRoute(withGraphLayer('#/sprawa/abc/graf', 'blockchain')), { page: 'case', caseId: 'abc', tab: 'graf' });
+});
