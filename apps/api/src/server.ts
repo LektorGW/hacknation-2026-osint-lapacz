@@ -85,4 +85,14 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) {
   process.on(signal, () => shutdown(signal));
 }
 
+// W systemie Windows zatrzymanie procesu z zewnątrz nie dostarcza sygnału, więc łagodne
+// zamknięcie da się też wywołać żądaniem — wyłącznie z tego samego komputera.
+app.post('/api/admin/shutdown', async (request, reply) => {
+  if (request.ip !== '127.0.0.1' && request.ip !== '::1') {
+    return reply.code(403).send({ error: 'Zamknięcie jest dostępne tylko lokalnie.' });
+  }
+  setImmediate(() => shutdown('żądanie lokalne'));
+  return { status: 'closing' };
+});
+
 await app.listen({ port, host: env.API_HOST ?? '127.0.0.1' });
