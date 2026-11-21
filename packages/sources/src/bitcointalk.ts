@@ -112,7 +112,7 @@ export function createBitcointalkConnector(http: HttpClient): SourceConnector {
           ...(registeredAt(profile.fields['Date Registered']) ? { createdAt: registeredAt(profile.fields['Date Registered'])! } : {}),
         },
         // Forum nie podaje daty zmiany profilu („Last Active" to czas logowania), więc bez publishedAt.
-        ...discoveredField(dedupeIdentifiers(discovered, identifier)),
+        ...discoveredField(dedupeIdentifiers(discovered, identifier, [SERVICE])),
       };
       context.log(
         `${LABEL}: profil „${profile.fields.Name}" (u=${userId}) — pole „Bitcoin address": ${profile.fields['Bitcoin address'] ? 'jest' : 'brak'}.`,

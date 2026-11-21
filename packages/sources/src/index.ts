@@ -5,7 +5,7 @@ import type { SourceConnector } from '@olcys/core';
 import { createBitcointalkConnector } from './bitcointalk.ts';
 import { createEnsConnector } from './ens.ts';
 import { createFediverseConnector, loadFediverseInstances } from './fediverse.ts';
-import { createGithubConnector, createGithubGistsConnector } from './github.ts';
+import { createGithubActivityConnector, createGithubConnector, createGithubGistsConnector } from './github.ts';
 import { createGravatarConnector } from './gravatar.ts';
 import { createHttpClient } from './http.ts';
 import type { Fetcher } from './http.ts';
@@ -56,6 +56,7 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createEnsConnector(http),
     createGithubConnector(http, github),
     createGithubGistsConnector(http, github),
+    createGithubActivityConnector(http, github),
     createGravatarConnector(http),
     createFediverseConnector(http, config.fediverseInstances ? { instances } : {}),
     createTelegramConnector(http, config.telegramChannels ? { channels: config.telegramChannels } : {}),

@@ -19,6 +19,9 @@ interface GravatarEntry {
   preferredUsername?: string;
   thumbnailUrl?: string;
   displayName?: string;
+  name?: { formatted?: string; givenName?: string; familyName?: string } | unknown[];
+  emails?: { primary?: string | boolean; value?: string }[];
+  phoneNumbers?: { type?: string; value?: string }[];
   aboutMe?: string;
   currentLocation?: string;
   job_title?: string;
@@ -97,12 +100,25 @@ export function createGravatarConnector(http: HttpClient): SourceConnector {
       }
 
       const username = entry.preferredUsername?.trim();
+      const nameParts = entry.name && !Array.isArray(entry.name) ? entry.name : undefined;
+      const fullName = nameParts?.formatted?.trim() || [nameParts?.givenName, nameParts?.familyName].filter(Boolean).join(' ').trim() || undefined;
+      const emails = [
+        ...new Set(
+          [identifier.type === 'email' ? identifier.value : undefined, ...(entry.emails ?? []).map((item) => item?.value)]
+            .filter((value): value is string => typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()))
+            .map((value) => value.trim().toLowerCase()),
+        ),
+      ];
+      const phones = [...new Set((entry.phoneNumbers ?? []).map((item) => item?.value?.replace(/[\s-]/g, '')).filter((value): value is string => Boolean(value)))];
       const wallets = collectWallets(entry);
       const accounts = (entry.accounts ?? []).filter((account) => account?.url);
       const urls = (entry.urls ?? []).filter((item) => item?.value);
       const text = [
         `Profil Gravatar: ${username ?? entry.displayName ?? identifier.value}`,
         entry.displayName && `Nazwa wyświetlana: ${entry.displayName}`,
+        fullName && `Imię i nazwisko: ${fullName}`,
+        emails.length > 0 && `E-mail: ${emails.join(', ')}`,
+        phones.length > 0 && `Telefon: ${phones.join(', ')}`,
         entry.currentLocation && `Lokalizacja: ${entry.currentLocation}`,
         entry.job_title && `Stanowisko: ${entry.job_title}`,
         entry.company && `Firma: ${entry.company}`,
@@ -124,6 +140,7 @@ export function createGravatarConnector(http: HttpClient): SourceConnector {
         const found = isVerified(account.verified) ? profileUrlIdentifier(account.url!) : null;
         if (found) discovered.push(found);
       }
+      for (const email of emails) discovered.push({ type: 'email', value: email });
       // Odnośniki wpisane przez właściciela profilu — deklaracja własnych stron.
       for (const item of urls) {
         const found = profileUrlIdentifier(item.value!);
@@ -143,9 +160,10 @@ export function createGravatarConnector(http: HttpClient): SourceConnector {
         matchedIdentifier: identifier,
         profile: {
           ...(username ? { handle: username } : {}),
-          ...(entry.displayName ? { displayName: entry.displayName } : {}),
-          // Profil wisi pod skrótem tego e-maila — serwis sam potwierdza przypisanie.
-          ...(identifier.type === 'email' ? { emails: [identifier.value.trim().toLowerCase()] } : {}),
+          ...(fullName ?? entry.displayName ? { displayName: fullName ?? entry.displayName } : {}),
+          // Profil wisi pod skrótem e-maila podanego przez analityka — serwis sam potwierdza przypisanie.
+          ...(emails.length > 0 ? { emails } : {}),
+          ...(phones.length > 0 ? { phones } : {}),
           ...(accounts.length + urls.length > 0 ? { urls: [...new Set([...accounts.map((account) => account.url!), ...urls.map((item) => item.value!)])] } : {}),
           ...(entry.currentLocation ? { location: entry.currentLocation } : {}),
           ...(entry.thumbnailUrl ? { avatarUrl: entry.thumbnailUrl } : {}),
@@ -154,7 +172,7 @@ export function createGravatarConnector(http: HttpClient): SourceConnector {
         ...(entry.last_profile_edit && !Number.isNaN(Date.parse(entry.last_profile_edit))
           ? { publishedAt: new Date(entry.last_profile_edit).toISOString() }
           : {}),
-        ...discoveredField(dedupeIdentifiers(discovered, identifier).slice(0, MAX_DISCOVERED)),
+        ...discoveredField(dedupeIdentifiers(discovered, identifier, [SERVICE]).slice(0, MAX_DISCOVERED)),
       };
       context.log(`${LABEL}: „${identifier.value}" — profil ${document.url}, portfeli: ${wallets.length}.`);
       return [document];

@@ -39,6 +39,9 @@ export const MARKET_ADDR = {
   rakTron: 'TNN6Uemk5Lqvybro36Lcmc6yNZEWMF58Zs',
   lenaTron: 'TYgA25gWvqTFmTNDWQr7sawdQ9nUhXDmwB',
   kolekcjeTron: 'TAvHgdm1ctMsPoAm9xxqrL4bRty2rfRUMb',
+  // Pospolity nick „marek88": dwie różne osoby w dwóch serwisach.
+  marekBtc: '1AD4pc1bKBwBrY2U2HVX1w4hw7KUL3fUca',
+  marekTron: 'TB9EFt6mvRQKihfPRiSQNCkBedqh2BfwwB',
   // Wspólny pośrednik bez etykiety: środki Jana Pietrzaka trafiają przez niego do Sylwii Kot.
   midBtc: '3JWr9ULjEPQJXjqAykETkcFWJRSGEg5kTy',
   // Anonimowi kontrahenci
@@ -301,6 +304,23 @@ const traders: Trader[] = [
     price: 'od 15 zł',
     body: 'Duży wybór kart z ostatnich dodatków. Wysyłka paczkomatem następnego dnia.',
   },
+  // Pospolity nick: na Targu to Marek Sikora z Poznania; na Forum pod tym samym nickiem pisze ktoś inny.
+  {
+    handle: 'marek88',
+    name: 'Marek Sikora',
+    showName: true,
+    city: 'Poznań',
+    phone: '500 000 826',
+    email: 'marek.sikora@skup.example',
+    joined: '2025-11-08T09:00:00Z',
+    address: A.marekBtc,
+    asset: 'BTC',
+    offerId: 2016,
+    publishedAt: '2026-05-20T09:00:00Z',
+    title: 'Skup elektroniki — płacę także w BTC, Poznań',
+    price: 'wycena na miejscu',
+    body: 'Telefony, laptopy, konsole. Rozliczam się gotówką albo bitcoinem, jak kto woli.',
+  },
 ];
 
 const traderOffer = (trader: Trader): Page => ({
@@ -340,7 +360,7 @@ export const marketAccounts: Account[] = [
     }),
   ),
   // Drugie profile tych samych osób w innych serwisach.
-  { service: 'spolecznosc', handle: 'igor_baran', name: 'Igor Baran', email: 'igor.baran@handel.example', location: 'Lublin', createdAt: '2022-05-14T09:00:00Z' },
+  { service: 'spolecznosc', handle: 'igor_baran', name: 'Igor Baran', email: 'igor.baran@handel.example', phone: '500 000 811', location: 'Lublin', createdAt: '2022-05-14T09:00:00Z' },
   { service: 'spolecznosc', handle: 'darek_mroz', name: 'Dariusz Mróz', location: 'Gdańsk', createdAt: '2021-03-08T09:00:00Z' },
   { service: 'spolecznosc', handle: 'kinga.sowa', name: 'Kinga Sowa', location: 'Opole', createdAt: '2020-09-01T09:00:00Z' },
   { service: 'gitpub', handle: 'rdudek3d', name: 'Robert Dudek', email: 'robert.dudek@grafika.example', location: 'Kielce', createdAt: '2022-01-17T09:00:00Z' },
@@ -348,6 +368,8 @@ export const marketAccounts: Account[] = [
   { service: 'spolecznosc', handle: 'kurek_kolekcje', phone: '500 000 825', location: 'Elbląg', createdAt: '2025-07-01T09:00:00Z' },
   // Wspólny e-mail: Marcel Zych na Targu i konto „mz_mineraly" na Forum.
   { service: 'forum', handle: 'mz_mineraly', email: 'marcel@zych-mineraly.example', createdAt: '2024-10-02T09:00:00Z' },
+  // Ten sam nick co Marek Sikora z Targu, ale inna osoba: inne nazwisko, e-mail, miejscowość i adres.
+  { service: 'forum', handle: 'marek88', name: 'Marek Wrona', email: 'm.wrona@suwalki-net.example', location: 'Suwałki', createdAt: '2019-03-30T09:00:00Z' },
   { service: 'komunikator', handle: 'tomasz_lis_p2p', location: 'Katowice' },
   { service: 'komunikator', handle: 'monika_rak' },
 ];
@@ -418,6 +440,11 @@ export const marketThreads: Thread[] = [
         `Ja sprzedaję minerały kolekcjonerom z zagranicy. Wpłaty zbieram na jednym adresie: ${code(A.marcelBtc)} i raz na kwartał wymieniam w kantorze P2P. Kontakt: marcel@zych-mineraly.example`,
       ),
       entry('nocny_gornik', '2026-05-31T08:10:00Z', 'Dzięki, czyli da się normalnie. Pamiętajcie o PIT-38.'),
+      entry(
+        'marek88',
+        '2026-05-31T12:00:00Z',
+        `U mnie w Suwałkach klienci płacą za naprawy komputerów w USDT, sieć TRON: ${code(A.marekTron)}. Marek Wrona, m.wrona@suwalki-net.example`,
+      ),
     ],
   },
   {
@@ -465,13 +492,13 @@ export const marketThreads: Thread[] = [
 
 /** Adresy osób z tej części: prywatne; pośrednik i anonimowi kontrahenci celowo bez etykiety i klasy. */
 export const marketLabeledAddresses: LabeledAddress[] = [
-  ...([A.igorBtc, A.darekBtc, A.sylwiaBtc, A.olekBtc, A.pietrzakBtc, A.marcelBtc] as string[]).map(
+  ...([A.igorBtc, A.darekBtc, A.sylwiaBtc, A.olekBtc, A.pietrzakBtc, A.marcelBtc, A.marekBtc] as string[]).map(
     (address): LabeledAddress => ({ address, network: 'bitcoin', addressClass: 'private' }),
   ),
   ...([A.gajdaEth, A.dudekEth, A.ewelinaEth, A.nogaEth] as string[]).map(
     (address): LabeledAddress => ({ address, network: 'ethereum', addressClass: 'private' }),
   ),
-  ...([A.wilkTron, A.sowaTron, A.lisTron, A.rakTron, A.lenaTron, A.kolekcjeTron] as string[]).map(
+  ...([A.wilkTron, A.sowaTron, A.lisTron, A.rakTron, A.lenaTron, A.kolekcjeTron, A.marekTron] as string[]).map(
     (address): LabeledAddress => ({ address, network: 'tron', addressClass: 'private' }),
   ),
 ];
@@ -559,6 +586,12 @@ export function marketLedger(S: ServiceAddresses): LedgerRow[] {
     // Monika Rak — jedna mała wypłata w 2026 r.
     row('2026-01-19T10:00:00Z', A.anonTron4, A.rakTron, 'USDT', 300),
     row('2026-02-23T12:00:00Z', A.rakTron, S.p2pTron, 'USDT', 250),
+
+    // Dwaj różni „marek88": Marek Sikora (BTC, Targ) i Marek Wrona (USDT, Forum) — nic ich nie łączy.
+    row('2025-12-10T10:00:00Z', A.anonBtc6, A.marekBtc, 'BTC', 0.3),
+    row('2026-01-14T12:00:00Z', A.marekBtc, S.exchangeBtc, 'BTC', 0.2),
+    row('2026-03-05T09:00:00Z', A.anonTron4, A.marekTron, 'USDT', 500),
+    row('2026-04-08T15:00:00Z', A.marekTron, S.p2pTron, 'USDT', 450),
 
     // Lena Kurek i jej drugie konto „kurek_kolekcje" — dwa adresy, przelew między nimi.
     row('2025-09-08T10:00:00Z', A.anonTron4, A.lenaTron, 'USDT', 1800),

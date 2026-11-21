@@ -152,7 +152,7 @@ export function createFediverseConnector(http: HttpClient, config: FediverseConf
             ...(note ? { bio: note } : {}),
             ...(account.created_at && !Number.isNaN(Date.parse(account.created_at)) ? { createdAt: new Date(account.created_at).toISOString() } : {}),
           },
-          ...discoveredField(dedupeIdentifiers(discovered, identifier)),
+          ...discoveredField(dedupeIdentifiers(discovered, identifier, [host])),
         });
       }
 

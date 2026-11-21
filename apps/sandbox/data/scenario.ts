@@ -267,10 +267,12 @@ const baseLedger: LedgerRow[] = [
 // ---------- Konta ----------
 
 const baseAccounts: Account[] = [
-  { service: 'gitpub', handle: 'kwrzosek_dev', name: 'Kacper Wrzosek', email: 'kacper.wrzosek@poczta.example' },
-  { service: 'targ', handle: 'kwrzosek_dev' },
+  // Główna osoba: spójne dane na obu profilach (ta sama miejscowość, telefon z ogłoszenia).
+  { service: 'gitpub', handle: 'kwrzosek_dev', name: 'Kacper Wrzosek', email: 'kacper.wrzosek@poczta.example', location: 'Bydgoszcz', createdAt: '2019-06-03T09:00:00Z' },
+  { service: 'targ', handle: 'kwrzosek_dev', phone: '500 000 201', location: 'Bydgoszcz', createdAt: '2021-02-15T09:00:00Z' },
   { service: 'forum', handle: 'bkruk_trader', name: 'Bartłomiej Kruk', email: 'b.kruk@fikcyjna.example' },
-  { service: 'spolecznosc', handle: 'wrzosek_ryby', name: 'Kacper Wrzosek' },
+  // Imiennik: to samo imię i nazwisko, ale inna miejscowość i inny e-mail.
+  { service: 'spolecznosc', handle: 'wrzosek_ryby', name: 'Kacper Wrzosek', email: 'wrzosek.ryby@jeziora.example', location: 'Olsztyn', createdAt: '2018-04-22T09:00:00Z' },
   { service: 'spolecznosc', handle: 'oli_stepniak', name: 'Oliwia Stępniak' },
   { service: 'www', handle: 'dsroka', name: 'Dominik Sroka', email: 'dominik@sroka-foto.example' },
   { service: 'spolecznosc', handle: 'marta.zielonka', name: 'Marta Zielonka', email: 'm.zielonka@skrzynka.example' },

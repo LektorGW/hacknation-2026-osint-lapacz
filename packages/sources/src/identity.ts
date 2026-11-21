@@ -11,7 +11,7 @@ export const sameHandle = (a: string, b: string): boolean => cleanHandle(a).toLo
 /** Adres http(s) z wartości identyfikatora; brakujący schemat uzupełniamy o https. */
 export function parseHttpUrl(value: string): URL | null {
   const trimmed = value.trim();
-  if (!trimmed || /\s/.test(trimmed)) return null;
+  if (!trimmed || /\s/.test(trimmed) || /^(?:mailto|tel|sms|javascript|data):/i.test(trimmed)) return null;
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   try {
     const url = new URL(withScheme);
@@ -37,8 +37,14 @@ export function handleFromIdentifier(identifier: Identifier, hosts: string[]): s
   return first ? cleanHandle(decodeURIComponent(first)) || null : null;
 }
 
-/** Usuwa powtórzenia oraz identyfikator, po którym dokument został znaleziony. */
-export function dedupeIdentifiers(identifiers: Identifier[], exclude?: Identifier): Identifier[] {
+/** Adresy techniczne, które nie identyfikują osoby (np. `123+login@users.noreply.github.com`). */
+export const isTechnicalEmail = (email: string): boolean => /(^|[.@+_-])(no-?reply|do-?not-?reply|donotreply|mailer-daemon)([.@+_-]|$)/i.test(email);
+
+/**
+ * Usuwa powtórzenia, identyfikator, po którym dokument został znaleziony, oraz wartości
+ * techniczne: adresy „noreply" i odnośniki do samego serwisu (`ownHosts`).
+ */
+export function dedupeIdentifiers(identifiers: Identifier[], exclude?: Identifier, ownHosts: string[] = []): Identifier[] {
   // Ten sam adres z http i https, z „www." lub bez, to jeden identyfikator; zostaje wersja https.
   const key = (item: Identifier) => {
     const value = item.value.trim().toLowerCase().replace(/\/+$/, '');
@@ -49,6 +55,11 @@ export function dedupeIdentifiers(identifiers: Identifier[], exclude?: Identifie
   for (const item of identifiers) {
     const itemKey = key(item);
     if (!item.value.trim() || itemKey === excluded) continue;
+    if (item.type === 'email' && isTechnicalEmail(item.value)) continue;
+    if (item.type === 'profile_url' && ownHosts.length > 0) {
+      const url = parseHttpUrl(item.value);
+      if (url && ownHosts.includes(serviceOf(url))) continue;
+    }
     const previous = kept.get(itemKey);
     if (!previous || (/^http:/i.test(previous.value) && /^https:/i.test(item.value))) kept.set(itemKey, item);
   }

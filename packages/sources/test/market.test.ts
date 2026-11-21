@@ -79,6 +79,58 @@ describe('atrybuty profilu w dokumentach piaskownicy', () => {
   });
 });
 
+describe('rozdzielanie osób po atrybutach profilu', () => {
+  test('główna osoba: ta sama miejscowość i telefon na dwóch–trzech profilach', async () => {
+    const [gitpub] = await search('sandbox-gitpub', 'login', 'kwrzosek_dev');
+    const [targ] = await search('sandbox-targ', 'login', 'kwrzosek_dev');
+    assert.equal(gitpub!.profile!.location, 'Bydgoszcz');
+    assert.equal(targ!.profile!.location, 'Bydgoszcz');
+    assert.deepEqual(targ!.profile!.phones, ['500000201']);
+
+    const [offer] = await search('sandbox-targ', 'nick', 'igor_baran');
+    const social = (await search('sandbox-spolecznosc', 'nick', 'igor_baran')).find((document) => document.url.endsWith('/u/igor_baran'))!;
+    for (const document of [offer!, social]) {
+      assert.equal(document.profile!.displayName, 'Igor Baran');
+      assert.equal(document.profile!.location, 'Lublin');
+      assert.deepEqual(document.profile!.emails, ['igor.baran@handel.example']);
+      assert.deepEqual(document.profile!.phones, ['500000811']);
+    }
+  });
+
+  test('imiennik: to samo imię i nazwisko, inna miejscowość i inny e-mail', async () => {
+    const documents = [
+      ...(await search('sandbox-gitpub', 'full_name', 'Kacper Wrzosek')),
+      ...(await search('sandbox-spolecznosc', 'full_name', 'Kacper Wrzosek')),
+    ];
+    const programmer = documents.find((document) => document.author === 'kwrzosek_dev')!;
+    const angler = documents.find((document) => document.author === 'wrzosek_ryby')!;
+    assert.equal(programmer.profile!.displayName, angler.profile!.displayName);
+    assert.equal(programmer.profile!.location, 'Bydgoszcz');
+    assert.equal(angler.profile!.location, 'Olsztyn');
+    assert.deepEqual(angler.profile!.emails, ['wrzosek.ryby@jeziora.example']);
+    assert.notDeepEqual(programmer.profile!.emails, angler.profile!.emails);
+    // Dokument dopasowany po samym nazwisku nie podsuwa dalszych tropów.
+    assert.equal(angler.identityMatch, 'name_only');
+    assert.equal(angler.discoveredIdentifiers, undefined);
+  });
+
+  test('pospolity nick „marek88": dwie różne osoby w dwóch serwisach', async () => {
+    const [targ] = await search('sandbox-targ', 'nick', 'marek88');
+    const [forum] = await search('sandbox-forum', 'nick', 'marek88');
+    assert.equal(targ!.profile!.displayName, 'Marek Sikora');
+    assert.equal(forum!.profile!.displayName, 'Marek Wrona');
+    assert.equal(targ!.profile!.location, 'Poznań');
+    assert.equal(forum!.profile!.location, 'Suwałki');
+    assert.deepEqual(targ!.profile!.emails, ['marek.sikora@skup.example']);
+    assert.deepEqual(forum!.profile!.emails, ['m.wrona@suwalki-net.example']);
+    assert.deepEqual(addressesOf(targ!), [MARKET_ADDR.marekBtc]);
+    assert.deepEqual(addressesOf(forum!), [MARKET_ADDR.marekTron]);
+    // Łącznik niczego nie przesądza: oba trafienia to „ten sam nick"; rozdziela je analiza po atrybutach.
+    assert.equal(targ!.identityMatch, 'exact_identifier');
+    assert.equal(forum!.identityMatch, 'exact_identifier');
+  });
+});
+
 describe('typowanie (discover) w piaskownicy', () => {
   test('metodę discover mają targ, forum, społeczność i komunikator', () => {
     assert.deepEqual(
@@ -111,14 +163,14 @@ describe('typowanie (discover) w piaskownicy', () => {
 
   test('pełna lista targu obejmuje kilkanaście osób; pozostałe serwisy zwracają swoje rodzaje publikacji', async () => {
     const all = await (byId('sandbox-targ') as DiscoveringConnector).discover(context, 50);
-    assert.equal(all.length, 18);
-    assert.equal(new Set(all.map((document) => document.author)).size, 18);
-    assert.equal(all.filter((document) => addressesOf(document).length > 0).length, 16);
+    assert.equal(all.length, 19);
+    assert.equal(new Set(all.map((document) => document.author)).size, 19);
+    assert.equal(all.filter((document) => addressesOf(document).length > 0).length, 17);
 
     const forum = await (byId('sandbox-forum') as DiscoveringConnector).discover(context, 3);
-    assert.deepEqual(forum.map((document) => document.author), ['nocny_gornik', 'mz_mineraly', 'taryfa_nocna']);
-    assert.deepEqual(addressesOf(forum[1]!), [MARKET_ADDR.marcelBtc]);
-    assert.equal(forum[1]!.category, 'forum_post');
+    assert.deepEqual(forum.map((document) => document.author), ['marek88', 'nocny_gornik', 'mz_mineraly']);
+    assert.deepEqual(addressesOf(forum[2]!), [MARKET_ADDR.marcelBtc]);
+    assert.equal(forum[2]!.category, 'forum_post');
 
     const chat = await (byId('sandbox-komunikator') as DiscoveringConnector).discover(context, 4);
     assert.ok(chat.every((document) => document.category === 'settlement_message'));

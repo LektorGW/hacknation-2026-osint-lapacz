@@ -7,7 +7,7 @@ import type { ConnectorContext, Identifier, ProfileAttributes, SourceConnector, 
 import { findEmails, htmlToText } from './html.ts';
 import { parseJson } from './http.ts';
 import type { HttpClient, HttpSession } from './http.ts';
-import { dedupeIdentifiers, discoveredField, handleFromIdentifier, profileUrlIdentifier } from './identity.ts';
+import { dedupeIdentifiers, discoveredField, handleFromIdentifier, isTechnicalEmail, profileUrlIdentifier } from './identity.ts';
 
 const API = 'https://api.github.com';
 const SERVICE = 'github.com';
@@ -119,7 +119,7 @@ export function createGithubConnector(http: HttpClient, config: GithubConfig = {
         ...(profileUrls.length > 0 ? { urls: profileUrls } : {}),
         ...(user.location ? { location: user.location } : {}),
         ...(user.avatar_url ? { avatarUrl: user.avatar_url } : {}),
-        ...(user.bio ? { bio: user.bio } : {}),
+        ...(user.bio || user.company ? { bio: [user.bio, user.company && `Firma: ${user.company}`].filter(Boolean).join(' · ') } : {}),
         ...(user.created_at ? { createdAt: user.created_at } : {}),
       };
       const base = {
@@ -159,7 +159,7 @@ export function createGithubConnector(http: HttpClient, config: GithubConfig = {
         text: profileText,
         fetchedAt: new Date().toISOString(),
         publishedAt: user.updated_at,
-        ...discoveredField(dedupeIdentifiers(discovered, identifier)),
+        ...discoveredField(dedupeIdentifiers(discovered, identifier, [SERVICE])),
       });
 
       // README profilu leży w repozytorium o nazwie równej loginowi.
@@ -197,6 +197,96 @@ export function createGithubConnector(http: HttpClient, config: GithubConfig = {
 
       context.log(`${LABEL}: „${login}" — dokumentów: ${documents.length} (zapytań: ${session.used}).`);
       return documents;
+    },
+  };
+}
+
+interface GithubEvent {
+  type?: string;
+  created_at?: string;
+  repo?: { name?: string };
+  payload?: { commits?: { author?: { name?: string; email?: string } }[] };
+}
+
+/** Autorzy commitów z publicznych zdarzeń PushEvent, od najczęstszego; adresy „noreply" pominięte. */
+export function commitAuthors(events: GithubEvent[]): { name: string; email: string; commits: number; repos: string[] }[] {
+  const authors = new Map<string, { name: string; email: string; commits: number; repos: Set<string> }>();
+  for (const event of events) {
+    if (event?.type !== 'PushEvent') continue;
+    for (const commit of event.payload?.commits ?? []) {
+      const email = commit?.author?.email?.trim().toLowerCase();
+      const name = commit?.author?.name?.trim();
+      if (!email || !name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || isTechnicalEmail(email)) continue;
+      const entry = authors.get(email) ?? { name, email, commits: 0, repos: new Set<string>() };
+      entry.commits += 1;
+      if (event.repo?.name) entry.repos.add(event.repo.name);
+      authors.set(email, entry);
+    }
+  }
+  return [...authors.values()]
+    .sort((a, b) => b.commits - a.commits)
+    .map((entry) => ({ ...entry, repos: [...entry.repos] }));
+}
+
+/**
+ * Publiczna aktywność: imię, nazwisko i e-mail, którymi użytkownik podpisuje commity.
+ * Osobny łącznik z jednym żądaniem; `service` pozostaje `github.com`.
+ */
+export function createGithubActivityConnector(http: HttpClient, config: GithubConfig = {}): SourceConnector {
+  const id = 'live-github-activity';
+  const label = 'GitHub — aktywność';
+  return {
+    id,
+    service: SERVICE,
+    label,
+    description:
+      'Publiczne zdarzenia użytkownika GitHub (api.github.com/users/<login>/events/public, ostatnie 100): z wypchnięć kodu (PushEvent) ' +
+      'odczytywane są imię, nazwisko i e-mail autora commitów; adresy „noreply" są pomijane. Jedno żądanie na identyfikator. ' +
+      'Uwaga: GitHub nie zawsze dołącza listę commitów do zdarzeń — wtedy wynik jest pusty.',
+    accepts: ['login', 'nick', 'profile_url'],
+    enabledByDefault: true,
+
+    async search(identifier, context) {
+      const login = loginFrom(identifier, [SERVICE]);
+      if (!login) return [];
+      const session = openSession(http, context, label, config);
+      const response = await session.get(`${API}/users/${login}/events/public?per_page=100`, {
+        headers: apiHeaders('application/vnd.github+json', config),
+        quietMissing: true,
+      });
+      const events = response ? parseJson<GithubEvent[]>(response.text) : null;
+      const authors = Array.isArray(events) ? commitAuthors(events) : [];
+      if (authors.length === 0) {
+        if (!session.refused) context.log(`${label}: „${login}" — brak danych autora commitów w publicznych zdarzeniach.`);
+        return [];
+      }
+      // W wypchnięciach bywają commity innych osób (scalenia) — do profilu trafia tylko najczęstszy autor.
+      const main = authors[0]!;
+      const text = [
+        `Publiczna aktywność użytkownika GitHub ${login} — autorzy commitów w wypchnięciach kodu (PushEvent).`,
+        'Źródło: api.github.com/users/<login>/events/public; dane autora pochodzą z metadanych commitów, które użytkownik sam opublikował.',
+        ...authors.slice(0, 5).map((author) => `- ${author.name} <${author.email}> — commitów: ${author.commits}${author.repos.length > 0 ? ` (repozytoria: ${author.repos.slice(0, 3).join(', ')})` : ''}`),
+        `Do profilu przyjęto najczęstszego autora: ${main.name} <${main.email}>.`,
+      ].join('\n');
+      const newest = (events ?? []).map((event) => event?.created_at).filter((time): time is string => Boolean(time)).sort().at(-1);
+      context.log(`${label}: „${login}" — autorów commitów: ${authors.length}; najczęstszy: ${main.name}.`);
+      return [
+        {
+          connectorId: id,
+          service: SERVICE,
+          url: `https://github.com/${login}?tab=overview`,
+          title: `Aktywność GitHub ${login}: autor commitów`,
+          text,
+          fetchedAt: new Date().toISOString(),
+          author: login,
+          category: 'own_profile',
+          identityMatch: 'exact_identifier',
+          matchedIdentifier: identifier,
+          profile: { handle: login, displayName: main.name, emails: [main.email] },
+          ...(newest ? { publishedAt: newest } : {}),
+          ...discoveredField(dedupeIdentifiers([{ type: 'email', value: main.email }], identifier)),
+        },
+      ];
     },
   };
 }

@@ -19,7 +19,7 @@ const ENS_NAME = /^(?:[a-z0-9_-]+\.)+[a-z]{2,}$/;
 const ENS_LABEL = /^[a-z0-9_-]{3,40}$/;
 
 /** Rekordy tekstowe, które pokazujemy i porównujemy z identyfikatorem. */
-const TEXT_KEYS = ['github', 'twitter', 'telegram', 'reddit', 'keybase', 'discord', 'email', 'url', 'description', 'location', 'farcaster', 'lens'];
+const TEXT_KEYS = ['name', 'github', 'twitter', 'telegram', 'reddit', 'keybase', 'discord', 'email', 'url', 'description', 'location', 'farcaster', 'lens'];
 const KEY_ALIASES: Record<string, string> = {
   'com.github': 'github',
   'com.twitter': 'twitter',
@@ -56,7 +56,11 @@ export function parseEnsResponse(json: unknown): EnsRecord | null {
     const cleaned = text(value);
     if (cleaned && TEXT_KEYS.includes(key) && !record.texts[key]) record.texts[key] = cleaned;
   };
-  for (const [key, value] of Object.entries(data)) addText(key, value);
+  for (const [key, value] of Object.entries(data)) {
+    // Na najwyższym poziomie `name` bywa nazwą ENS (ensideas), a nie rekordem tekstowym z imieniem.
+    if (key === 'name' && (typeof value !== 'string' || ENS_NAME.test(value.trim().toLowerCase()))) continue;
+    addText(key, value);
+  }
   for (const nested of [data.records, data.texts, data.text]) {
     if (nested && typeof nested === 'object') for (const [key, value] of Object.entries(nested)) addText(key, value);
   }
@@ -231,6 +235,7 @@ export function createEnsConnector(http: HttpClient): SourceConnector {
         matchedIdentifier: identifier,
         profile: {
           handle: name,
+          ...(record.texts.name ? { displayName: record.texts.name } : {}),
           ...(record.texts.email ? { emails: [record.texts.email.toLowerCase()] } : {}),
           ...(profileUrls(record).length > 0 ? { urls: profileUrls(record) } : {}),
           ...(record.texts.location ? { location: record.texts.location } : {}),

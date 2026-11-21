@@ -327,6 +327,8 @@ export interface Dossier {
     knownNames: string[];
     identifiers: { identifier: Identifier; origin: 'analyst' | 'discovered'; sourceUrl?: string }[];
   };
+  /** Kandydaci na rzeczywistą osobę, malejąco po prawdopodobieństwie; pierwszy to ustalenie główne. */
+  persons: PersonCandidate[];
   profiles: ProfileCard[];
   findings: Finding[];
   relatedPersons: RelatedPerson[];
@@ -439,4 +441,33 @@ export interface ServiceLink {
    * identyfikatory transakcji z datami i kwotami, nazwy kont.
    */
   requestHints: string[];
+}
+
+// ---------- Ustalenie rzeczywistej osoby ----------
+
+/**
+ * Kandydat na rzeczywistą osobę stojącą za identyfikatorami — wynik automatycznego
+ * łączenia profili, bez udziału analityka. Kilku kandydatów oznacza, że ślady mogą
+ * należeć do różnych osób (np. imiennicy albo ten sam nick u dwóch osób).
+ */
+export interface PersonCandidate {
+  id: string;
+  /** Najbardziej prawdopodobne imię i nazwisko; brak, gdy źródła go nie ujawniają. */
+  fullName?: string;
+  /** Inne zapisy nazwy spotkane w profilach. */
+  nameVariants: string[];
+  /** Prawdopodobieństwo 0–100, że to osoba, której dotyczy sprawa. */
+  probability: number;
+  reasons: string[];
+  /** Cechy ustalone ze źródeł wraz z liczbą niezależnych potwierdzeń. */
+  attributes: {
+    kind: 'email' | 'phone' | 'location' | 'website' | 'handle' | 'organization' | 'registry_entry';
+    value: string;
+    /** Usługi, w których cecha wystąpiła. */
+    sources: string[];
+  }[];
+  /** Profile zaliczone do tej osoby (`ProfileCard.id`). */
+  profileIds: string[];
+  /** Adresy przypisane tej osobie (`network:address`) z łącznym prawdopodobieństwem. */
+  addresses: { key: string; probability: number }[];
 }

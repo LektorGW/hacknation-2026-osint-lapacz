@@ -213,6 +213,24 @@ describe('pomocnicze', () => {
       { type: 'profile_url', value: 'https://www.strona.example' },
       { type: 'login', value: 'ktos' },
     ]);
+    // Adresy „noreply" i odnośniki do samego serwisu nie są tropami.
+    assert.deepEqual(
+      dedupeIdentifiers(
+        [
+          { type: 'email', value: '123+ktos@users.noreply.github.com' },
+          { type: 'email', value: 'no-reply@serwis.example' },
+          { type: 'email', value: 'ktos@poczta.example' },
+          { type: 'profile_url', value: 'https://www.serwis.example/inny' },
+          { type: 'profile_url', value: 'https://gdzie-indziej.example/ktos' },
+        ],
+        undefined,
+        ['serwis.example'],
+      ),
+      [
+        { type: 'email', value: 'ktos@poczta.example' },
+        { type: 'profile_url', value: 'https://gdzie-indziej.example/ktos' },
+      ],
+    );
   });
 
   test('robots.txt: grupa „*", najdłuższa reguła, wzorce', () => {
@@ -239,6 +257,7 @@ describe('łączniki live — konfiguracja', () => {
       'live-ens',
       'live-github',
       'live-github-gists',
+      'live-github-activity',
       'live-gravatar',
       'live-fediverse',
       'live-telegram',
@@ -324,7 +343,7 @@ describe('Keybase', () => {
       displayName: 'Kacper Testowy',
       location: 'Gdynia',
       bio: 'Buduję rzeczy.',
-      urls: ['https://twitter.com/kacper_tw', 'https://github.com/kacper-gh', 'http://kacper.example/', 'https://kacper.example'],
+      urls: ['https://twitter.com/kacper_tw', 'https://github.com/kacper-gh', 'https://kacper.example'],
       createdAt: new Date(1_400_000_000_000).toISOString(),
     });
 
@@ -374,6 +393,11 @@ describe('Gravatar', () => {
     preferredUsername: 'kacpert',
     displayName: 'Kacper T.',
     aboutMe: 'Napiwki mile widziane.',
+    currentLocation: 'Gdynia',
+    name: { givenName: 'Kacper', familyName: 'Testowy', formatted: 'Kacper Testowy' },
+    emails: [{ primary: 'true', value: 'kontakt@kacper.example' }],
+    phoneNumbers: [{ type: 'mobile', value: '500 000 201' }],
+    thumbnailUrl: 'https://gravatar.com/avatar/abc',
     accounts: [
       { domain: 'github.com', url: 'https://github.com/kacper-gh', verified: true, name: 'GitHub', shortname: 'github' },
       { domain: 'x.com', url: 'https://x.com/niepewny', verified: false, name: 'X' },
@@ -397,13 +421,17 @@ describe('Gravatar', () => {
     assert.deepEqual(document!.discoveredIdentifiers, [
       { type: 'nick', value: 'kacpert' },
       { type: 'profile_url', value: 'https://github.com/kacper-gh' },
+      { type: 'email', value: 'kontakt@kacper.example' },
       { type: 'profile_url', value: 'https://kacper.example/' },
     ]);
     assert.deepEqual(document!.profile, {
       handle: 'kacpert',
-      displayName: 'Kacper T.',
-      emails: [normalized],
+      displayName: 'Kacper Testowy',
+      emails: [normalized, 'kontakt@kacper.example'],
+      phones: ['500000201'],
       urls: ['https://github.com/kacper-gh', 'https://x.com/niepewny', 'https://kacper.example'],
+      location: 'Gdynia',
+      avatarUrl: 'https://gravatar.com/avatar/abc',
       bio: 'Napiwki mile widziane.',
     });
   });
@@ -426,6 +454,7 @@ describe('ENS', () => {
     twitter: 'kacper_tw',
     url: 'https://kacper.example',
     description: 'opis',
+    records: { name: 'Kacper Testowy', location: 'Gdynia', email: 'Kacper@Poczta.example' },
     resolverAddress: '0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63',
     wallets: { eth: ADDR.kacperEth, btc: ADDR.kacperBtc },
   };
@@ -444,8 +473,17 @@ describe('ENS', () => {
     assert.deepEqual(document!.discoveredIdentifiers, [
       { type: 'login', value: 'kacper-gh' },
       { type: 'nick', value: 'kacper_tw' },
+      { type: 'email', value: 'kacper@poczta.example' },
       { type: 'profile_url', value: 'https://kacper.example/' },
     ]);
+    assert.deepEqual(document!.profile, {
+      handle: 'kacper.eth',
+      displayName: 'Kacper Testowy',
+      emails: ['kacper@poczta.example'],
+      urls: ['https://kacper.example', 'https://github.com/kacper-gh', 'https://x.com/kacper_tw'],
+      location: 'Gdynia',
+      bio: 'opis',
+    });
   });
 
   test('nick → <nick>.eth: sama zbieżność nazwy to słabe powiązanie bez dalszych tropów', async () => {
@@ -462,11 +500,8 @@ describe('ENS', () => {
     const [document] = await run('live-ens', 'login', 'Kacper-GH');
     // Właściciel nazwy sam wskazał w blockchainie ten login — potwierdzenie przez źródło.
     assert.equal(document!.identityMatch, 'verified_link');
-    assert.deepEqual(document!.profile, {
-      handle: 'kacper-gh.eth',
-      urls: ['https://kacper.example', 'https://github.com/kacper-gh', 'https://x.com/kacper_tw'],
-      bio: 'opis',
-    });
+    assert.equal(document!.profile!.handle, 'kacper-gh.eth');
+    assert.equal(document!.profile!.displayName, 'Kacper Testowy');
     assert.equal(document!.category, 'cryptographic_proof');
     assert.equal(document!.author, 'kacper-gh.eth');
     assert.ok(document!.discoveredIdentifiers!.some((item) => item.type === 'ens_name' && item.value === 'kacper-gh.eth'));
@@ -507,7 +542,7 @@ describe('GitHub', () => {
     html_url: 'https://github.com/Kacper-GH',
     name: 'Kacper Testowy',
     bio: 'Kontakt: kacper@poczta.example',
-    company: null,
+    company: 'Wentyl sp. z o.o.',
     location: 'Gdynia',
     blog: 'kacper.example',
     email: null,
@@ -542,7 +577,7 @@ describe('GitHub', () => {
       emails: ['kacper@poczta.example'],
       urls: ['https://kacper.example', 'https://x.com/kacper_tw'],
       location: 'Gdynia',
-      bio: 'Kontakt: kacper@poczta.example',
+      bio: 'Kontakt: kacper@poczta.example · Firma: Wentyl sp. z o.o.',
       createdAt: '2019-01-01T00:00:00Z',
     });
     assert.deepEqual(readme.profile, profile.profile);
@@ -589,6 +624,40 @@ describe('GitHub', () => {
       assert.equal(calls.length, 1);
       assert.match(logs.join('\n'), /limit zapytań GitHub.*ustaw GITHUB_TOKEN/);
     }
+  });
+
+  test('aktywność: imię, nazwisko i e-mail autora commitów; adresy noreply pominięte', async () => {
+    const push = (name: string, email: string, count: number) => ({
+      type: 'PushEvent',
+      created_at: '2026-03-03T10:00:00Z',
+      repo: { name: 'Kacper-GH/wentyl-ctl' },
+      payload: { commits: Array.from({ length: count }, () => ({ sha: 'abc', author: { name, email } })) },
+    });
+    const { run, calls } = setup({
+      'https://api.github.com/users/kacper-gh/events/public?per_page=100': {
+        body: [
+          push('Kacper Testowy', 'Kacper@Poczta.example', 3),
+          push('Kacper-GH', '123+kacper-gh@users.noreply.github.com', 5),
+          push('Ktoś Inny', 'inny@poczta.example', 1),
+          { type: 'WatchEvent', created_at: '2026-04-01T00:00:00Z', payload: {} },
+        ],
+      },
+    });
+    const [document] = await run('live-github-activity', 'login', 'kacper-gh');
+    assert.equal(calls.length, 1);
+    assert.equal(document!.service, 'github.com');
+    assert.equal(document!.author, 'kacper-gh');
+    assert.deepEqual(document!.profile, { handle: 'kacper-gh', displayName: 'Kacper Testowy', emails: ['kacper@poczta.example'] });
+    assert.deepEqual(document!.discoveredIdentifiers, [{ type: 'email', value: 'kacper@poczta.example' }]);
+    assert.match(document!.text, /events\/public/);
+    assert.match(document!.text, /Kacper Testowy <kacper@poczta\.example> — commitów: 3/);
+    assert.doesNotMatch(document!.text, /noreply/);
+    assert.equal(document!.publishedAt, '2026-04-01T00:00:00Z');
+
+    // Zdarzenia bez listy commitów (tak GitHub odpowiada coraz częściej) dają pusty wynik.
+    const empty = setup({ 'https://api.github.com/users/kacper-gh/events/public?per_page=100': { body: [{ type: 'PushEvent', payload: { head: 'abc' } }] } });
+    assert.deepEqual(await empty.run('live-github-activity', 'login', 'kacper-gh'), []);
+    assert.match(empty.logs.join('\n'), /brak danych autora commitów/);
   });
 
   test('gisty: lista z opisami i treść pierwszych plików najwyżej 3 gistów', async () => {
@@ -852,6 +921,56 @@ describe('Strona WWW', () => {
       phones: ['500000201'],
       urls: ['https://www.kacper.example/o-mnie', 'https://mastodon.example/@Kacper', 'https://github.com/kacper-gh'],
     });
+  });
+
+  test('dane właściciela: schema.org Person w JSON-LD, mailto:/tel:, og:title', async () => {
+    const jsonLd = {
+      '@context': 'https://schema.org',
+      '@graph': [
+        { '@type': 'WebSite', name: 'Pracownia' },
+        {
+          '@type': ['Person', 'Thing'],
+          name: 'Kacper Testowy',
+          email: 'mailto:Kacper@Poczta.example',
+          telephone: '+48 500 000 201',
+          address: { '@type': 'PostalAddress', addressLocality: 'Bydgoszcz', addressCountry: 'PL' },
+          sameAs: ['https://github.com/kacper-gh', 'https://www.kacper.example/inna-podstrona'],
+          image: { '@type': 'ImageObject', url: 'https://www.kacper.example/ja.jpg' },
+          description: 'Programista systemów wbudowanych.',
+        },
+      ],
+    };
+    const { run } = setup({
+      'https://www.kacper.example/': {
+        body: `<html><head><title>Pracownia</title><meta property="og:title" content="Pracownia Kacpra">
+          <script type="application/ld+json">{ to nie jest JSON</script>
+          <script type="application/ld+json">${JSON.stringify(jsonLd)}</script></head><body>
+          <p>Zapraszam.</p><a href="mailto:biuro@kacper.example?subject=Zlecenie">napisz</a> <a href="tel:+48500000202">zadzwoń</a>
+          <a href="mailto:noreply@kacper.example">automat</a></body></html>`,
+      },
+    });
+    const [document] = await run('live-www', 'profile_url', 'https://www.kacper.example/');
+    assert.equal(document!.author, 'Kacper Testowy');
+    assert.deepEqual(document!.profile, {
+      displayName: 'Kacper Testowy',
+      emails: ['biuro@kacper.example', 'kacper@poczta.example'],
+      phones: ['+48500000202', '+48500000201'],
+      urls: ['https://www.kacper.example/', 'https://github.com/kacper-gh'],
+      location: 'Bydgoszcz, PL',
+      avatarUrl: 'https://www.kacper.example/ja.jpg',
+      bio: 'Programista systemów wbudowanych.',
+    });
+    assert.deepEqual(document!.discoveredIdentifiers, [
+      { type: 'email', value: 'biuro@kacper.example' },
+      { type: 'email', value: 'kacper@poczta.example' },
+      { type: 'profile_url', value: 'https://github.com/kacper-gh' },
+    ]);
+
+    // Bez danych osoby nazwą właściciela zostaje og:title.
+    const plain = setup({ 'https://inna.example/': { body: '<html><head><meta property="og:title" content="Jan z Radomia"></head><body><p>Witam</p></body></html>' } });
+    const [other] = await plain.run('live-www', 'profile_url', 'https://inna.example/');
+    assert.equal(other!.profile!.displayName, 'Jan z Radomia');
+    assert.equal(other!.author, 'inna.example');
   });
 
   test('zakaz w robots.txt, zły typ treści i awaria robots.txt kończą pustym wynikiem', async () => {

@@ -151,7 +151,10 @@ function toDocument(user: KeybaseUser, identifier: Identifier, foundBy: Query): 
     if (found) discovered.push(found);
   }
 
-  const urls = [...new Set(proofs.map((proof) => proof.service_url).filter((url): url is string => Boolean(url)))];
+  // Ta sama strona potwierdzona przez HTTP i DNS to jeden adres.
+  const urls = dedupeIdentifiers(
+    proofs.map((proof) => ({ type: 'profile_url' as const, value: proof.service_url ?? '' })),
+  ).map((item) => item.value);
   const profile: ProfileAttributes = {
     handle: username,
     ...(user.profile?.full_name ? { displayName: user.profile.full_name } : {}),
@@ -179,6 +182,7 @@ function toDocument(user: KeybaseUser, identifier: Identifier, foundBy: Query): 
       dedupeIdentifiers(
         discovered.filter((item) => item.value.toLowerCase() !== cleanHandle(identifier.value).toLowerCase()),
         identifier,
+        [SERVICE],
       ),
     ),
   };
