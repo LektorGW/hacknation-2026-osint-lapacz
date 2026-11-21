@@ -471,3 +471,61 @@ export interface PersonCandidate {
   /** Adresy przypisane tej osobie (`network:address`) z łącznym prawdopodobieństwem. */
   addresses: { key: string; probability: number }[];
 }
+
+// ---------- Monitoring źródeł ----------
+
+/** Ocena 0–100 z jawnymi przesłankami. */
+export interface ScoredSignal {
+  score: number;
+  reasons: string[];
+}
+
+/**
+ * Publikacja wychwycona przez cykliczny przegląd źródeł: zawiera adres kryptowalutowy
+ * i sygnały, że może dotyczyć obrotu krypto przez osobę związaną z Polską.
+ */
+export interface WatchHit {
+  id: string;
+  detectedAt: string;
+  connectorId: string;
+  service: string;
+  url: string;
+  title: string;
+  author?: string;
+  publishedAt?: string;
+  excerpt: string;
+  /** Rozpoznany język treści (kod ISO 639-1) lub `und`. */
+  language: string;
+  addresses: { address: string; network: Network }[];
+  /** Związek z Polską: język, PLN, polskie miasta, numery +48, BLIK, polskie banki i serwisy. */
+  polishNexus: ScoredSignal;
+  /** Sygnały obrotu wymagającego uwagi: sprzedaż za gotówkę, duże kwoty, oferta bez weryfikacji. */
+  suspicion: ScoredSignal;
+  status: 'new' | 'analyzed' | 'dismissed';
+  /** Wynik automatycznej analizy autora, jeśli została wykonana. */
+  lead?: Lead;
+  caseId?: string;
+}
+
+export interface MonitorSourceStatus {
+  connectorId: string;
+  label: string;
+  service: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  lastError?: string;
+  documentsSeen: number;
+  hits: number;
+}
+
+export interface MonitorStatus {
+  enabled: boolean;
+  everyMinutes: number;
+  /** Od jakiej sumy ocen (związek z Polską i sygnały obrotu) autor jest analizowany automatycznie. */
+  autoAnalyzeThreshold: number;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  running: boolean;
+  sources: MonitorSourceStatus[];
+  totals: { documentsSeen: number; hits: number; analyzed: number; newHits: number };
+}
