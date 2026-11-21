@@ -1,0 +1,16 @@
+{
+  "name": "synthetic-identity-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local synthetic identity resolution and blockchain test environment with 27 portals",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "start": "node server.mjs",
+    "portals": "node server.mjs --portals",
+    "generate": "node scripts/generate.mjs",
+    "wallet-posts": "node scripts/wallet-posts.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check server.mjs && node --check public/app.js"
+  }
+}
