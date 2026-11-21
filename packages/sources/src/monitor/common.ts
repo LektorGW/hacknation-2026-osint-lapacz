@@ -17,6 +17,7 @@ export type MonitorEngine =
   | 'stackexchange'
   | 'hn'
   | 'lemmy'
+  | 'smf-board'
   | 'html-list'
   | 'github-search';
 
@@ -89,6 +90,8 @@ export interface EngineRun {
   context: ConnectorContext;
   /** Minimalny odstęp między żądaniami do hosta tego źródła. */
   intervalMs: number;
+  /** Ile źródeł tego samego hosta bierze udział w przebiegu — do dzielenia limitu żądań na host. */
+  hostQueueSize?: number;
   githubToken?: string;
 }
 
@@ -103,6 +106,8 @@ export interface EngineAdapter {
   problem(source: MonitorSourceConfig): string | null;
   /** Odstęp między żądaniami; domyślnie 1 s. */
   intervalMs?: number;
+  /** Limit żądań na źródło w jednym przebiegu; domyślnie 2. */
+  maxRequests?: number;
   /** Host, do którego idzie pierwsze żądanie — według niego przebieg monitoringu układa kolejki. */
   requestHost(source: MonitorSourceConfig): string;
   /** Klucz do wykrywania powtórzonych wpisów rejestru (ten sam adres pod innym `id`). */
@@ -134,6 +139,15 @@ export const normalizedUrl = (value: string | undefined): string => {
   } catch {
     return (value ?? '').trim().toLowerCase();
   }
+};
+
+/**
+ * Klucz działu forum SMF niezależny od silnika: ten sam dział podany jako kanał RSS,
+ * lista HTML albo wpis `smf-board` to jedno źródło. `null`, gdy adres nie wskazuje działu.
+ */
+export const boardKey = (value: string | undefined): string | null => {
+  const board = /[?;&]board=(\d+)/.exec(value ?? '')?.[1];
+  return board && hostOf(value) ? `board:${hostOf(value)}:${board}` : null;
 };
 
 /** Adres bazowy bez końcowego ukośnika, ze schematem https, gdy go brak. */

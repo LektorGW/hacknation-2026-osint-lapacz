@@ -187,26 +187,26 @@
     "note": "Lista wątków działu i pierwsze strony najnowszych wątków czytane z HTML (forum wyłączyło RSS: HTTP 400). robots.txt forum zawiera tylko wpis Sitemap — niczego nie zabrania."
   },
   {
-    "id": "btt-13",
+    "id": "btt-49",
     "engine": "smf-board",
-    "label": "Bitcointalk — Français",
-    "url": "https://bitcointalk.org/index.php?board=13.0",
+    "label": "Bitcointalk — Français — Place de marché",
+    "url": "https://bitcointalk.org/index.php?board=49.0",
     "language": "fr",
     "region": "FR",
-    "category": "forum_post",
-    "enabled": true,
-    "note": "Lista wątków działu i pierwsze strony najnowszych wątków czytane z HTML (forum wyłączyło RSS: HTTP 400). robots.txt forum zawiera tylko wpis Sitemap — niczego nie zabrania."
-  },
-  {
-    "id": "btt-170",
-    "engine": "smf-board",
-    "label": "Bitcointalk — Italiano — Mercato",
-    "url": "https://bitcointalk.org/index.php?board=170.0",
-    "language": "it",
-    "region": "IT",
     "category": "sale_offer",
     "enabled": true,
-    "note": "Lista wątków działu i pierwsze strony najnowszych wątków czytane z HTML (forum wyłączyło RSS: HTTP 400). robots.txt forum zawiera tylko wpis Sitemap — niczego nie zabrania."
+    "note": "Lista wątków działu i pierwsze strony najnowszych wątków czytane z HTML (forum wyłączyło RSS: HTTP 400). robots.txt forum zawiera tylko wpis Sitemap — niczego nie zabrania. Zamiast działu nadrzędnego 13 (Français), który zawiera wyłącznie wątki przypięte."
+  },
+  {
+    "id": "btt-28",
+    "engine": "smf-board",
+    "label": "Bitcointalk — Italiano (Italian)",
+    "url": "https://bitcointalk.org/index.php?board=28.0",
+    "language": "it",
+    "region": "IT",
+    "category": "forum_post",
+    "enabled": true,
+    "note": "Lista wątków działu i pierwsze strony najnowszych wątków czytane z HTML (forum wyłączyło RSS: HTTP 400). robots.txt forum zawiera tylko wpis Sitemap — niczego nie zabrania. Zamiast działu 170 (Mercato), który zawiera wyłącznie wątki przypięte."
   },
   {
     "id": "btt-155",

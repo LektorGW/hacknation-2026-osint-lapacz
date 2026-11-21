@@ -2,7 +2,7 @@
 // blogi, subreddity (`.rss`). Dla forów SMF (np. Bitcointalk) wystarczy podać `board`.
 
 import { htmlToText } from '../html.ts';
-import { baseUrl, hostOf, normalizedUrl, postText, toIso } from './common.ts';
+import { baseUrl, boardKey, hostOf, normalizedUrl, postText, toIso } from './common.ts';
 import type { EngineAdapter, MonitorPost, MonitorSourceConfig } from './common.ts';
 
 /** Zawartość pierwszego elementu o podanej nazwie; rozwija CDATA i jednokrotnie dekoduje encje XML. */
@@ -101,7 +101,7 @@ export const rssEngine: EngineAdapter = {
   service: (source) => hostOf(source.url),
   problem: (source) => (source.url && hostOf(source.url) ? null : 'brak pola „url"'),
   requestHost: (source) => hostOf(feedUrl(source) ?? ''),
-  addressKey: (source) => normalizedUrl(feedUrl(source) ?? ''),
+  addressKey: (source) => boardKey(feedUrl(source) ?? '') ?? `rss|${normalizedUrl(feedUrl(source) ?? '')}`,
 
   async discover(run) {
     const url = feedUrl(run.source)!;

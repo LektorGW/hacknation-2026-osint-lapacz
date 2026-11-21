@@ -13,6 +13,7 @@ import { discourseEngine } from './discourse.ts';
 import { htmlListEngine } from './html-list.ts';
 import { redditEngine } from './reddit.ts';
 import { rssEngine } from './rss.ts';
+import { smfBoardEngine } from './smf.ts';
 
 export type { HtmlListSelectors, MonitorEngine, MonitorSourceConfig } from './common.ts';
 
@@ -28,6 +29,7 @@ export const MONITOR_ENGINES: Record<MonitorEngine, EngineAdapter> = {
   stackexchange: stackExchangeEngine,
   hn: hnEngine,
   lemmy: lemmyEngine,
+  'smf-board': smfBoardEngine,
   'html-list': htmlListEngine,
   'github-search': githubSearchEngine,
 };
@@ -79,12 +81,14 @@ export function mergeMonitorSources(groups: { file: string; entries: unknown[] }
       }
       const source = entry as MonitorSourceConfig;
       const id = source.id.toLowerCase();
-      const address = `${source.engine}|${MONITOR_ENGINES[source.engine].addressKey(source)}`;
+      const address = MONITOR_ENGINES[source.engine].addressKey(source);
       if (ids.has(id)) {
         warnings.push(`${name}: pominięto — „id" powtórzone (pierwsze wystąpienie: ${ids.get(id)}).`);
         return;
       }
       if (addresses.has(address)) {
+        // Wyłączony odpowiednik źródła, które już jest w rejestrze (np. niedziałający kanał RSS tego samego działu), znika bez ostrzeżenia.
+        if (source.enabled === false) return;
         warnings.push(`${name}: pominięto — to samo źródło co ${addresses.get(address)}.`);
         return;
       }
@@ -149,12 +153,20 @@ export interface MonitorDiscovery {
   messages: string[];
 }
 
+/** Stan wspólny dla źródeł jednego przebiegu. */
+export interface MonitorPassState {
+  /** Hosty, które odmówiły w tym przebiegu. */
+  refusedHosts?: Set<string>;
+  /** Ile źródeł tego samego hosta bierze udział w przebiegu. */
+  hostQueueSize?: number;
+}
+
 /** Łącznik monitoringu: zwykły `DiscoveringConnector` z danymi potrzebnymi do układania przebiegu. */
 export interface MonitorConnector extends DiscoveringConnector {
   source: MonitorSourceConfig;
   /** Host pierwszego żądania — źródła tego samego hosta idą w jednej kolejce. */
   requestHost: string;
-  discoverDetailed(context: ConnectorContext, limit: number, refusedHosts?: Set<string>): Promise<MonitorDiscovery>;
+  discoverDetailed(context: ConnectorContext, limit: number, pass?: MonitorPassState): Promise<MonitorDiscovery>;
 }
 
 /** Tworzy po jednym łączniku dla każdego włączonego wpisu rejestru (wpisy błędne i powtórzone są pomijane z ostrzeżeniem). */
@@ -167,17 +179,18 @@ export function createMonitorConnectors(http: HttpClient, sources: MonitorSource
 function createConnector(http: HttpClient, source: MonitorSourceConfig, engine: EngineAdapter, options: MonitorOptions): MonitorConnector {
   const id = `${MONITOR_PREFIX}${source.id}`;
   const onlyWithAddresses = source.onlyWithAddresses ?? options.onlyWithAddresses ?? false;
-  const start = (context: ConnectorContext, refusedHosts?: Set<string>): EngineRun => ({
+  const start = (context: ConnectorContext, pass: MonitorPassState = {}): EngineRun => ({
     source,
     http,
     context,
-    session: http.session(context, { label: source.label, limit: MAX_REQUESTS_PER_RUN, ...(refusedHosts ? { refusedHosts } : {}) }),
+    session: http.session(context, { label: source.label, limit: engine.maxRequests ?? MAX_REQUESTS_PER_RUN, ...(pass.refusedHosts ? { refusedHosts: pass.refusedHosts } : {}) }),
+    ...(pass.hostQueueSize ? { hostQueueSize: pass.hostQueueSize } : {}),
     intervalMs: engine.intervalMs ?? FORUM_INTERVAL_MS,
     ...(options.githubToken ? { githubToken: options.githubToken } : {}),
   });
   const tags = [source.language && `język: ${source.language}`, source.region && `region: ${source.region}`].filter(Boolean).join(', ');
 
-  async function discoverDetailed(context: ConnectorContext, limit: number, refusedHosts?: Set<string>): Promise<MonitorDiscovery> {
+  async function discoverDetailed(context: ConnectorContext, limit: number, pass?: MonitorPassState): Promise<MonitorDiscovery> {
     const wanted = Math.max(1, Math.min(Math.floor(limit) || MAX_DISCOVER, MAX_DISCOVER));
     const messages: string[] = [];
     const logging: ConnectorContext = {
@@ -187,7 +200,7 @@ function createConnector(http: HttpClient, source: MonitorSourceConfig, engine: 
         context.log(message);
       },
     };
-    const run = start(logging, refusedHosts);
+    const run = start(logging, pass);
     try {
       const posts = await engine.discover(run, wanted);
       const documents = toDocuments(id, source, posts, wanted, onlyWithAddresses);
@@ -246,10 +259,17 @@ export interface MonitorSourcesSummary {
   hosts: number;
   /** Odrębne społeczności wśród włączonych źródeł: host forum, subreddit, kanał, społeczność Lemmy na instancji. */
   communities: number;
+  /** To samo po odjęciu wpisów oznaczonych w `note` jako „niska trafność" / „niższa trafność". */
+  relevantEntries: number;
+  relevantHosts: number;
+  relevantCommunities: number;
   byEngine: Record<string, number>;
   byLanguage: Record<string, number>;
   byRegion: Record<string, number>;
 }
+
+/** Wpis oznaczony przez badacza jako mało trafny (ogólne forum, powtórzony strumień federowanego hashtagu). */
+export const isLowRelevance = (source: MonitorSourceConfig): boolean => /ni(?:ska|[zż]sza)\s+trafno[sś][cć]/i.test(source.note ?? '');
 
 /** Host źródła: dla forów i kanałów host strony, dla Reddita i Telegrama jeden wspólny, dla Mastodona i Lemmy — instancja. */
 export function monitorSourceHost(source: MonitorSourceConfig): string {
@@ -272,6 +292,7 @@ export function monitorSourceCommunity(source: MonitorSourceConfig): string {
  */
 export function summarizeMonitorSources(sources: MonitorSourceConfig[]): MonitorSourcesSummary {
   const enabled = sources.filter((source) => source.enabled !== false && MONITOR_ENGINES[source.engine]);
+  const relevant = enabled.filter((source) => !isLowRelevance(source));
   const count = (key: (source: MonitorSourceConfig) => string): Record<string, number> => {
     const totals: Record<string, number> = {};
     for (const source of enabled) totals[key(source)] = (totals[key(source)] ?? 0) + 1;
@@ -282,6 +303,9 @@ export function summarizeMonitorSources(sources: MonitorSourceConfig[]): Monitor
     enabledEntries: enabled.length,
     hosts: new Set(enabled.map(monitorSourceHost).filter(Boolean)).size,
     communities: new Set(enabled.map(monitorSourceCommunity).filter(Boolean)).size,
+    relevantEntries: relevant.length,
+    relevantHosts: new Set(relevant.map(monitorSourceHost).filter(Boolean)).size,
+    relevantCommunities: new Set(relevant.map(monitorSourceCommunity).filter(Boolean)).size,
     byEngine: count((source) => source.engine),
     byLanguage: count((source) => source.language?.toLowerCase() ?? 'nieokreślony'),
     byRegion: count((source) => source.region ?? 'nieokreślony'),
@@ -372,7 +396,7 @@ export async function runMonitorPass(connectors: SourceConnector[], options: Mon
         continue;
       }
       const before = Date.now();
-      const found = await connector.discoverDetailed({ signal, log: () => undefined }, limit, refusedHosts);
+      const found = await connector.discoverDetailed({ signal, log: () => undefined }, limit, { refusedHosts, hostQueueSize: queues.get(host)!.length });
       const status: MonitorPassStatus =
         found.documents.length > 0
           ? 'ok'

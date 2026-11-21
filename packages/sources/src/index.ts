@@ -21,6 +21,7 @@ import { createWwwConnector } from './www.ts';
 export { htmlToText } from './html.ts';
 export type { Fetcher } from './http.ts';
 export {
+  isLowRelevance,
   listMonitorConnectors,
   loadMonitorSources,
   mergeMonitorSources,
@@ -38,6 +39,7 @@ export type {
   MonitorEngine,
   MonitorPassOptions,
   MonitorPassResult,
+  MonitorPassState,
   MonitorPassStatus,
   MonitorPassSummary,
   MonitorRegistry,

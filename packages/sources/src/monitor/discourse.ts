@@ -89,7 +89,7 @@ export const discourseEngine: EngineAdapter = {
   service: (source) => hostOf(source.url),
   problem: (source) => (source.url && hostOf(source.url) ? null : 'brak pola „url"'),
   requestHost: (source) => hostOf(source.url),
-  addressKey: (source) => normalizedUrl(source.url),
+  addressKey: (source) => `discourse|${normalizedUrl(source.url)}`,
 
   async discover(run) {
     const base = baseUrl(run.source.url!);

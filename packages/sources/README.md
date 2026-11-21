@@ -93,6 +93,7 @@ Cykliczny monitoring korzysta z łączników tworzonych z **rejestru źródeł**
 | `stackexchange` | `site` | `api.stackexchange.com/2.3/questions?order=desc&sort=creation&site={site}&filter=withbody&pagesize=20` | `/search/advanced`, `/users?inname=` |
 | `hn` | `query` | `hn.algolia.com/api/v1/search_by_date?query={query}&tags=comment&hitsPerPage=20` | fraza w cudzysłowie, `tags=author_<nick>` |
 | `lemmy` | `instance`, `community` | `https://{instance}/api/v3/post/list?community_name={community}&sort=New&limit=20` | — |
+| `smf-board` | `url` działu (`…index.php?board=<id>.0`) | `robots.txt`, lista wątków działu i pierwsze strony najwyżej 5 najnowszych nieprzypiętych wątków (Bitcointalk wyłączył RSS); min. 2 s odstępu, najwyżej 6 żądań na dział i ok. 40 na host na przebieg | — |
 | `html-list` | `url`, `selectors` (`item`, `link`, opcjonalnie `author`, `date`) | `robots.txt` (raz na 6 godzin na host), potem strona listy wątków | — |
 | `github-search` | `query` | `api.github.com/search/issues` — tylko z tokenem | — |
 
@@ -111,13 +112,36 @@ const numbers = summarizeMonitorSources(loadMonitorSources().sources); // { entr
 
 `runMonitorPass` to oszczędny przebieg po wszystkich źródłach: jedno żądanie na źródło (drugie tylko jako zapas dla Discourse i Reddita), kolejka na host, najwyżej `concurrency` hostów naraz, odstęp między żądaniami do hosta co najmniej 1 s (Reddit i t.me: 2 s), łączny budżet czasu. Odmowa hosta (403/429) kończy resztę jego kolejki w danym przebiegu; błędy 5xx i przekroczenia czasu dają pusty wynik z wpisem w wynikach — nigdy wyjątek.
 
-`summarizeMonitorSources` podaje trzy liczby: odrębne hosty i odrębne społeczności wśród wpisów włączonych oraz liczbę wpisów. Host to host strony (Reddit i Telegram — po jednym; Mastodon i Lemmy — instancja); społeczność to host forum, subreddit, kanał Telegram albo społeczność Lemmy na instancji.
+Ten sam dział forum SMF podany kilkoma sposobami (kanał RSS, lista HTML, `smf-board`) to jedno źródło; wyłączony odpowiednik wpisu, który już jest w rejestrze, znika przy scalaniu bez ostrzeżenia.
+
+`summarizeMonitorSources` podaje trzy liczby: odrębne hosty i odrębne społeczności wśród wpisów włączonych oraz liczbę wpisów — oraz te same trzy liczby po odjęciu wpisów, których `note` zawiera „niska trafność” lub „niższa trafność” (`relevantHosts`, `relevantCommunities`, `relevantEntries`). Host to host strony (Reddit i Telegram — po jednym; Mastodon i Lemmy — instancja); społeczność to host forum, subreddit, kanał Telegram albo społeczność Lemmy na instancji.
 
 ### Monitoring: sprawdzone źródła
 
 Aktualny stan rejestru i wynik ostatniej próby na żywo zapisuje `node scripts/monitor-check.ts` w pliku [`config/monitor-sources/STATUS.md`](config/monitor-sources/STATUS.md).
 
-<!-- MONITOR-STATUS -->
+Próba z 2026-11-21 (jeden przebieg, limit 20 postów na źródło, 8 hostów naraz, 162 s, 876 żądań):
+
+| | Odrębne hosty | Odrębne społeczności | Wpisy |
+|---|---|---|---|
+| Rejestr — wpisy włączone | 609 | 734 | 843 (wszystkich: 992) |
+| Rejestr — bez wpisów o niskiej trafności | 528 | 653 | 760 |
+| Odpowiedziały w próbie (zwróciły publikacje) | 599 | 724 | 831 |
+| Odpowiedziały w próbie — bez wpisów o niskiej trafności | 518 | 643 | 749 |
+
+| Silnik | Wpisy włączone | Odpowiedziały | Publikacje | Z adresem | Żądania |
+|---|---|---|---|---|---|
+| `discourse` | 304 | 303 | 5819 | 247 | 317 |
+| `rss` | 202 | 196 | 3288 | 11 | 202 |
+| `mastodon-tag` | 133 | 132 | 2185 | 4 | 133 |
+| `telegram` | 82 | 82 | 1499 | 28 | 82 |
+| `lemmy` | 71 | 71 | 1105 | 1 | 71 |
+| `smf-board` (Bitcointalk) | 20 | 19 | 380 | 18 | 40 |
+| `stackexchange` | 17 | 14 | 280 | 6 | 17 |
+| `hn` | 14 | 14 | 229 | 11 | 14 |
+| `reddit` | 0 (77 wyłączonych) | — | — | — | — |
+
+Reddit blokuje tę sieć (404 / przekierowanie na logowanie / 403), więc wszystkie 77 subredditów jest w rejestrze wyłączonych; silnik jest gotowy i przetestowany na atrapach. Pełna lista źródeł, błędów i ostrzeżeń rejestru jest w `STATUS.md`.
 
 ## Zasady wobec źródeł
 

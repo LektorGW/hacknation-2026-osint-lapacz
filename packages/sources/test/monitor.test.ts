@@ -23,6 +23,7 @@ import {
 import type { MonitorSourceConfig } from '../src/index.ts';
 import { looseDate, selectAll } from '../src/monitor/html-list.ts';
 import { parseFeed } from '../src/monitor/rss.ts';
+import { parseSmfBoard, parseSmfTopic, smfDate } from '../src/monitor/smf.ts';
 
 interface Route {
   status?: number;
@@ -569,6 +570,142 @@ describe('silnik html-list', () => {
   });
 });
 
+// ---------- smf-board (Bitcointalk) ----------
+
+describe('silnik smf-board', () => {
+  const BASE = 'https://smf.example';
+  // Fragmenty odwzorowują prawdziwy układ stron Bitcointalk (SMF 1.1); dane są fikcyjne.
+  const row = (topic: number, title: string, starter: string, userId: number, sticky = false) => `
+    <tr>
+      <td class="windowbg2 leftimg" valign="middle" align="center" width="5%"><img src="${BASE}/Themes/custom1/images/topic/normal_post.gif" alt="" /></td>
+      <td class="windowbg3" valign="middle" >
+        ${sticky ? `<img src="${BASE}/Themes/custom1/images/icons/show_sticky.gif" align="right" alt="" id="stickyicon${topic}" style="margin: 0;" />` : ''}
+        <span id="msg_${topic}9"><a href="${BASE}/index.php?topic=${topic}.0">${title}</a></span>
+        <small id="pages${topic}9">&#171; <a href="${BASE}/index.php?topic=${topic}.0">1</a> <a href="${BASE}/index.php?topic=${topic}.20">2</a> &#187;</small>
+      </td>
+      <td class="windowbg2" valign="middle" width="14%"><a href="${BASE}/index.php?action=profile;u=${userId}" title="View the profile of ${starter}">${starter}</a></td>
+      <td class="windowbg3" valign="middle" width="4%" align="center">12</td>
+      <td class="windowbg2 lastpostcol" valign="middle" width="22%">
+        <a href="${BASE}/index.php?topic=${topic}.msg777#new"><img src="${BASE}/Themes/custom1/images/icons/last_post.gif" alt="Last post" /></a>
+        <span class="smalltext">April 13, 2026, 07:18:30 AM<br />by <a href="${BASE}/index.php?action=profile;u=99">ostatni</a></span>
+      </td>
+    </tr>`;
+  const boardHtml = `<html><head><meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1" /></head><body>
+    <table><tr><td><table class="bordercolor">
+      ${row(100, 'Regulamin działu', 'moderator', 1, true)}
+      ${row(201, 'Sprzedam 0,3 BTC &#8212; Krak&#243;w, got&#243;wka', 'kupiec_krk', 7)}
+      ${row(202, 'Kupi&#281; USDT', 'ola_usdt', 8)}
+      ${row(203, 'Trzeci wątek', 'trzeci', 9)}
+    </table></td></tr></table></body></html>`;
+  const post = (topic: number, message: number, author: string, userId: number, subject: string, date: string, body: string, www = '') => `
+    <td valign="top" width="16%" rowspan="2" style="overflow: hidden;" class="poster_info">
+      <b><a href="${BASE}/index.php?action=profile;u=${userId}" title="View the profile of ${author}">${author}</a></b>
+      <div class="smalltext"> Legendary<br /><span class="smalltext"> Online</span><br /><br /> Activity: 4074<br /> Merit: 13668<br />
+        <a href="${BASE}/index.php?action=profile;u=${userId}"><img src="${BASE}/Themes/custom1/images/icons/profile_sm.gif" alt="View Profile" /></a>
+        ${www ? `<a href="${www}" title="strona"><img src="${BASE}/Themes/custom1/images/www_sm.gif" alt="WWW" border="0" /></a>` : ''}<br /></div>
+    </td>
+    <td valign="top" width="85%" height="100%" style="padding: 2px;" class="td_headerandpost">
+      <table width="100%" border="0"><tr>
+        <td valign="middle" width="26"><a href="${BASE}/index.php?topic=${topic}.msg${message}#msg${message}"><img src="${BASE}/Themes/custom1/images/post/xx.gif" alt="" /></a></td>
+        <td valign="middle"><div style="font-weight: bold;" class="subject" id="subject_${message}"><a href="${BASE}/index.php?topic=${topic}.msg${message}#msg${message}">${subject}</a></div>
+          <div class="smalltext">${date}</div></td>
+        <td align="right" class="td_buttons"><a class="message_number" href="${BASE}/index.php?topic=${topic}.msg${message}#msg${message}">#1</a></td>
+      </tr></table>
+      <hr width="100%" size="1" class="hrcolor" />
+      <div class="post">${body}</div>
+    </td>`;
+  const topicHtml = (topic: number) => `<html><body><table><tr>
+    ${post(topic, 5001, 'kupiec_krk', 7, 'Sprzedam 0,3 BTC', 'November 19, 2026, 09:27:06 AM', `Sprzedam za got&#243;wk&#281; w Krakowie.<br />Zaliczka na ${ADDR.kacperBtc}`, 'https://kupiec.example/')}
+    </tr><tr>
+    ${post(topic, 5002, 'pytajacy', 12, 'Re: Sprzedam 0,3 BTC', 'November 19, 2026, 10:00:00 AM', `<div class="quoteheader"><a href="#">Quote from: kupiec_krk</a></div><div class="quote">Zaliczka na ${ADDR.kacperBtc}</div>Czy aktualne?`)}
+    </tr></table></body></html>`;
+
+  test('parser listy działu: tytuły, autorzy, daty, wątki przypięte', () => {
+    const topics = parseSmfBoard(boardHtml, `${BASE}/index.php?board=142.0`);
+    assert.deepEqual(topics.map((topic) => topic.id), ['100', '201', '202', '203']);
+    assert.deepEqual(topics.map((topic) => topic.sticky), [true, false, false, false]);
+    assert.equal(topics[1]!.title, 'Sprzedam 0,3 BTC — Kraków, gotówka');
+    assert.equal(topics[1]!.url, `${BASE}/index.php?topic=201.0`);
+    assert.equal(topics[1]!.author, 'kupiec_krk');
+    assert.equal(topics[1]!.authorUrl, `${BASE}/index.php?action=profile;u=7`);
+    assert.equal(topics[1]!.lastPostAt, '2026-04-13T07:18:30.000Z');
+    assert.equal(smfDate('Today at 07:18:30 AM', new Date('2026-11-21T12:00:00Z')), '2026-11-21T07:18:30.000Z');
+  });
+
+  test('parser wątku: posty z autorem, datą, treścią bez cytatów, adresem posta i stroną WWW autora', () => {
+    const posts = parseSmfTopic(topicHtml(201), `${BASE}/index.php?topic=201.0`, 'tytuł zapasowy');
+    assert.equal(posts.length, 2);
+    const [offer, reply] = posts as [(typeof posts)[number], (typeof posts)[number]];
+    assert.equal(offer.author, 'kupiec_krk');
+    assert.equal(offer.url, `${BASE}/index.php?topic=201.msg5001#msg5001`);
+    assert.equal(offer.title, 'Sprzedam 0,3 BTC');
+    assert.equal(offer.publishedAt, '2026-11-19T09:27:06.000Z');
+    assert.equal(offer.text, `Sprzedam za gotówkę w Krakowie.\nZaliczka na ${ADDR.kacperBtc}`);
+    assert.deepEqual(offer.profile, { urls: [`${BASE}/index.php?action=profile;u=7`, 'https://kupiec.example/'] });
+    assert.deepEqual(offer.discovered, [{ type: 'profile_url', value: 'https://kupiec.example/' }]);
+    // Adres z cytatu nie jest przypisywany odpowiadającemu.
+    assert.equal(reply.author, 'pytajacy');
+    assert.equal(reply.text, 'Czy aktualne?');
+    assert.deepEqual(reply.profile, { urls: [`${BASE}/index.php?action=profile;u=12`] });
+  });
+
+  const source = (board: number): MonitorSourceConfig => ({ id: `smf-${board}`, engine: 'smf-board', label: `Forum SMF — dział ${board}`, url: `${BASE}/index.php?board=${board}.0`, language: 'pl', category: 'sale_offer' });
+  const routes = (boards: number[]) => {
+    const table: Record<string, Route> = { [`${BASE}/robots.txt`]: { body: 'Sitemap: https://smf.example/sitemap.php\n', type: 'text/plain' } };
+    for (const board of boards) table[`${BASE}/index.php?board=${board}.0`] = { body: boardHtml, type: 'text/html; charset=ISO-8859-1' };
+    for (const topic of [201, 202, 203]) table[`${BASE}/index.php?topic=${topic}.0`] = { body: topicHtml(topic), type: 'text/html; charset=ISO-8859-1' };
+    return table;
+  };
+
+  test('discover: lista działu i pierwsze strony najnowszych nieprzypiętych wątków, najwyżej 6 żądań na dział', async () => {
+    const { discover, calls } = setup([source(142)], routes([142]));
+    const documents = await discover('smf-142', 100);
+    // robots.txt + lista + 3 wątki (przypięty pominięty)
+    assert.deepEqual(calls.map((call) => call.url.replace(BASE, '')), ['/robots.txt', '/index.php?board=142.0', '/index.php?topic=201.0', '/index.php?topic=202.0', '/index.php?topic=203.0']);
+    assertDiscovered(documents, 'mon-smf-142');
+    assert.equal(documents.length, 6);
+    assert.ok(documents.every((document) => document.category === 'sale_offer' && document.service === 'smf.example'));
+    const offer = documents.find((document) => document.url.endsWith('topic=201.msg5001#msg5001'))!;
+    assert.deepEqual(addressesOf(offer), [ADDR.kacperBtc]);
+    assert.deepEqual(offer.profile, { handle: 'kupiec_krk', urls: [`${BASE}/index.php?action=profile;u=7`, 'https://kupiec.example/'] });
+    assert.deepEqual(offer.discoveredIdentifiers, [{ type: 'profile_url', value: 'https://kupiec.example/' }]);
+    assert.ok(!documents.some((document) => document.title === 'Regulamin działu'));
+  });
+
+  test('przebieg: limit żądań hosta dzielony między działy (lista zawsze, wątki według budżetu)', async () => {
+    const boards = Array.from({ length: 20 }, (_, index) => 300 + index);
+    const { connectors, calls } = setup(boards.map(source), routes(boards));
+    const pass = await runMonitorPass(connectors, { limit: 50 });
+    assert.ok(pass.results.every((result) => result.status === 'ok'));
+    // 20 działów: 20 list + po 1 wątku = 40 żądań (+ jedno robots.txt, pamiętane z poprzedniego testu albo pobrane raz).
+    const pages = calls.filter((call) => !call.url.endsWith('/robots.txt'));
+    assert.equal(pages.length, 40);
+    assert.equal(pages.filter((call) => call.url.includes('?board=')).length, 20);
+    assert.ok(calls.filter((call) => call.url.endsWith('/robots.txt')).length <= 1);
+    assert.ok(pass.results.every((result) => result.requests <= 6));
+    // Wątki nieotwarte zostają na liście jako tytuły przypisane autorom.
+    const first = pass.results[0]!;
+    assert.ok(first.documents.some((document) => document.title === 'Kupię USDT' && document.author === 'ola_usdt'));
+  });
+
+  test('rejestr: wyłączony kanał RSS tego samego działu znika bez ostrzeżenia; włączony duplikat jest zgłaszany', () => {
+    const merged = mergeMonitorSources([
+      { file: 'core.json', entries: [source(142)] },
+      {
+        file: 'badacz.json',
+        entries: [
+          { id: 'rss-b142', engine: 'rss', label: 'ten sam dział przez RSS', url: `${BASE}/index.php?type=rss;action=.xml;board=142;limit=20`, enabled: false, note: 'HTTP 400' },
+          { id: 'html-b142', engine: 'html-list', label: 'ten sam dział przez HTML', url: `${BASE}/index.php?board=142.0`, selectors: { item: 'tr', link: 'a' } },
+          { id: 'rss-b5', engine: 'rss', label: 'inny dział', url: `${BASE}/index.php?type=rss;action=.xml;board=5`, enabled: false },
+        ],
+      },
+    ]);
+    assert.deepEqual(merged.sources.map((item) => item.id), ['smf-142', 'rss-b5']);
+    assert.equal(merged.warnings.length, 1);
+    assert.match(merged.warnings[0]!, /html-b142.*to samo źródło co core\.json#1/);
+  });
+});
+
 // ---------- Rejestr ----------
 
 describe('rejestr źródeł', () => {
@@ -624,6 +761,7 @@ describe('rejestr źródeł', () => {
       assert.equal(summary.communities, 4);
       assert.deepEqual(summary.byEngine, { discourse: 1, lemmy: 1, 'mastodon-tag': 1, reddit: 1 });
       assert.deepEqual(summary.byLanguage, { nieokreślony: 3, pl: 1 });
+      assert.equal(summary.relevantEntries, 4);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -650,6 +788,19 @@ describe('rejestr źródeł', () => {
     assert.equal(summary.hosts, 5);
     // 2 subreddity + 2 kanały + forum + 2 społeczności Lemmy + instancja Mastodona
     assert.equal(summary.communities, 8);
+    assert.deepEqual([summary.relevantEntries, summary.relevantHosts, summary.relevantCommunities], [10, 5, 8]);
+
+    // Po odjęciu wpisów oznaczonych jako mało trafne (zapis z polskimi znakami albo bez).
+    const marked = sources.map((source) =>
+      source.id === 'i' || source.id === 'j'
+        ? { ...source, note: 'Niska trafność: ogólny strumień federowanego hashtagu.' }
+        : source.id === 'b'
+          ? { ...source, note: 'nizsza trafnosc — subreddit ogólny' }
+          : source,
+    );
+    const filtered = summarizeMonitorSources(marked);
+    assert.deepEqual([filtered.enabledEntries, filtered.hosts, filtered.communities], [10, 5, 8]);
+    assert.deepEqual([filtered.relevantEntries, filtered.relevantHosts, filtered.relevantCommunities], [7, 4, 6]);
   });
 
   test('rejestr z repozytorium wczytuje się bez błędnych wpisów w core.json; łączniki mon-* są domyślnie wyłączone', () => {

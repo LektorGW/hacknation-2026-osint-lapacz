@@ -5,8 +5,8 @@
 
 import { htmlToText } from '../html.ts';
 import { robotsAllows } from '../www.ts';
-import { hostOf, normalizedUrl, toIso } from './common.ts';
-import type { EngineAdapter, HtmlListSelectors, MonitorPost } from './common.ts';
+import { boardKey, hostOf, normalizedUrl, toIso } from './common.ts';
+import type { EngineAdapter, EngineRun, HtmlListSelectors, MonitorPost } from './common.ts';
 
 export interface SelectedElement {
   tag: string;
@@ -98,8 +98,9 @@ export function selectAll(html: string, selector: string): SelectedElement[] {
 /** Data z tekstu komórki listy, np. „April 13, 2026, 07:18:30 AM by ktoś" (czas forum przyjmujemy jako UTC). */
 export function looseDate(text: string | undefined): string | undefined {
   if (!text) return undefined;
-  const direct = toIso(text);
-  if (direct) return direct;
+  // Zapis bez strefy czasowej środowisko uruchomieniowe czytałoby w czasie lokalnym maszyny — wynik zależałby od serwera.
+  const zoned = /(?:Z|GMT|UTC|[+-]\d{2}:?\d{2})\s*$/.test(text.trim()) ? toIso(text) : undefined;
+  if (zoned) return zoned;
   const match = /([A-Z][a-z]+ \d{1,2}, \d{4}),? (\d{1,2}:\d{2}(?::\d{2})?(?: ?[AP]M)?)/.exec(text) ?? /(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)/.exec(text);
   return match ? toIso(`${match[1]} ${match[2]} UTC`) : undefined;
 }
@@ -107,6 +108,30 @@ export function looseDate(text: string | undefined): string | undefined {
 /** Reguły robots.txt pamiętane na hosta — kilkanaście działów jednego forum to jedno pobranie pliku. */
 const ROBOTS_TTL_MS = 6 * 60 * 60 * 1000;
 const robotsCache = new Map<string, { at: number; text: string | null }>();
+
+/**
+ * Czy robots.txt hosta pozwala pobrać adres. Plik jest pobierany najwyżej raz na 6 godzin na host;
+ * przy odmowie, błędzie serwera lub braku połączenia odpowiedź brzmi „nie" (i nic nie jest zapamiętywane).
+ */
+export async function robotsPermit(run: EngineRun, target: string): Promise<boolean> {
+  const url = new URL(target);
+  const cached = robotsCache.get(url.origin);
+  let rules: string | null;
+  if (cached && Date.now() - cached.at < ROBOTS_TTL_MS) {
+    rules = cached.text;
+  } else {
+    const robots = await run.session.get(`${url.origin}/robots.txt`, { minIntervalMs: run.intervalMs, publicOnly: true, quietMissing: true, maxBytes: 200_000 });
+    if (!robots && (run.session.refused || run.session.lastStatus === 0 || run.session.lastStatus >= 500)) return false;
+    // Odpowiedź HTML pod /robots.txt to strona błędu, nie reguły; brak pliku oznacza brak ograniczeń.
+    rules = robots && robots.contentType !== 'text/html' ? robots.text : null;
+    robotsCache.set(url.origin, { at: Date.now(), text: rules });
+  }
+  if (rules !== null && !robotsAllows(rules, `${url.pathname}${url.search}`)) {
+    run.context.log(`${run.source.label}: robots.txt nie pozwala na pobranie ${url.pathname}${url.search} — źródło pominięte.`);
+    return false;
+  }
+  return true;
+}
 
 const textOf = (element: SelectedElement | undefined): string => htmlToText(element?.inner ?? '').replace(/\n/g, ' ').trim();
 
@@ -163,27 +188,12 @@ export const htmlListEngine: EngineAdapter = {
   service: (source) => hostOf(source.url),
   problem: (source) => (!source.url || !hostOf(source.url) ? 'brak pola „url"' : !source.selectors?.item || !source.selectors.link ? 'brak selektorów „item" i „link"' : null),
   requestHost: (source) => hostOf(source.url),
-  addressKey: (source) => normalizedUrl(source.url),
+  addressKey: (source) => boardKey(source.url) ?? `html-list|${normalizedUrl(source.url)}`,
 
   async discover(run) {
     const url = new URL(run.source.url!);
     const options = { minIntervalMs: run.intervalMs, publicOnly: true } as const;
-    const cached = robotsCache.get(url.origin);
-    let rules: string | null;
-    if (cached && Date.now() - cached.at < ROBOTS_TTL_MS) {
-      rules = cached.text;
-    } else {
-      const robots = await run.session.get(`${url.origin}/robots.txt`, { ...options, quietMissing: true, maxBytes: 200_000 });
-      // Odmowa, błąd serwera lub brak połączenia: nie wiemy, czy wolno — nie pobieramy (i nie zapamiętujemy).
-      if (!robots && (run.session.refused || run.session.lastStatus === 0 || run.session.lastStatus >= 500)) return [];
-      // Odpowiedź HTML pod /robots.txt to strona błędu, nie reguły; brak pliku oznacza brak ograniczeń.
-      rules = robots && robots.contentType !== 'text/html' ? robots.text : null;
-      robotsCache.set(url.origin, { at: Date.now(), text: rules });
-    }
-    if (rules !== null && !robotsAllows(rules, `${url.pathname}${url.search}`)) {
-      run.context.log(`${run.source.label}: robots.txt nie pozwala na pobranie ${url.pathname}${url.search} — źródło pominięte.`);
-      return [];
-    }
+    if (!(await robotsPermit(run, url.toString()))) return [];
     const page = await run.session.get(url.toString(), { ...options, allowedContentTypes: ['text/html', 'application/xhtml+xml'] });
     return page ? parseHtmlList(page.text, page.url, run.source.selectors!) : [];
   },

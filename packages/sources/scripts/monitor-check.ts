@@ -84,10 +84,13 @@ const lines: string[] = [
   '| | Odrębne hosty | Odrębne społeczności | Wpisy |',
   '|---|---|---|---|',
   `| Rejestr — wpisy włączone | ${all.hosts} | ${all.communities} | ${all.enabledEntries} (wszystkich: ${all.entries}) |`,
+  `| Rejestr — bez wpisów o niskiej trafności | ${all.relevantHosts} | ${all.relevantCommunities} | ${all.relevantEntries} |`,
   `| Odpowiedziały w próbie (zwróciły publikacje) | ${working.hosts} | ${working.communities} | ${working.enabledEntries} |`,
+  `| Odpowiedziały w próbie — bez wpisów o niskiej trafności | ${working.relevantHosts} | ${working.relevantCommunities} | ${working.relevantEntries} |`,
   '',
   'Host: dla forów, kanałów RSS i Discourse — host strony; Reddit i Telegram to po jednym hoście; dla Mastodona i Lemmy — host instancji. ' +
-    'Społeczność: host forum, subreddit, kanał Telegram, społeczność Lemmy na instancji.',
+    'Społeczność: host forum, subreddit, kanał Telegram, społeczność Lemmy na instancji. ' +
+    'Niska trafność: wpisy, których `note` zawiera „niska trafność” lub „niższa trafność” (ogólne fora niezwiązane z krypto, powtórzone strumienie federowanych hashtagów).',
   '',
   '## Wynik próby',
   '',
