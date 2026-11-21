@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Zapamiętany motyw stosujemy przed pierwszym malowaniem, żeby uniknąć mignięcia.
+      try {
+        document.querySelector('meta[name="color-scheme"]').content = localStorage.getItem('color-scheme') ?? 'light dark';
+      } catch {}
+    </script>
     <title>OŁCyŚ — OSINTowy Łapacz Cyfrowych Śladów</title>
   </head>
   <body>

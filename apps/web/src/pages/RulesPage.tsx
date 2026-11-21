@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react';
 import type { ScoreRules } from '@olcys/core';
 import { api } from '../api.ts';
-import { ErrorBox, Loading } from '../components/common.tsx';
+import { Crumbs, ErrorBox, Loading } from '../components/common.tsx';
+import { IDENTITY_SCORE } from '../dossier.ts';
+import { href } from '../router.ts';
 import { fmtDelta } from '../format.ts';
-import { CATEGORY_LABEL, CLASS_LABEL, IDENTITY_LABEL } from '../labels.ts';
+import { CATEGORY_LABEL, CLASS_LABEL, IDENTITY_DESCRIPTION, IDENTITY_LABEL } from '../labels.ts';
 import { useAsync } from '../useAsync.ts';
 
 type Row = { name: string; id: string; value: ReactNode };
@@ -151,17 +153,126 @@ function Rules({ rules }: { rules: ScoreRules }) {
   );
 }
 
+/** Poziomy oceny, czy profil należy do badanego podmiotu, wraz z korektą Wskaźnika Pewności. */
+function IdentityLevels({ rules }: { rules: ScoreRules }) {
+  const levels = sortedEntries(IDENTITY_SCORE);
+  return (
+    <section className="card">
+      <div className="table-scroll">
+        <table className="table rules-table">
+          <caption>Ocena tożsamości profilu — czy profil należy do badanego podmiotu</caption>
+          <thead>
+            <tr>
+              <th scope="col">Poziom</th>
+              <th scope="col">Kiedy</th>
+              <th scope="col" className="num">Pewność tożsamości</th>
+              <th scope="col" className="num">Korekta wyniku adresu</th>
+            </tr>
+          </thead>
+          <tbody>
+            {levels.map(([level, score]) => (
+              <tr key={level}>
+                <th scope="row">
+                  {IDENTITY_LABEL[level]} <code className="mono rule-id">{level}</code>
+                </th>
+                <td>{IDENTITY_DESCRIPTION[level]}</td>
+                <td className="num">{score}%</td>
+                <td className="num">{fmtDelta(rules.identityAdjustment[level] ?? 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted">
+        Pewność tożsamości pokazuje interfejs na kartach profili; gdy teczkę dostarcza usługa analizy, obowiązują wartości przez nią podane.
+      </p>
+    </section>
+  );
+}
+
+const SECTION_TITLE: Record<string, string> = {
+  priority: 'Jak powstaje priorytet sprawy',
+  persons: 'Jak profile są łączone w osoby i skąd bierze się prawdopodobieństwo',
+  services: 'Jak powstaje siła powiązania z usługą',
+  relations: 'Jak oceniane są powiązania z innymi osobami',
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const asText = (value: unknown) => (typeof value === 'object' ? JSON.stringify(value) : String(value ?? ''));
+
+/** Jedna sekcja zasad: teksty jako akapity, słowniki wartości jako tabele. Treść tylko jako tekst. */
+function RuleSection({ title, data }: { title: string; data: Record<string, unknown> }) {
+  const entries = Object.entries(data);
+  const texts = entries.filter(([, value]) => typeof value === 'string');
+  const scalars = entries.filter(([, value]) => typeof value === 'number' || typeof value === 'boolean');
+  const groups = entries.filter(([, value]) => typeof value === 'object' && value !== null);
+  return (
+    <section className="card">
+      <h2>{title}</h2>
+      {texts.map(([key, value]) => (
+        <p key={key} className={key === 'formula' ? 'mono formula' : undefined}>
+          {asText(value)}
+        </p>
+      ))}
+      <div className="rule-groups">
+        {[...(scalars.length > 0 ? [['parametry', Object.fromEntries(scalars)] as [string, unknown]] : []), ...groups].map(([key, value]) => (
+          <table key={key} className="table table-dense rules-table">
+            <caption>
+              <code className="mono">{key}</code>
+            </caption>
+            <tbody>
+              {(isRecord(value) ? Object.entries(value) : (value as unknown[]).map((item, index): [string, unknown] => [String(index + 1), item])).map(
+                ([name, item]) => (
+                  <tr key={name}>
+                    <th scope="row">
+                      <code className="mono">{name}</code>
+                    </th>
+                    <td className={typeof item === 'number' ? 'num' : undefined}>{asText(item)}</td>
+                  </tr>
+                ),
+              )}
+            </tbody>
+          </table>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Zasady priorytetu, łączenia osób i powiązań z usługami — tak, jak podaje je usługa analizy. */
+function PriorityRules({ data }: { data: unknown }) {
+  if (!isRecord(data)) return null;
+  const sections = Object.entries(data).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]));
+  const flat = Object.fromEntries(Object.entries(data).filter(([, value]) => !isRecord(value)));
+  return (
+    <>
+      {Object.keys(flat).length > 0 && <RuleSection title={SECTION_TITLE.priority!} data={flat} />}
+      {sections.map(([key, value]) => (
+        <RuleSection key={key} title={SECTION_TITLE[key] ?? key} data={value} />
+      ))}
+    </>
+  );
+}
+
 export function RulesPage() {
   const rules = useAsync(() => api.getRules(), 'rules');
+  const priority = useAsync(() => api.getPriorityRules(), 'priority-rules');
   return (
     <div className="page">
+      <Crumbs items={[{ label: 'Pulpit', href: href.dashboard() }, { label: 'Zasady punktacji' }]} />
       <h1>Zasady punktacji</h1>
       <p className="lead">
         Wskaźnik Pewności liczą wyłącznie jawne reguły. Poniższe wartości są pobierane z konfiguracji usługi analizy.
       </p>
       {rules.loading && <Loading />}
       {rules.error && <ErrorBox message={rules.error} onRetry={rules.reload} />}
-      {rules.data && <Rules rules={rules.data} />}
+      {rules.data && (
+        <>
+          <Rules rules={rules.data} />
+          <IdentityLevels rules={rules.data} />
+        </>
+      )}
+      {priority.data !== undefined && <PriorityRules data={priority.data} />}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 import { useSyncExternalStore } from 'react';
 
 export const DOSSIER_TABS = [
-  { id: 'przeglad', label: 'Przegląd' },
+  { id: 'uslugi', label: 'Giełdy i portfele' },
   { id: 'graf', label: 'Graf powiązań' },
   { id: 'profile', label: 'Profile' },
   { id: 'adresy', label: 'Adresy' },
@@ -20,6 +20,7 @@ export type Route =
   | { page: 'case'; caseId: string; tab: DossierTab }
   | { page: 'run'; runId: string; tab: DossierTab }
   | { page: 'sweep'; sweepId?: string }
+  | { page: 'monitor' }
   | { page: 'rules' };
 
 function decode(part: string | undefined): string | undefined {
@@ -32,7 +33,7 @@ function decode(part: string | undefined): string | undefined {
 }
 
 const toTab = (value: string | undefined): DossierTab =>
-  DOSSIER_TABS.find((tab) => tab.id === value)?.id ?? 'przeglad';
+  DOSSIER_TABS.find((tab) => tab.id === value)?.id ?? 'uslugi';
 
 export function parseRoute(hash: string): Route {
   const [first, rawSecond, third] = hash.replace(/^#\/?/, '').split('/');
@@ -40,17 +41,19 @@ export function parseRoute(hash: string): Route {
   if (first === 'sprawa' && second) return { page: 'case', caseId: second, tab: toTab(third) };
   if (first === 'analiza' && second) return { page: 'run', runId: second, tab: toTab(third) };
   if (first === 'typowanie') return { page: 'sweep', sweepId: second };
+  if (first === 'monitoring') return { page: 'monitor' };
   if (first === 'zasady') return { page: 'rules' };
   return { page: 'dashboard' };
 }
 
-const withTab = (base: string, tab?: DossierTab) => (tab && tab !== 'przeglad' ? `${base}/${tab}` : base);
+const withTab = (base: string, tab?: DossierTab) => (tab && tab !== 'uslugi' ? `${base}/${tab}` : base);
 
 export const href = {
   dashboard: () => '#/',
   case: (caseId: string, tab?: DossierTab) => withTab(`#/sprawa/${encodeURIComponent(caseId)}`, tab),
   run: (runId: string, tab?: DossierTab) => withTab(`#/analiza/${encodeURIComponent(runId)}`, tab),
   sweep: (sweepId?: string) => (sweepId ? `#/typowanie/${encodeURIComponent(sweepId)}` : '#/typowanie'),
+  monitor: () => '#/monitoring',
   rules: () => '#/zasady',
 };
 

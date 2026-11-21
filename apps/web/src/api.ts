@@ -1,11 +1,31 @@
 // Warstwa dostępu do API zgodna z kontraktem z docs/ARCHITEKTURA.md.
 // W trybie demo (`?demo=1` lub VITE_DEMO=1) dane pochodzą z `demo-backend.ts`.
-import type { AnalysisRun, Identifier, RunDiff, ScoreRules, SourceConnector, SubjectQuery } from '@olcys/core';
+import type {
+  AnalysisRun,
+  AnalystDecision,
+  Decision,
+  Dossier,
+  Identifier,
+  IdentifierType,
+  MonitorStatus,
+  RunDiff,
+  ScoreRules,
+  SourceConnector,
+  SubjectQuery,
+  Sweep,
+  WatchHit,
+} from '@olcys/core';
+import { dossierFromRun } from './dossier.ts';
+import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './identify.ts';
+import { serviceLinksFromFindings } from './services.ts';
 
 export type ConnectorInfo = Pick<
   SourceConnector,
   'id' | 'service' | 'label' | 'description' | 'accepts' | 'enabledByDefault'
->;
+> & {
+  /** Czy łącznik potrafi sam wskazać świeże publikacje (przegląd źródeł); pole opcjonalne. */
+  discovers?: boolean;
+};
 
 export interface RunSummary {
   id: string;
@@ -25,16 +45,79 @@ export interface CaseSummary {
 
 export type Replacement = RunDiff['replacedAddresses'][number];
 
+export interface Overview {
+  cases: number;
+  runs: number;
+  linkedAddresses: number;
+  cashOutPlnByYear: Record<string, number>;
+  topCases: {
+    caseId: string;
+    name: string;
+    priority: number;
+    topScore: number;
+    cashOutPlnTotal: number;
+    /** Nazwy powiązanych giełd i usług — pole opcjonalne. */
+    services?: string[];
+  }[];
+  /** Stan cyklicznego przeglądu źródeł — pole opcjonalne. */
+  monitor?: { enabled: boolean; lastRunAt?: string; newHits: number };
+  /** Zestawienie policzone w interfejsie z listy spraw (starsza wersja usługi). */
+  approximate?: boolean;
+}
+
+export interface DecisionInput {
+  target: AnalystDecision['target'];
+  key: string;
+  decision: Decision;
+  note?: string;
+}
+
+export interface MonitorSettings {
+  enabled?: boolean;
+  everyMinutes?: number;
+  autoAnalyzeThreshold?: number;
+  sources?: Record<string, boolean>;
+}
+
+export interface QuickResult {
+  case: CaseSummary;
+  dossier?: Dossier;
+}
+
 export interface Backend {
   listConnectors(): Promise<ConnectorInfo[]>;
   getRules(): Promise<ScoreRules>;
+  /** Opis składników priorytetu; `null`, gdy usługa nie udostępnia tej trasy. */
+  getPriorityRules(): Promise<unknown | null>;
   listCases(): Promise<CaseSummary[]>;
   createCase(name: string, identifiers: Identifier[]): Promise<CaseSummary>;
   getCase(caseId: string): Promise<CaseSummary>;
-  startRun(caseId: string, connectors: string[]): Promise<AnalysisRun>;
+  addIdentifiers(caseId: string, identifiers: Identifier[]): Promise<CaseSummary>;
+  startRun(caseId: string, connectors?: string[]): Promise<AnalysisRun>;
   getRun(runId: string): Promise<AnalysisRun>;
   getDiff(caseId: string, from: string, to: string): Promise<RunDiff>;
   getReplacements(runId: string): Promise<Replacement[]>;
+  /** Teczka z usługi; `null`, gdy trasa nie istnieje (starsza wersja usługi). */
+  getCaseDossier(caseId: string): Promise<Dossier | null>;
+  getRunDossier(runId: string): Promise<Dossier | null>;
+  addDecision(caseId: string, input: DecisionInput): Promise<AnalystDecision>;
+  removeDecision(caseId: string, decisionId: string): Promise<void>;
+  getOverview(): Promise<Overview>;
+  startSweep(connectors: string[], limit: number): Promise<Sweep>;
+  listSweeps(): Promise<Sweep[]>;
+  getSweep(sweepId: string): Promise<Sweep>;
+  createCaseFromLead(sweepId: string, leadId: string): Promise<CaseSummary>;
+  getMonitor(): Promise<MonitorStatus>;
+  updateMonitor(settings: MonitorSettings): Promise<MonitorStatus>;
+  runMonitor(): Promise<{ status: MonitorStatus; newHits: number }>;
+  listHits(limit: number): Promise<WatchHit[]>;
+  analyzeHit(hitId: string): Promise<WatchHit>;
+  dismissHit(hitId: string): Promise<WatchHit>;
+  createCaseFromHit(hitId: string): Promise<CaseSummary>;
+  /** Ustalenie jednym wywołaniem; `null`, gdy trasa nie istnieje. */
+  quick(value: string, type: IdentifierType): Promise<QuickResult | null>;
+  /** Czy usługa wystawia „Materiał do zapytania” dla usługi powiązanej z podmiotem. */
+  hasServiceRequest(runId: string, serviceId: string): Promise<boolean>;
 }
 
 export class ApiError extends Error {
@@ -63,7 +146,7 @@ function errorFromBody(body: unknown, status: number): string {
   return `Usługa analizy zwróciła błąd (HTTP ${status}).`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function send(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
   let response: Response;
   try {
     response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...init?.headers } });
@@ -72,9 +155,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) throw new ApiError(errorFromBody(body, response.status), response.status);
-  if (body === null) {
-    throw new ApiError('Usługa analizy zwróciła odpowiedź w nieoczekiwanym formacie.', response.status);
-  }
+  return { status: response.status, body };
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const { status, body } = await send(path, init);
+  if (body === null) throw new ApiError('Usługa analizy zwróciła odpowiedź w nieoczekiwanym formacie.', status);
   return body as T;
 }
 
@@ -85,25 +171,92 @@ const post = <T>(path: string, payload: unknown) =>
     body: JSON.stringify(payload),
   });
 
+const missingRoute = (error: unknown) => error instanceof ApiError && [404, 405, 501].includes(error.status);
+
+/** Trasa opcjonalna: jej brak daje wartość zastępczą zamiast błędu. */
+async function optional<T, F>(promise: Promise<T>, fallback: F): Promise<T | F> {
+  try {
+    return await promise;
+  } catch (error) {
+    if (missingRoute(error)) return fallback;
+    throw error;
+  }
+}
+
+/** Trasa z etapu 2: jej brak zgłaszamy czytelnie jako funkcję niedostępną. */
+async function feature<T>(name: string, promise: Promise<T>): Promise<T> {
+  try {
+    return await promise;
+  } catch (error) {
+    if (missingRoute(error)) {
+      throw new ApiError(`${name}: funkcja niedostępna w tej wersji usługi analizy.`, (error as ApiError).status);
+    }
+    throw error;
+  }
+}
+
 const enc = encodeURIComponent;
+
+async function overviewFromCases(): Promise<Overview> {
+  const cases = await httpBackend.listCases();
+  return {
+    cases: cases.length,
+    runs: cases.reduce((total, item) => total + item.runs.length, 0),
+    linkedAddresses: cases.reduce((total, item) => total + (item.runs.at(-1)?.findingCount ?? 0), 0),
+    cashOutPlnByYear: {},
+    topCases: cases
+      .map((item) => {
+        const topScore = item.runs.at(-1)?.topScore ?? 0;
+        return { caseId: item.id, name: item.name, priority: topScore, topScore, cashOutPlnTotal: 0 };
+      })
+      .sort((a, b) => b.priority - a.priority),
+    approximate: true,
+  };
+}
 
 const httpBackend: Backend = {
   listConnectors: () => request('/api/connectors'),
   getRules: () => request('/api/rules'),
+  getPriorityRules: () => optional(request<unknown>('/api/priority-rules'), null),
   listCases: () => request('/api/cases'),
   createCase: (name, identifiers) => post('/api/cases', { name, identifiers }),
   getCase: (caseId) => request(`/api/cases/${enc(caseId)}`),
-  startRun: (caseId, connectors) => post(`/api/cases/${enc(caseId)}/runs`, { connectors }),
+  addIdentifiers: (caseId, identifiers) =>
+    feature('Dopisanie identyfikatorów', post(`/api/cases/${enc(caseId)}/identifiers`, { identifiers })),
+  startRun: (caseId, connectors) => post(`/api/cases/${enc(caseId)}/runs`, connectors ? { connectors } : {}),
   getRun: (runId) => request(`/api/runs/${enc(runId)}`),
   getDiff: (caseId, from, to) => request(`/api/cases/${enc(caseId)}/diff?from=${enc(from)}&to=${enc(to)}`),
-  // Trasa jest opcjonalna: jej brak (404) oznacza po prostu brak podmian.
   getReplacements: async (runId) => {
+    const result = await optional(request<unknown>(`/api/runs/${enc(runId)}/replacements`), []);
+    return Array.isArray(result) ? (result as Replacement[]) : [];
+  },
+  getCaseDossier: (caseId) => optional(request<Dossier>(`/api/cases/${enc(caseId)}/dossier`), null),
+  getRunDossier: (runId) => optional(request<Dossier>(`/api/runs/${enc(runId)}/dossier`), null),
+  addDecision: (caseId, input) => feature('Decyzje analityka', post(`/api/cases/${enc(caseId)}/decisions`, input)),
+  removeDecision: async (caseId, decisionId) => {
+    await feature('Decyzje analityka', send(`/api/cases/${enc(caseId)}/decisions/${enc(decisionId)}`, { method: 'DELETE' }));
+  },
+  getOverview: async () => (await optional(request<Overview>('/api/overview'), null)) ?? overviewFromCases(),
+  startSweep: (connectors, limit) => feature('Przegląd źródeł', post('/api/sweeps', { connectors, limit })),
+  listSweeps: () => feature('Przegląd źródeł', request('/api/sweeps')),
+  getSweep: (sweepId) => feature('Przegląd źródeł', request(`/api/sweeps/${enc(sweepId)}`)),
+  createCaseFromLead: (sweepId, leadId) =>
+    feature('Założenie sprawy ze wskazania', post(`/api/sweeps/${enc(sweepId)}/leads/${enc(leadId)}/case`, {})),
+  getMonitor: () => feature('Monitoring', request('/api/monitor')),
+  updateMonitor: (settings) =>
+    feature('Monitoring', request('/api/monitor', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) })),
+  runMonitor: () => feature('Monitoring', post('/api/monitor/run', {})),
+  listHits: (limit) => feature('Monitoring', request(`/api/monitor/hits?limit=${limit}`)),
+  analyzeHit: (hitId) => feature('Analiza autora trafienia', post(`/api/monitor/hits/${enc(hitId)}/analyze`, {})),
+  dismissHit: (hitId) => feature('Odrzucenie trafienia', post(`/api/monitor/hits/${enc(hitId)}/dismiss`, {})),
+  createCaseFromHit: (hitId) => feature('Założenie sprawy z trafienia', post(`/api/monitor/hits/${enc(hitId)}/case`, {})),
+  quick: (value, type) => optional(post<QuickResult>('/api/quick', { value, type }), null),
+  hasServiceRequest: async (runId, serviceId) => {
     try {
-      const result = await request<unknown>(`/api/runs/${enc(runId)}/replacements`);
-      return Array.isArray(result) ? (result as Replacement[]) : [];
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) return [];
-      throw error;
+      const response = await fetch(serviceRequestUrl(runId, serviceId), { method: 'HEAD' });
+      return response.ok;
+    } catch {
+      return false;
     }
   },
 };
@@ -113,21 +266,76 @@ const backend: Promise<Backend> = isDemo
   ? import('./demo-backend.ts').then((module) => module.demoBackend)
   : Promise.resolve(httpBackend);
 
-export const api: Backend = {
-  listConnectors: () => backend.then((b) => b.listConnectors()),
-  getRules: () => backend.then((b) => b.getRules()),
-  listCases: () => backend.then((b) => b.listCases()),
-  createCase: (name, identifiers) => backend.then((b) => b.createCase(name, identifiers)),
-  getCase: (caseId) => backend.then((b) => b.getCase(caseId)),
-  startRun: (caseId, connectors) => backend.then((b) => b.startRun(caseId, connectors)),
-  getRun: (runId) => backend.then((b) => b.getRun(runId)),
-  getDiff: (caseId, from, to) => backend.then((b) => b.getDiff(caseId, from, to)),
-  getReplacements: (runId) => backend.then((b) => b.getReplacements(runId)),
-};
+export const api = new Proxy({} as Backend, {
+  get:
+    (_, method: keyof Backend) =>
+    (...args: unknown[]) =>
+      backend.then((resolved) => (resolved[method] as (...input: unknown[]) => unknown)(...args)),
+});
 
 export const reportHtmlUrl = (runId: string) => `/api/runs/${enc(runId)}/report.html`;
 export const reportJsonUrl = (runId: string) => `/api/runs/${enc(runId)}/report.json`;
+export const serviceRequestUrl = (runId: string, serviceId: string) =>
+  `/api/runs/${enc(runId)}/service-request/${enc(serviceId)}.html`;
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'Wystąpił nieoczekiwany błąd.';
+}
+
+// ---------- Operacje złożone ----------
+
+export interface DossierView {
+  dossier: Dossier;
+  summary: CaseSummary;
+  /** Teczka zbudowana w interfejsie z samej analizy — starsza wersja usługi. */
+  simplified: boolean;
+}
+
+/** Uzupełnia pola, których starsze wersje usługi nie zwracają. */
+function complete(dossier: Dossier): Dossier {
+  const partial = dossier as Partial<Dossier>;
+  return {
+    ...dossier,
+    // Usługa zapisuje brak wyceny jako null; w interfejsie brak wartości to undefined.
+    serviceLinks: (partial.serviceLinks ?? serviceLinksFromFindings(dossier.findings)).map((link) => ({
+      ...link,
+      outPln: link.outPln ?? undefined,
+      inPln: link.inPln ?? undefined,
+      transfers: link.transfers.map((item) => ({ ...item, valuePln: item.valuePln ?? undefined, viaAddress: item.viaAddress ?? undefined })),
+    })),
+    persons: partial.persons ?? [],
+    relatedPersons: partial.relatedPersons ?? [],
+    decisions: partial.decisions ?? [],
+    keyFindings: partial.keyFindings ?? [],
+    timeline: partial.timeline ?? [],
+  };
+}
+
+/** Teczka sprawy (ostatnia zakończona analiza) albo wskazanej analizy; ze starszym API — składana lokalnie. */
+export async function loadDossier(source: { caseId: string } | { runId: string }): Promise<DossierView | { summary: CaseSummary }> {
+  let run: AnalysisRun | undefined;
+  let summary: CaseSummary;
+  if ('runId' in source) {
+    run = await api.getRun(source.runId);
+    summary = await api.getCase(run.caseId);
+  } else {
+    summary = await api.getCase(source.caseId);
+    if (!summary.runs.some((item) => item.status === 'completed')) return { summary };
+  }
+  const fromApi = 'runId' in source ? await api.getRunDossier(source.runId) : await api.getCaseDossier(summary.id);
+  if (fromApi) return { dossier: complete(fromApi), summary, simplified: false };
+
+  run ??= await api.getRun(summary.runs.filter((item) => item.status === 'completed').at(-1)!.id);
+  const replacements = await api.getReplacements(run.id).catch(() => []);
+  return { dossier: dossierFromRun(run, { name: summary.name, replacements }), summary, simplified: true };
+}
+
+/** „Kogo sprawdzić?”: sprawa, analiza i teczka z jednego identyfikatora. */
+export async function quickCheck(raw: string, type: IdentifierType = detectIdentifierType(raw)): Promise<CaseSummary> {
+  const identifier = normalizeIdentifier(type, raw);
+  const quick = await api.quick(identifier.value, type);
+  if (quick) return quick.case;
+  const created = await api.createCase(suggestCaseName(identifier), [identifier]);
+  await api.startRun(created.id);
+  return created;
 }

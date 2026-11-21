@@ -2,10 +2,17 @@
 import type {
   AddressClass,
   CashOutKind,
+  Decision,
+  GraphEdge,
+  GraphNodeKind,
   IdentifierType,
   IdentityMatch,
   Network,
+  RelationKind,
+  ServiceKind,
+  ServiceLinkBasis,
   SourceCategory,
+  TimelineEvent,
 } from '@olcys/core';
 
 export const IDENTIFIER_LABEL: Record<IdentifierType, string> = {
@@ -26,6 +33,13 @@ export const NETWORK_LABEL: Record<Network, string> = {
   'bitcoin-testnet': 'Bitcoin (testnet)',
   ethereum: 'Ethereum',
   tron: 'Tron',
+};
+
+export const NETWORK_SHORT: Record<Network, string> = {
+  bitcoin: 'BTC',
+  'bitcoin-testnet': 'tBTC',
+  ethereum: 'ETH',
+  tron: 'TRON',
 };
 
 export const CLASS_LABEL: Record<AddressClass, string> = {
@@ -56,6 +70,18 @@ export const IDENTITY_LABEL: Record<IdentityMatch, string> = {
   name_only: 'Zgodne tylko imię i nazwisko',
 };
 
+/** Opis poziomów oceny tożsamości profilu — ekran zasad punktacji. */
+export const IDENTITY_DESCRIPTION: Record<IdentityMatch, string> = {
+  verified_link:
+    'Wzajemne odnośniki między profilami albo dowód kryptograficzny; także profil potwierdzony decyzją analityka.',
+  exact_identifier:
+    'Profil odnaleziony po unikalnym identyfikatorze (e-mail, adres profilu) albo po nicku potwierdzonym drugim identyfikatorem w treści profilu.',
+  linked_profile: 'Profil wskazany przez inny, potwierdzony profil podmiotu (odnośnik jednostronny).',
+  same_handle: 'Ten sam nick w serwisie, bez żadnego innego potwierdzenia, że to ta sama osoba.',
+  common_handle: 'Zgodny nick jest pospolity — różne osoby często używają takiego samego.',
+  name_only: 'Zgodne tylko imię i nazwisko — możliwa zbieżność nazwisk (imiennik).',
+};
+
 export const CASH_OUT_LABEL: Record<CashOutKind, string> = {
   exchange_deposit: 'Wpłata na giełdę',
   p2p_service: 'Serwis wymiany P2P',
@@ -64,10 +90,82 @@ export const CASH_OUT_LABEL: Record<CashOutKind, string> = {
   stablecoin_swap: 'Zamiana na stablecoin',
 };
 
+export const CASH_OUT_KINDS = Object.keys(CASH_OUT_LABEL) as CashOutKind[];
+
 export const STATUS_LABEL: Record<string, string> = {
   running: 'w toku',
   completed: 'zakończona',
   failed: 'nieudana',
+};
+
+export const NODE_KIND_LABEL: Record<GraphNodeKind, string> = {
+  subject: 'Podmiot',
+  identifier: 'Identyfikator',
+  profile: 'Profil w serwisie',
+  address: 'Adres krypto',
+  service: 'Serwis / kontrahent',
+  person: 'Osoba powiązana',
+};
+
+export const NODE_KIND_PLURAL: Record<GraphNodeKind, string> = {
+  subject: 'Podmiot',
+  identifier: 'Identyfikatory',
+  profile: 'Profile',
+  address: 'Adresy',
+  service: 'Serwisy i kontrahenci',
+  person: 'Osoby powiązane',
+};
+
+export const EDGE_KIND_LABEL: Record<GraphEdge['kind'], string> = {
+  has_identifier: 'identyfikator podmiotu',
+  found_profile: 'profil odnaleziony po identyfikatorze',
+  links_to: 'odnośnik między profilami',
+  publishes: 'publikacja adresu',
+  transfer: 'przelew',
+  cash_out: 'możliwa wypłata',
+  related: 'powiązanie z inną osobą',
+};
+
+export const TIMELINE_KIND_LABEL: Record<TimelineEvent['kind'], string> = {
+  publication: 'Publikacja',
+  transfer_in: 'Wpływ',
+  transfer_out: 'Wypływ',
+  cash_out: 'Możliwa wypłata',
+  address_replaced: 'Podmiana adresu',
+  account_created: 'Założenie konta',
+};
+
+export const TIMELINE_KINDS = Object.keys(TIMELINE_KIND_LABEL) as TimelineEvent['kind'][];
+
+export const RELATION_LABEL: Record<RelationKind, string> = {
+  shared_address: 'Wspólny adres',
+  transacted: 'Bezpośredni przelew',
+  common_counterparty: 'Wspólny kontrahent',
+  shared_attribute: 'Wspólna cecha profili',
+};
+
+export const DECISION_LABEL: Record<Decision, string> = {
+  confirmed: 'potwierdzono',
+  rejected: 'odrzucono',
+};
+
+export const SERVICE_KIND_LABEL: Record<ServiceKind, string> = {
+  exchange: 'Giełda',
+  p2p: 'Serwis P2P',
+  payment_gateway: 'Bramka płatnicza',
+  crypto_card: 'Karta kryptowalutowa',
+  wallet: 'Portfel',
+  defi: 'Protokół DeFi',
+  mixer: 'Mikser',
+  other: 'Inna usługa',
+};
+
+export const BASIS_LABEL: Record<ServiceLinkBasis, string> = {
+  transfer_out: 'przelew wychodzący',
+  transfer_in: 'przelew przychodzący',
+  deposit_address: 'adres wpłat — wnioskowanie',
+  web_mention: 'wzmianka',
+  account_link: 'konto lub odnośnik polecający',
 };
 
 const lookup = (table: Record<string, string>, key: string | undefined) => (key ? table[key] : undefined);
@@ -81,5 +179,6 @@ export function ruleLabel(rule: string): string {
   if (rule === 'synergy.extra_sources') return 'Premia: kolejne niezależne źródła';
   if (rule === 'penalty.shared_address') return 'Kara: adres współdzielony';
   if (rule === 'exclusion.address_class') return 'Wykluczenie: klasa adresu';
+  if (rule === 'exclusion.analyst_decision' || rule === 'decision.address_rejected') return 'Wykluczenie: decyzja analityka';
   return rule;
 }

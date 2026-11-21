@@ -1,41 +1,25 @@
+// Uruchamianie analizy, historia analiz z porównaniem i dopisywanie odkrytych identyfikatorów.
 import { useEffect, useState } from 'react';
-import type { RunDiff } from '@olcys/core';
+import type { Dossier, RunDiff } from '@olcys/core';
 import { api, errorMessage } from '../api.ts';
-import type { CaseSummary, ConnectorInfo, RunSummary } from '../api.ts';
-import { ErrorBox, Loading, ScoreBadge } from '../components/common.tsx';
-import { DiffView } from '../components/DiffView.tsx';
+import type { CaseSummary, ConnectorInfo } from '../api.ts';
 import { fmtDateTime } from '../format.ts';
 import { IDENTIFIER_LABEL, STATUS_LABEL } from '../labels.ts';
-import { href, navigate } from '../router.ts';
+import { href } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
-
-function Identifiers({ item }: { item: CaseSummary }) {
-  return (
-    <section className="card" aria-labelledby="identyfikatory">
-      <h2 id="identyfikatory">Identyfikatory podmiotu</h2>
-      <dl className="identifier-list">
-        {item.query.identifiers.map((identifier, index) => (
-          <div key={`${identifier.type}-${identifier.value}-${index}`}>
-            <dt>{IDENTIFIER_LABEL[identifier.type] ?? identifier.type}</dt>
-            <dd>{identifier.value}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
-  );
-}
+import { EmptyState, ErrorBox, Loading, ScoreBadge } from './common.tsx';
+import { DiffView } from './DiffView.tsx';
+import { useToast } from './Toast.tsx';
 
 /** Wybór źródeł (parametry wyszukiwania) i uruchomienie analizy. */
-function RunLauncher({ caseId }: { caseId: string }) {
+export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { caseId: string; onDone: () => void; title?: string }) {
   const connectors = useAsync(() => api.listConnectors(), 'connectors');
+  const toast = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string>();
 
   useEffect(() => {
-    if (connectors.data) {
-      setSelected(new Set(connectors.data.filter((item) => item.enabledByDefault).map((item) => item.id)));
-    }
+    if (connectors.data) setSelected(new Set(connectors.data.filter((item) => item.enabledByDefault).map((item) => item.id)));
   }, [connectors.data]);
 
   function toggle(connector: ConnectorInfo) {
@@ -48,19 +32,20 @@ function RunLauncher({ caseId }: { caseId: string }) {
 
   async function start() {
     setRunning(true);
-    setError(undefined);
     try {
       const run = await api.startRun(caseId, [...selected]);
-      navigate(href.run(run.id));
+      toast.success(`Analiza zakończona: ${run.findings.length} adresów.`);
+      onDone();
     } catch (failure) {
-      setError(errorMessage(failure));
+      toast.error(failure);
+    } finally {
       setRunning(false);
     }
   }
 
   return (
     <section className="card" aria-labelledby="zrodla">
-      <h2 id="zrodla">Parametry wyszukiwania — źródła</h2>
+      <h3 id="zrodla">{title}</h3>
       {connectors.loading && <Loading label="Wczytywanie listy źródeł…" />}
       {connectors.error && <ErrorBox message={connectors.error} onRetry={connectors.reload} />}
       {connectors.data && (
@@ -80,14 +65,8 @@ function RunLauncher({ caseId }: { caseId: string }) {
           ))}
         </fieldset>
       )}
-      {error && <ErrorBox message={error} />}
       <div className="actions">
-        <button
-          type="button"
-          className="button button-primary"
-          onClick={start}
-          disabled={running || !connectors.data || selected.size === 0}
-        >
+        <button type="button" className="button button-primary" onClick={start} disabled={running || !connectors.data || selected.size === 0}>
           {running ? 'Analiza w toku…' : 'Uruchom analizę'}
         </button>
         {running && <Loading label="Przeszukiwanie źródeł i danych blockchain. To może potrwać do kilkudziesięciu sekund." />}
@@ -97,10 +76,48 @@ function RunLauncher({ caseId }: { caseId: string }) {
   );
 }
 
+/** Identyfikatory odkryte w toku analizy, których nie ma jeszcze w sprawie. */
+function DiscoveredIdentifiers({ dossier, onDone }: { dossier: Dossier; onDone: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const discovered = dossier.subject.identifiers.filter((item) => item.origin === 'discovered');
+  if (discovered.length === 0) return null;
+
+  async function add() {
+    setBusy(true);
+    try {
+      await api.addIdentifiers(dossier.caseId, discovered.map((item) => item.identifier));
+      toast.success(`Dopisano ${discovered.length} identyfikatorów do sprawy. Uruchom analizę, żeby je przeszukać.`);
+      onDone();
+    } catch (failure) {
+      toast.error(failure);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card" aria-labelledby="odkryte">
+      <h3 id="odkryte">Identyfikatory odkryte w źródłach ({discovered.length})</h3>
+      <ul className="plain-list">
+        {discovered.map(({ identifier }) => (
+          <li key={`${identifier.type}-${identifier.value}`}>
+            <span className="chip">{IDENTIFIER_LABEL[identifier.type] ?? identifier.type}</span> <strong>{identifier.value}</strong>
+          </li>
+        ))}
+      </ul>
+      <button type="button" className="button" onClick={add} disabled={busy}>
+        {busy ? 'Dopisywanie…' : 'Dopisz odkryte identyfikatory do sprawy'}
+      </button>
+    </section>
+  );
+}
+
 /** Historia analiz z wyborem dwóch pozycji do porównania. */
-function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
-  const [from, setFrom] = useState(runs[runs.length - 2]?.id);
-  const [to, setTo] = useState(runs[runs.length - 1]?.id);
+function RunHistory({ summary }: { summary: CaseSummary }) {
+  const { runs } = summary;
+  const [from, setFrom] = useState(runs.at(-2)?.id);
+  const [to, setTo] = useState(runs.at(-1)?.id);
   const [diff, setDiff] = useState<RunDiff>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
@@ -111,7 +128,7 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
     setError(undefined);
     setDiff(undefined);
     try {
-      setDiff(await api.getDiff(caseId, from, to));
+      setDiff(await api.getDiff(summary.id, from, to));
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -119,9 +136,7 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
     }
   }
 
-  if (runs.length === 0) {
-    return <p className="muted">Nie wykonano jeszcze żadnej analizy.</p>;
-  }
+  if (runs.length === 0) return <EmptyState title="Nie wykonano jeszcze żadnej analizy" />;
   const canCompare = runs.length >= 2;
 
   return (
@@ -136,7 +151,7 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
               <th scope="col">Stan</th>
               <th scope="col" className="num">Adresy</th>
               <th scope="col" className="num">Najwyższy wynik</th>
-              <th scope="col">Wynik</th>
+              <th scope="col">Teczka</th>
             </tr>
           </thead>
           <tbody>
@@ -146,24 +161,12 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
                 <tr key={run.id}>
                   {canCompare && (
                     <td>
-                      <input
-                        type="radio"
-                        name="diff-from"
-                        checked={from === run.id}
-                        onChange={() => setFrom(run.id)}
-                        aria-label={`Analiza z ${when} jako wcześniejsza`}
-                      />
+                      <input type="radio" name="diff-from" checked={from === run.id} onChange={() => setFrom(run.id)} aria-label={`Analiza z ${when} jako wcześniejsza`} />
                     </td>
                   )}
                   {canCompare && (
                     <td>
-                      <input
-                        type="radio"
-                        name="diff-to"
-                        checked={to === run.id}
-                        onChange={() => setTo(run.id)}
-                        aria-label={`Analiza z ${when} jako późniejsza`}
-                      />
+                      <input type="radio" name="diff-to" checked={to === run.id} onChange={() => setTo(run.id)} aria-label={`Analiza z ${when} jako późniejsza`} />
                     </td>
                   )}
                   <td>{when}</td>
@@ -173,7 +176,7 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
                     <ScoreBadge score={run.topScore} />
                   </td>
                   <td>
-                    <a href={href.run(run.id)}>Otwórz wynik</a>
+                    <a href={href.run(run.id)}>Otwórz stan z tej analizy</a>
                   </td>
                 </tr>
               );
@@ -181,7 +184,6 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
           </tbody>
         </table>
       </div>
-
       {canCompare ? (
         <div className="actions">
           <button type="button" className="button" onClick={compare} disabled={loading || !from || !to || from === to}>
@@ -192,7 +194,6 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
       ) : (
         <p className="muted">Porównanie będzie dostępne po wykonaniu drugiej analizy.</p>
       )}
-
       {error && <ErrorBox message={error} />}
       <div aria-live="polite">
         {diff && (
@@ -206,30 +207,19 @@ function RunHistory({ caseId, runs }: { caseId: string; runs: RunSummary[] }) {
   );
 }
 
-export function CasePage({ caseId }: { caseId: string }) {
-  const current = useAsync(() => api.getCase(caseId), caseId);
-
+export function RunsTab({ summary, dossier, onChanged }: { summary: CaseSummary; dossier: Dossier; onChanged: () => void }) {
   return (
-    <div className="page">
-      <p className="breadcrumb">
-        <a href={href.cases()}>Sprawy</a> / <span>{current.data?.name ?? 'Sprawa'}</span>
-      </p>
-      {current.loading && <Loading />}
-      {current.error && <ErrorBox message={current.error} onRetry={current.reload} />}
-      {current.data && (
-        <>
-          <h1>{current.data.name}</h1>
-          <p className="muted">Utworzono {fmtDateTime(current.data.createdAt)}</p>
-          <div className="two-columns">
-            <Identifiers item={current.data} />
-            <RunLauncher caseId={caseId} />
-          </div>
-          <section className="card" aria-labelledby="historia">
-            <h2 id="historia">Historia analiz</h2>
-            <RunHistory caseId={caseId} runs={current.data.runs} />
-          </section>
-        </>
-      )}
-    </div>
+    <section aria-labelledby="analizy">
+      <header className="section-head">
+        <h2 id="analizy">Historia analiz</h2>
+      </header>
+      <div className="card">
+        <RunHistory summary={summary} />
+      </div>
+      <div className="two-columns">
+        <DiscoveredIdentifiers dossier={dossier} onDone={onChanged} />
+        <RunLauncher caseId={summary.id} onDone={onChanged} />
+      </div>
+    </section>
   );
 }
