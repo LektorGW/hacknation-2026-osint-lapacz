@@ -1,0 +1,32 @@
+/** Catalog of isolated synthetic portals. Names describe the simulated experience. */
+export const SERVICES = Object.freeze([
+  { id: 'social-x', slug: 'x', name: 'X · LAB', category: 'social', description: 'Mikroblog: krótkie wpisy, odpowiedzi i obserwujący.', color: '#243244', topics: ['wiadomości', 'technologia', 'codzienność'] },
+  { id: 'social-facebook', slug: 'facebook', name: 'Facebook · LAB', category: 'social', description: 'Profile, lokalne społeczności i rodzinne aktualności.', color: '#1877f2', topics: ['lokalnie', 'ogród', 'podróże'] },
+  { id: 'social-instagram', slug: 'instagram', name: 'Instagram · LAB', category: 'social', description: 'Fotorelacje, opisy zdjęć i krótkie historie.', color: '#bc3584', topics: ['fotografia', 'podróże', 'jedzenie'] },
+  { id: 'social-tiktok', slug: 'tiktok', name: 'TikTok · LAB', category: 'social', description: 'Krótkie materiały wideo opisane syntetycznymi wpisami.', color: '#087e8b', topics: ['muzyka', 'sport', 'codzienność'] },
+  { id: 'social-linkedin', slug: 'linkedin', name: 'LinkedIn · LAB', category: 'social', description: 'Profile zawodowe, doświadczenie i dyskusje branżowe.', color: '#0a66c2', topics: ['praca', 'technologia', 'edukacja'] },
+  { id: 'market-allegro', slug: 'allegro', name: 'Allegro · LAB', category: 'marketplace', description: 'Oferty przedmiotów, reputacja sprzedawców i aukcje.', color: '#e85b08', topics: ['elektronika', 'dom', 'hobby'] },
+  { id: 'market-olx', slug: 'olx', name: 'OLX · LAB', category: 'marketplace', description: 'Ogłoszenia lokalne i odbiór osobisty.', color: '#00736c', topics: ['rowery', 'meble', 'motoryzacja'] },
+  { id: 'market-vinted', slug: 'vinted', name: 'Vinted · LAB', category: 'marketplace', description: 'Ubrania, dodatki i rzeczy z drugiej ręki.', color: '#007782', topics: ['odzież', 'obuwie', 'akcesoria'] },
+  { id: 'market-ebay', slug: 'ebay', name: 'eBay · LAB', category: 'marketplace', description: 'Aukcje kolekcjonerskie i oferty międzynarodowe.', color: '#3851a0', topics: ['kolekcje', 'fotografia', 'elektronika'] },
+  { id: 'market-amazon', slug: 'amazon', name: 'Amazon · LAB', category: 'marketplace', description: 'Katalog produktów i syntetyczne konta sprzedających.', color: '#a65c00', topics: ['książki', 'dom', 'elektronika'] },
+  { id: 'market-etsy', slug: 'etsy', name: 'Etsy · LAB', category: 'marketplace', description: 'Rękodzieło, ceramika i małe pracownie.', color: '#a64e25', topics: ['rękodzieło', 'dekoracje', 'sztuka'] },
+  { id: 'market-sprzedajemy', slug: 'sprzedajemy', name: 'Sprzedajemy · LAB', category: 'marketplace', description: 'Ogłoszenia drobne, wyposażenie i lokalne transakcje.', color: '#bd2937', topics: ['narzędzia', 'meble', 'ogród'] },
+  { id: 'forum-rower', slug: 'forum-rowerowe', name: 'Rowerowy Szlak', category: 'forum', description: 'Serwis rowerów, trasy i wyprawy.', color: '#267651', topics: ['rowery', 'sport', 'podróże'] },
+  { id: 'forum-foto', slug: 'forum-fotograficzne', name: 'Kadr i Światło', category: 'forum', description: 'Fotografia, sprzęt i recenzje obiektywów.', color: '#5f5b9d', topics: ['fotografia', 'podróże', 'sztuka'] },
+  { id: 'forum-elektronika', slug: 'forum-elektroniki', name: 'Lutownia', category: 'forum', description: 'Elektronika użytkowa i naprawy.', color: '#3a718c', topics: ['elektronika', 'technologia', 'majsterkowanie'] },
+  { id: 'forum-moto', slug: 'forum-motoryzacyjne', name: 'Garaż Dyskusyjny', category: 'forum', description: 'Auta, motocykle, części i warsztaty.', color: '#905c40', topics: ['motoryzacja', 'majsterkowanie', 'podróże'] },
+  { id: 'forum-ogrod', slug: 'forum-ogrodnicze', name: 'Zielony Zakątek', category: 'forum', description: 'Rośliny, ogród i balkon.', color: '#478337', topics: ['ogród', 'dom', 'natura'] },
+  { id: 'forum-kuchnia', slug: 'forum-kulinarne', name: 'Wspólny Stół', category: 'forum', description: 'Przepisy, wypieki i domowa kuchnia.', color: '#b66035', topics: ['jedzenie', 'dom', 'rękodzieło'] },
+  { id: 'forum-gry', slug: 'forum-gier', name: 'Następna Tura', category: 'forum', description: 'Gry komputerowe, planszówki i sesje RPG.', color: '#7854aa', topics: ['gry', 'technologia', 'kolekcje'] },
+  { id: 'forum-it', slug: 'forum-programistyczne', name: 'Kod Otwarty', category: 'forum', description: 'Programowanie, administracja i projekty domowe.', color: '#366d91', topics: ['technologia', 'praca', 'elektronika'] },
+  { id: 'forum-podroze', slug: 'forum-podroznicze', name: 'Poza Mapą', category: 'forum', description: 'Planowanie tras, noclegi i relacje z wypraw.', color: '#247b87', topics: ['podróże', 'natura', 'fotografia'] },
+  { id: 'forum-dom', slug: 'forum-domowe', name: 'Dom od Podstaw', category: 'forum', description: 'Remonty, wnętrza i wyposażenie.', color: '#9e7153', topics: ['dom', 'majsterkowanie', 'ogród'] },
+  { id: 'forum-ksiazki', slug: 'forum-ksiazkowe', name: 'Między Stronami', category: 'forum', description: 'Książki, czytelnictwo i dyskusje o autorach.', color: '#9b526b', topics: ['książki', 'sztuka', 'edukacja'] },
+  { id: 'forum-muzyka', slug: 'forum-muzyczne', name: 'Drugi Refren', category: 'forum', description: 'Instrumenty, nagrania i koncerty.', color: '#8e5796', topics: ['muzyka', 'sztuka', 'elektronika'] },
+  { id: 'forum-bieganie', slug: 'forum-biegowe', name: 'Równe Tempo', category: 'forum', description: 'Treningi, starty i sprzęt sportowy.', color: '#a45043', topics: ['sport', 'natura', 'podróże'] },
+  { id: 'forum-lokalne', slug: 'forum-miejskie', name: 'Nasza Dzielnica', category: 'forum', description: 'Sąsiedzkie pytania i sprawy lokalne.', color: '#527c83', topics: ['lokalnie', 'dom', 'wydarzenia'] },
+  { id: 'forum-krypto', slug: 'forum-blockchain', name: 'Łańcuch Rozmów', category: 'forum', description: 'Testowe portfele, technologia blockchain i token LAB.', color: '#8a6c26', topics: ['technologia', 'blockchain', 'elektronika'] },
+].map(service => Object.freeze({ ...service, domain: `${service.slug}.lab.test` })));
+
+export const SERVICE_BY_ID = Object.freeze(Object.fromEntries(SERVICES.map(service => [service.id, service])));
