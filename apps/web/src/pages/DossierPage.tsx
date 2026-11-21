@@ -14,6 +14,7 @@ import { ProofTab } from '../components/ProofTab.tsx';
 import { IdentitiesTab } from '../components/IdentitiesTab.tsx';
 import { RELATION_TEXT, linkLabel } from '../identities.ts';
 import { Explanations } from '../components/Explanations.tsx';
+import { FundingSources, Seizures } from '../components/FundsOrigin.tsx';
 import { periodLabel } from '../proof.ts';
 import type { FullDossier } from '../proof.ts';
 import { ServiceList } from '../components/ServiceCards.tsx';
@@ -314,6 +315,8 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
         {/* Bez osoby i adresów puste sekcje zastępuje wyjaśnienie, czego brakuje. */}
         {!empty && <Determination />}
         <Explanations />
+        <Seizures />
+        <FundingSources />
         <Identifiers dossier={dossier} />
         {!empty && <OtherCandidates />}
 

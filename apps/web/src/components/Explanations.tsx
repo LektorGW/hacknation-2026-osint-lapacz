@@ -11,6 +11,7 @@ import type { Depth, Explanation, RunProgress, UnconfirmedAddress } from '../pro
 import { href, navigate } from '../router.ts';
 import { ExternalLink, LayerTag, ScoreBadge, ShortAddress } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
+import { FUNDING_ANCHOR, SEIZURES_ANCHOR } from './FundsOrigin.tsx';
 import { AnalysisProgress } from './Progress.tsx';
 import { useToast } from './Toast.tsx';
 
@@ -24,6 +25,7 @@ const KIND_TITLE: Record<Explanation['kind'], string> = {
   chain_skipped: 'Nie przeanalizowano blockchainu',
   partial: 'Wynik częściowy',
   no_cash_out: 'Brak udokumentowanego spieniężenia',
+  seized: 'Środki zajęte przez organ państwa — to nie spieniężenie',
 };
 
 /** Ponowna analiza sprawy (opcjonalnie po dopisaniu identyfikatora) z ekranem postępu. */
@@ -104,8 +106,9 @@ export function Explanations() {
   if (explanations.length === 0) return null;
   const busy = depth !== undefined;
   // Jeden przycisk dla całego bloku, niezależnie od tego, ile sugestii mówi o identyfikatorze.
-  const wantsIdentifier = explanations.some((item) => item.suggestions.some((suggestion) => suggestionAction(suggestion) === 'add_identifier'));
+  const wantsIdentifier = explanations.some((item) => (item.suggestions ?? []).some((suggestion) => suggestionAction(suggestion) === 'add_identifier'));
   const hasUnconfirmed = (dossier.unconfirmedAddresses ?? []).length > 0;
+  const jump = (anchor: string) => document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   async function analyseAddress(address: string) {
     setOpening(address);
@@ -128,9 +131,23 @@ export function Explanations() {
         <article key={`${item.kind}-${item.text}`} className="explanation">
           <h3>{KIND_TITLE[item.kind] ?? item.kind}</h3>
           <p>{item.text}</p>
-          {item.suggestions.length > 0 && (
+          {item.kind === 'seized' && ((dossier.seizures ?? []).length > 0 || (dossier.fundingSources ?? []).length > 0) && (
+            <p className="actions">
+              {(dossier.seizures ?? []).length > 0 && (
+                <button type="button" className="button button-small" onClick={() => jump(SEIZURES_ANCHOR)}>
+                  Pokaż zajęcie środków
+                </button>
+              )}
+              {(dossier.fundingSources ?? []).length > 0 && (
+                <button type="button" className="button button-small" onClick={() => jump(FUNDING_ANCHOR)}>
+                  Pokaż pochodzenie środków
+                </button>
+              )}
+            </p>
+          )}
+          {(item.suggestions ?? []).length > 0 && (
             <ul className="suggestions">
-              {item.suggestions.map((suggestion) => {
+              {(item.suggestions ?? []).map((suggestion) => {
                 const action = suggestionAction(suggestion);
                 return (
                   <li key={suggestion}>

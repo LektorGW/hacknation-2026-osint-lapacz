@@ -1,6 +1,7 @@
 // Karta „Analiza adresu”: sprawa założona dla samego adresu, bez ustalania osoby.
 import { fmtAmount, fmtDate, fmtPln, sum } from '../format.ts';
 import { CLASS_LABEL, NETWORK_LABEL } from '../labels.ts';
+import { mentionServices } from '../funds.ts';
 import { proofSummary } from '../proof.ts';
 import type { FullDossier } from '../proof.ts';
 import { CopyButton, Gauge, LayerTag, toLayer } from './common.tsx';
@@ -19,7 +20,7 @@ export function AddressSummary() {
   const profile = finding?.chain?.profile;
   const { totals, keyFindings } = dossier;
   const strongest = proofSummary(dossier.cashOutProof ?? []).strongest;
-  const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0);
+  const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0 || item.note);
   const total = (totals as { cashOutPlnTotal?: number }).cashOutPlnTotal ?? sum(Object.values(totals.cashOutPlnByYear));
 
   return (
@@ -82,12 +83,24 @@ export function AddressSummary() {
             <p className="muted">Nie znaleziono publikacji cytujących ten adres.</p>
           ) : (
             <ul className="plain-list">
-              {mentions.map((item) => (
-                <li key={item.identifier.value}>
-                  Cytowany przez co najmniej <strong>{item.authors}</strong> autorów w <strong>{item.services.length || 1}</strong> serwisach ({item.documents}{' '}
-                  dokumentów{item.services.length > 0 && `: ${item.services.join(', ')}`}) — właściciela nie wskazano.
-                </li>
-              ))}
+              {mentions.map((item, index) => {
+                const services = mentionServices(item.services);
+                return (
+                  <li key={`${item.identifier.value}-${index}`}>
+                    {item.authors > 0 ? (
+                      <>
+                        Cytowany przez co najmniej <strong>{item.authors}</strong> autorów w <strong>{services.count || 1}</strong> serwisach ({item.documents}{' '}
+                        dokumentów{services.names.length > 0 && `: ${services.names.join(', ')}`}) — właściciela nie wskazano.
+                      </>
+                    ) : (
+                      <>
+                        Występuje w <strong>{item.documents}</strong> dokumentach{services.names.length > 0 && ` (${services.names.join(', ')})`} — właściciela nie wskazano.
+                      </>
+                    )}
+                    {item.note && <span className="mention-note">Adnotacja: {item.note}</span>}
+                  </li>
+                );
+              })}
             </ul>
           )}
           <h3>Giełdy i portfele</h3>

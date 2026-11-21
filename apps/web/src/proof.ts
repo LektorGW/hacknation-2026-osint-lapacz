@@ -1,4 +1,5 @@
 // Dowód spieniężenia i postęp analizy: lokalne rozszerzenia kontraktu oraz czysta logika widoków.
+import type { FundingSource, Mention, RelatedAddress, Seizure } from './funds.ts';
 import type { LinkedIdentity } from './identities.ts';
 import type { CashOutTrail, Dossier, Finding, Identifier, Network, StoredEvidence, TextInsight } from '@olcys/core';
 
@@ -36,13 +37,20 @@ export type DossierFinding = Finding & {
   subjectProbability?: number;
   widelyCited?: boolean;
   chainSkipped?: boolean;
+  /** Inne adresy, które łączy z tym adresem sam blockchain. */
+  relatedAddresses?: RelatedAddress[];
 };
 
 export interface DossierExtras {
   cashOutProof?: CashOutProof[];
   /** Wynik częściowy — analizę przerwał limit czasu. */
   partial?: boolean;
-  mentions?: { identifier: Identifier; documents: number; authors: number; services: string[] }[];
+  mentions?: (Mention & { identifier: Identifier })[];
+  /** Przelewy na adresy organów państwa (zajęcia) — nie są spieniężeniem. */
+  seizures?: Seizure[];
+  fundingSources?: FundingSource[];
+  /** Liczba słabych tropów pominiętych na liście powiązanych tożsamości. */
+  weakLeadsHidden?: number;
   summary?: { text: string; model: string; promptVersion: string } | null;
   explanations?: Explanation[];
   unconfirmedAddresses?: UnconfirmedAddress[];
@@ -210,7 +218,7 @@ export function proofTier(confidence: number): string {
 
 // ---------- Wyjaśnienia braków, adresy do potwierdzenia, okres analizy ----------
 
-export type ExplanationKind = 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out';
+export type ExplanationKind = 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out' | 'seized';
 
 export interface Explanation {
   kind: ExplanationKind;

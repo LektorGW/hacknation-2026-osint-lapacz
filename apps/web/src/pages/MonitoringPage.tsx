@@ -5,11 +5,12 @@ import { api } from '../api.ts';
 import type { MonitorSettings } from '../api.ts';
 import type { CorpusStats } from '../proof.ts';
 import { paginate } from '../proof.ts';
+import { DEFAULT_HIT_FILTER, LIMIT_RANGE, POLISH_NEXUS_THRESHOLD, countDismissed, filterHits, hitBasisLabel, lastRunRows, parseLimit, sortHits } from '../monitor.ts';
+import type { HitFilter, MonitorHit, MonitorStatusView } from '../monitor.ts';
 import type { TextInsight } from '@olcys/core';
 import { Bar, Crumbs, EmptyState, ErrorBox, ExternalLink, LayerTag, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { KnownFromCases } from '../components/common.tsx';
-import type { KnownFromCase } from '../identities.ts';
 import { fmtDateTime, fmtPln } from '../format.ts';
 import { NETWORK_LABEL, NETWORK_SHORT } from '../labels.ts';
 import { href, navigate } from '../router.ts';
@@ -26,7 +27,43 @@ const OWNERSHIP: Record<TextInsight['ownership'], string> = {
 const STATUS_NAME: Record<WatchHit['status'], string> = { new: 'nowe', analyzed: 'przeanalizowane', dismissed: 'odrzucone' };
 const LANGUAGE: Record<string, string> = { pl: 'polski', en: 'angielski', de: 'niemiecki', ru: 'rosyjski', uk: 'ukraiński', und: 'nierozpoznany' };
 
-function StatusBar({ status, onChange, onRun, busy }: { status: MonitorStatus; onChange: (settings: MonitorSettings) => void; onRun: () => void; busy: boolean }) {
+/** Pole limitu na przebieg: zapis po opuszczeniu pola, wartość przycinana do zakresu przyjmowanego przez usługę. */
+function LimitField({ label, title, value, range, onSave }: { label: string; title: string; value: number; range: { min: number; max: number }; onSave: (value: number) => void }) {
+  return (
+    <label title={title}>
+      {label}
+      <input
+        type="number"
+        min={range.min}
+        max={range.max}
+        step={1}
+        defaultValue={value}
+        onBlur={(event) => {
+          const parsed = parseLimit(event.target.value, range);
+          if (parsed === undefined) event.target.value = String(value);
+          else if (parsed !== value) onSave(parsed);
+          else event.target.value = String(value);
+        }}
+      />
+    </label>
+  );
+}
+
+function StatusBar({
+  status,
+  onChange,
+  onRun,
+  onRecheck,
+  busy,
+  rechecking,
+}: {
+  status: MonitorStatusView;
+  onChange: (settings: MonitorSettings) => void;
+  onRun: () => void;
+  onRecheck: () => void;
+  busy: boolean;
+  rechecking: boolean;
+}) {
   const [threshold, setThreshold] = useState(status.autoAnalyzeThreshold);
   const working = busy || status.running;
   return (
@@ -63,8 +100,35 @@ function StatusBar({ status, onChange, onRun, busy }: { status: MonitorStatus; o
           onKeyUp={() => threshold !== status.autoAnalyzeThreshold && onChange({ autoAnalyzeThreshold: threshold })}
         />
       </label>
-      <button type="button" className="button button-primary" onClick={onRun} disabled={working}>
+      {typeof status.maxAutoAnalyses === 'number' && (
+        <LimitField
+          label="Limit analiz autorów na przebieg"
+          title={`Ilu autorów najwyżej analizować automatycznie w jednym przebiegu (${LIMIT_RANGE.maxAutoAnalyses.min}–${LIMIT_RANGE.maxAutoAnalyses.max}); 0 wyłącza automatyczną analizę`}
+          value={status.maxAutoAnalyses}
+          range={LIMIT_RANGE.maxAutoAnalyses}
+          onSave={(value) => onChange({ maxAutoAnalyses: value })}
+        />
+      )}
+      {typeof status.maxAiPublications === 'number' && (
+        <LimitField
+          label="Limit publikacji czytanych przez model"
+          title={`Ile publikacji najwyżej czyta model językowy w jednym przebiegu (${LIMIT_RANGE.maxAiPublications.min}–${LIMIT_RANGE.maxAiPublications.max}); 0 wyłącza odczyt przez model`}
+          value={status.maxAiPublications}
+          range={LIMIT_RANGE.maxAiPublications}
+          onSave={(value) => onChange({ maxAiPublications: value })}
+        />
+      )}
+      <button type="button" className="button button-primary" onClick={onRun} disabled={working || rechecking}>
         {working ? 'Przegląd w toku…' : 'Przejrzyj teraz'}
+      </button>
+      <button
+        type="button"
+        className="button"
+        onClick={onRecheck}
+        disabled={working || rechecking}
+        title="Zapisane trafienia są oceniane bieżącymi regułami; te, które nie spełniają już kryteriów, zostają oznaczone jako odrzucone z podanym powodem"
+      >
+        {rechecking ? 'Przeliczanie…' : 'Przelicz zapisane trafienia nowymi regułami'}
       </button>
       <dl>
         <div>
@@ -87,6 +151,34 @@ function StatusBar({ status, onChange, onRun, busy }: { status: MonitorStatus; o
             {status.totals.newHits} / {status.totals.analyzed}
           </dd>
         </div>
+        {typeof status.totals.dismissed === 'number' && (
+          <div>
+            <dt>Odrzucone</dt>
+            <dd>{status.totals.dismissed}</dd>
+          </div>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+/** Rozbicie ostatniego przebiegu: ile publikacji przeszło przez kolejne etapy i dlaczego części nie analizowano. */
+function LastRun({ status }: { status: MonitorStatusView }) {
+  const run = status.totals.lastRun;
+  const rows = lastRunRows(run);
+  if (rows.length === 0) return null;
+  return (
+    <section className="card last-run" aria-labelledby="ostatni-przebieg">
+      <h2 id="ostatni-przebieg">
+        Ostatni przebieg <span className="muted">· {fmtDateTime(run?.at ?? status.lastRunAt)}</span>
+      </h2>
+      <dl className="meta">
+        {rows.map((row) => (
+          <div key={row.label} title={row.hint}>
+            <dt>{row.label}</dt>
+            <dd>{row.value.toLocaleString('pl-PL')}</dd>
+          </div>
+        ))}
       </dl>
     </section>
   );
@@ -230,11 +322,15 @@ function Excerpt({ text, addresses }: { text: string; addresses: string[] }) {
   );
 }
 
-function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
+function HitCard({ hit, onChanged }: { hit: MonitorHit; onChanged: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const extra = hit as WatchHit & { insight?: TextInsight; translationPl?: string };
+  const extra = hit;
   const translation = extra.translationPl ?? extra.insight?.translationPl;
+  const basis = hitBasisLabel(hit.basis);
+  const dismissed = hit.status === 'dismissed';
+  // Odrzucone trafienie często powtarza powód trafienia w powodzie odrzucenia — nie pokazujemy go dwa razy.
+  const reason = hit.hitReason && !(dismissed && hit.dismissReason?.includes(hit.hitReason)) ? hit.hitReason : undefined;
 
   async function act(action: () => Promise<unknown>, message: string) {
     setBusy(true);
@@ -266,12 +362,27 @@ function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
         <span className="muted">
           {hit.service} · {hit.author ?? 'autor nieznany'} · {fmtDateTime(hit.publishedAt ?? hit.detectedAt)}
         </span>
-        <span className="chip">{STATUS_NAME[hit.status]}</span>
+        <span className={`chip ${dismissed ? 'chip-warn' : ''}`}>{STATUS_NAME[hit.status] ?? hit.status}</span>
         <h3>
           <ExternalLink url={hit.url}>{hit.title}</ExternalLink>
         </h3>
       </header>
-      <Excerpt text={hit.excerpt} addresses={hit.addresses.map((item) => item.address)} />
+      {(basis || reason) && (
+        <p className="hit-basis">
+          {basis && (
+            <span className="chip chip-fact" title="Która część definicji trafienia jest spełniona">
+              podstawa: {basis}
+            </span>
+          )}
+          {reason && <span>{reason}</span>}
+        </p>
+      )}
+      {dismissed && (
+        <p className="hit-dismissed">
+          <strong>Powód odrzucenia:</strong> {hit.dismissReason ?? 'nie podano (odrzucone ręcznie albo przez starszą wersję usługi)'}
+        </p>
+      )}
+      <Excerpt text={hit.excerpt ?? ''} addresses={(hit.addresses ?? []).map((item) => item.address)} />
       {translation && (
         <details className="why">
           <summary>Tłumaczenie na polski</summary>
@@ -284,10 +395,10 @@ function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
           {extra.insight.quote && ` — „${extra.insight.quote}”`} <span className="muted">({extra.insight.model})</span>
         </p>
       )}
-      <KnownFromCases items={(hit as WatchHit & { knownFromCases?: KnownFromCase[] }).knownFromCases} />
+      <KnownFromCases items={hit.knownFromCases} />
       <p>
         <span className="chip">język: {LANGUAGE[hit.language] ?? hit.language}</span>
-        {hit.addresses.map((item) => (
+        {(hit.addresses ?? []).map((item) => (
           <span key={item.address} className="chip chip-mono" title={`${NETWORK_LABEL[item.network] ?? item.network}: ${item.address}`}>
             {NETWORK_SHORT[item.network] ?? item.network} · <ShortAddress value={item.address} />
           </span>
@@ -312,6 +423,7 @@ function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
           )}
         </div>
       )}
+      {hit.autoAnalysis && !hit.lead && <p className="muted hit-auto">{hit.autoAnalysis}</p>}
       <div className="actions">
         {hit.caseId ? (
           <a className="button button-small button-primary" href={href.case(hit.caseId)}>
@@ -336,27 +448,20 @@ function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
   );
 }
 
-function Hits({ hits, onChanged }: { hits: WatchHit[]; onChanged: () => void }) {
-  const [status, setStatus] = useState<WatchHit['status'] | 'all'>('all');
-  const [minPolish, setMinPolish] = useState(0);
-  const [minSuspicion, setMinSuspicion] = useState(0);
-  const [network, setNetwork] = useState('all');
-  const [service, setService] = useState('all');
+function Hits({ hits, onChanged }: { hits: MonitorHit[]; onChanged: () => void }) {
+  const [filter, setFilter] = useState<HitFilter>(DEFAULT_HIT_FILTER);
   const [byDate, setByDate] = useState(false);
+  const { status, minPolish, minSuspicion, network, service } = filter;
+  const set = (change: Partial<HitFilter>) => setFilter((current) => ({ ...current, ...change }));
+  const setStatus = (value: HitFilter['status']) => set({ status: value });
+  const setMinPolish = (value: number) => set({ minPolish: value });
+  const setMinSuspicion = (value: number) => set({ minSuspicion: value });
+  const setNetwork = (value: string) => set({ network: value });
+  const setService = (value: string) => set({ service: value });
   const services = useMemo(() => [...new Set(hits.map((hit) => hit.service))].sort(), [hits]);
-  const networks = useMemo(() => [...new Set(hits.flatMap((hit) => hit.addresses.map((item) => item.network)))].sort(), [hits]);
-  const total = (hit: WatchHit) => hit.polishNexus.score + hit.suspicion.score;
-  const when = (hit: WatchHit) => hit.publishedAt ?? hit.detectedAt;
-  const shown = hits
-    .filter(
-      (hit) =>
-        (status === 'all' ? hit.status !== 'dismissed' : hit.status === status) &&
-        hit.polishNexus.score >= minPolish &&
-        hit.suspicion.score >= minSuspicion &&
-        (network === 'all' || hit.addresses.some((item) => item.network === network)) &&
-        (service === 'all' || hit.service === service),
-    )
-    .sort((a, b) => (byDate ? when(b).localeCompare(when(a)) : total(b) - total(a) || when(b).localeCompare(when(a))));
+  const networks = useMemo(() => [...new Set(hits.flatMap((hit) => (hit.addresses ?? []).map((item) => item.network)))].sort(), [hits]);
+  const dismissedCount = useMemo(() => countDismissed(hits), [hits]);
+  const shown = sortHits(filterHits(hits, filter), byDate ? 'date' : 'total');
 
   return (
     <section aria-labelledby="trafienia">
@@ -365,8 +470,8 @@ function Hits({ hits, onChanged }: { hits: WatchHit[]; onChanged: () => void }) 
           Trafienia ({shown.length} z {hits.length})
         </h2>
         <div className="segmented" role="group" aria-label="Sortowanie trafień">
-          <button type="button" aria-pressed={!byDate} onClick={() => setByDate(false)}>
-            Wg sumy ocen
+          <button type="button" aria-pressed={!byDate} onClick={() => setByDate(false)} title="Suma ocen „Związek z Polską” i „Sygnały do sprawdzenia” (0–200)">
+            Od najwyższej sumy ocen
           </button>
           <button type="button" aria-pressed={byDate} onClick={() => setByDate(true)}>
             Wg daty
@@ -378,11 +483,19 @@ function Hits({ hits, onChanged }: { hits: WatchHit[]; onChanged: () => void }) 
         <label>
           Status
           <select value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>
-            <option value="all">nowe i przeanalizowane</option>
+            <option value="all">{filter.showDismissed ? 'wszystkie' : 'nowe i przeanalizowane'}</option>
             <option value="new">nowe</option>
             <option value="analyzed">przeanalizowane</option>
-            <option value="dismissed">odrzucone</option>
+            <option value="dismissed">tylko odrzucone</option>
           </select>
+        </label>
+        <label className="filter-check" title="Odrzucone trafienia są domyślnie ukryte; po włączeniu widać je razem z powodem odrzucenia">
+          <input type="checkbox" checked={filter.showDismissed || status === 'dismissed'} disabled={status !== 'all'} onChange={(event) => set({ showDismissed: event.target.checked })} />
+          pokaż odrzucone ({dismissedCount})
+        </label>
+        <label className="filter-check" title={`Ocena „Związek z Polską” co najmniej ${POLISH_NEXUS_THRESHOLD} na 100`}>
+          <input type="checkbox" checked={filter.polishOnly} onChange={(event) => set({ polishOnly: event.target.checked })} />
+          tylko ze związkiem z Polską
         </label>
         <label>
           Związek z Polską od <output>{minPolish}</output>
@@ -431,10 +544,25 @@ function Hits({ hits, onChanged }: { hits: WatchHit[]; onChanged: () => void }) 
 export function MonitoringPage() {
   const toast = useToast();
   const [running, setRunning] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
   const loaded = useAsync(async () => {
-    const [status, hits, corpus] = await Promise.all([api.getMonitor(), api.listHits(200), api.getCorpusStats().catch(() => null)]);
-    return { status, hits, corpus };
+    // 500 to najwyższy limit usługi — odrzucone trafienia nie mogą wypierać z listy czynnych.
+    const [status, hits, corpus] = await Promise.all([api.getMonitor(), api.listHits(500), api.getCorpusStats().catch(() => null)]);
+    return { status: status as MonitorStatusView, hits: hits as MonitorHit[], corpus };
   }, 'monitor');
+
+  async function recheck() {
+    setRechecking(true);
+    try {
+      const result = await api.recheckMonitor();
+      toast.success(`Przeliczono trafienia: sprawdzone — ${result.checked}, pozostawione — ${result.kept}, odrzucone — ${result.dismissed}.`);
+      loaded.reload();
+    } catch (error) {
+      toast.error(error);
+    } finally {
+      setRechecking(false);
+    }
+  }
 
   async function change(settings: MonitorSettings) {
     try {
@@ -472,7 +600,16 @@ export function MonitoringPage() {
       {loaded.data && (
         <>
           <Registry status={loaded.data.status} corpus={loaded.data.corpus} />
-          <StatusBar key={loaded.data.status.autoAnalyzeThreshold} status={loaded.data.status} onChange={change} onRun={run} busy={running} />
+          <StatusBar
+            key={`${loaded.data.status.autoAnalyzeThreshold}-${loaded.data.status.maxAutoAnalyses}-${loaded.data.status.maxAiPublications}`}
+            status={loaded.data.status}
+            onChange={change}
+            onRun={run}
+            onRecheck={recheck}
+            busy={running}
+            rechecking={rechecking}
+          />
+          <LastRun status={loaded.data.status} />
           <Sources
             sources={loaded.data.status.sources}
             onToggle={(source) => change({ sources: { [source.connectorId]: !source.enabled } })}

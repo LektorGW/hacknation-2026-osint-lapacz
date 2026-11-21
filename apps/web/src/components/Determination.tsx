@@ -2,6 +2,7 @@
 import type { Dossier, PersonCandidate, ProfileCard } from '@olcys/core';
 import { addressKey, jointProbability } from '../dossier.ts';
 import { IDENTIFIER_LABEL } from '../labels.ts';
+import { mentionServices } from '../funds.ts';
 import { proofSummary } from '../proof.ts';
 import { identityHeadline, likelySameTotal } from '../identities.ts';
 import { fmtPln, shorten, sum } from '../format.ts';
@@ -69,7 +70,7 @@ function PersonDetermination() {
   const person = dossier.persons[0];
   const { totals, keyFindings } = dossier;
   const strongest = proofSummary(dossier.cashOutProof ?? []).strongest;
-  const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0);
+  const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0 || item.note);
   const headline = identityHeadline(dossier.linkedIdentities ?? []);
   const withLikelySame = likelySameTotal(totals);
   const total = (totals as { cashOutPlnTotal?: number }).cashOutPlnTotal ?? sum(Object.values(totals.cashOutPlnByYear));
@@ -191,13 +192,18 @@ function PersonDetermination() {
         <div className="key-findings">
           <h3>Wzmianki innych osób (niewliczone)</h3>
           <ul className="plain-list">
-            {mentions.map((item) => (
-              <li key={`${item.identifier.type}-${item.identifier.value}`}>
-                <strong>{item.identifier.value}</strong> <span className="muted">({IDENTIFIER_LABEL[item.identifier.type] ?? item.identifier.type})</span>: {item.documents}{' '}
-                dokumentów, {item.authors} autorów{item.services.length > 0 && ` · ${item.services.join(', ')}`} — inni piszą o tym identyfikatorze; treści nie
-                podnoszą wyniku.
-              </li>
-            ))}
+            {mentions.map((item, index) => {
+              const services = mentionServices(item.services);
+              return (
+                <li key={`${item.identifier.type}-${item.identifier.value}-${index}`}>
+                  <strong>{item.identifier.value}</strong> <span className="muted">({IDENTIFIER_LABEL[item.identifier.type] ?? item.identifier.type})</span>: {item.documents}{' '}
+                  dokumentów, {item.authors} autorów
+                  {services.names.length > 0 ? ` · ${services.names.join(', ')}` : services.count > 0 ? ` · serwisy: ${services.count}` : ''} — inni piszą o tym
+                  identyfikatorze; treści nie podnoszą wyniku.
+                  {item.note && <span className="mention-note">Adnotacja: {item.note}</span>}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

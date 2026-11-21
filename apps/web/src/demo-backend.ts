@@ -811,6 +811,11 @@ export const demoBackend: Backend = {
     }
     return { status: monitorStatus(), newHits: 0 };
   },
+  recheckMonitor: async () => {
+    // Dane demo powstały według bieżących reguł — przeliczenie niczego nie odrzuca.
+    const kept = hits.filter((hit) => hit.status !== 'dismissed').length;
+    return { checked: hits.length, kept, dismissed: 0, status: monitorStatus() };
+  },
   listHits: async (limit) => hits.slice(0, limit),
   analyzeHit: async (hitId) => {
     await wait(900);

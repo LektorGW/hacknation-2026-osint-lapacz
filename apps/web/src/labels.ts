@@ -33,6 +33,7 @@ export const NETWORK_LABEL: Record<Network, string> = {
   'bitcoin-testnet': 'Bitcoin (testnet)',
   ethereum: 'Ethereum',
   tron: 'Tron',
+  lab: 'Sieć laboratoryjna (testowa)',
 };
 
 export const NETWORK_SHORT: Record<Network, string> = {
@@ -40,6 +41,7 @@ export const NETWORK_SHORT: Record<Network, string> = {
   'bitcoin-testnet': 'tBTC',
   ethereum: 'ETH',
   tron: 'TRON',
+  lab: 'LAB',
 };
 
 export const CLASS_LABEL: Record<AddressClass, string> = {

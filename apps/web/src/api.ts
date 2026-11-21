@@ -18,6 +18,7 @@ import type {
 import { dossierFromRun } from './dossier.ts';
 import type { AiStatus, CorpusStats, Depth, FullDossier, Period, RunProgress } from './proof.ts';
 import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './identify.ts';
+import type { RecheckResult } from './monitor.ts';
 import { serviceLinksFromFindings } from './services.ts';
 
 export type ConnectorInfo = Pick<
@@ -80,6 +81,10 @@ export interface MonitorSettings {
   enabled?: boolean;
   everyMinutes?: number;
   autoAnalyzeThreshold?: number;
+  /** Limit automatycznych analiz autorów na przebieg (0–200). */
+  maxAutoAnalyses?: number;
+  /** Limit publikacji czytanych przez model językowy na przebieg (0–2000). */
+  maxAiPublications?: number;
   sources?: Record<string, boolean>;
 }
 
@@ -132,6 +137,8 @@ export interface Backend {
   getMonitor(): Promise<MonitorStatus>;
   updateMonitor(settings: MonitorSettings): Promise<MonitorStatus>;
   runMonitor(): Promise<{ status: MonitorStatus; newHits: number }>;
+  /** Przelicza zapisane trafienia bieżącymi regułami; niespełniające kryteriów stają się odrzucone. */
+  recheckMonitor(): Promise<RecheckResult>;
   listHits(limit: number): Promise<WatchHit[]>;
   analyzeHit(hitId: string): Promise<WatchHit>;
   dismissHit(hitId: string): Promise<WatchHit>;
@@ -272,6 +279,7 @@ const httpBackend: Backend = {
   updateMonitor: (settings) =>
     feature('Monitoring', request('/api/monitor', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) })),
   runMonitor: () => feature('Monitoring', post('/api/monitor/run', {})),
+  recheckMonitor: () => feature('Przeliczenie trafień', post('/api/monitor/recheck', {})),
   listHits: (limit) => feature('Monitoring', request(`/api/monitor/hits?limit=${limit}`)),
   analyzeHit: (hitId) => feature('Analiza autora trafienia', post(`/api/monitor/hits/${enc(hitId)}/analyze`, {})),
   dismissHit: (hitId) => feature('Odrzucenie trafienia', post(`/api/monitor/hits/${enc(hitId)}/dismiss`, {})),

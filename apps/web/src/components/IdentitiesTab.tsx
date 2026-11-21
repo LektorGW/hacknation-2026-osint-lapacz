@@ -202,6 +202,7 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
 export function IdentitiesTab() {
   const { dossier } = useDossier();
   const identities = sortIdentities(dossier.linkedIdentities ?? []);
+  const weakHidden = typeof dossier.weakLeadsHidden === 'number' ? dossier.weakLeadsHidden : 0;
   return (
     <section aria-labelledby="tozsamosci">
       <header className="section-head">
@@ -219,6 +220,11 @@ export function IdentitiesTab() {
         </EmptyState>
       ) : (
         identities.map((identity) => <IdentityCard key={identity.id} identity={identity} />)
+      )}
+      {weakHidden > 0 && (
+        <p className="muted weak-leads" title="Tropy zbyt słabe, żeby pokazywać je jako powiązane tożsamości">
+          słabe tropy niewykazane: {weakHidden}
+        </p>
       )}
     </section>
   );

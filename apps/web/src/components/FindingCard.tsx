@@ -7,6 +7,7 @@ import { DecisionControls, useDossier } from './DossierContext.tsx';
 import { addressKey, jointProbability } from '../dossier.ts';
 import type { DossierFinding } from '../proof.ts';
 import { EvidenceList } from './EvidenceList.tsx';
+import { RelatedAddresses } from './FundsOrigin.tsx';
 
 export const findingAnchor = (address: string) => `adres-${address}`;
 
@@ -109,6 +110,7 @@ export function FindingCard({ finding, index }: { finding: Finding; index: numbe
   return (
     <article className="card finding" id={findingAnchor(finding.address)} tabIndex={-1}>
       <AddressHeader finding={finding} index={index} />
+      <RelatedAddresses items={(finding as DossierFinding).relatedAddresses} />
 
       <LayerSection layer="inference" title="Ocena powiązania z podmiotem">
         <ScoreMeter score={confidence.score} tier={confidence.tier} excluded={confidence.excluded} />
@@ -166,6 +168,7 @@ export function RejectedCard({ finding, index }: { finding: Finding; index: numb
   return (
     <article className="card finding finding-rejected" id={findingAnchor(finding.address)} tabIndex={-1}>
       <AddressHeader finding={finding} index={index} />
+      <RelatedAddresses items={(finding as DossierFinding).relatedAddresses} />
 
       <LayerSection layer="calc" title="Powód wykluczenia">
         {(reasons.length > 0 ? reasons : confidence.ledger).map((entry, position) => (
