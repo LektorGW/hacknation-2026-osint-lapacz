@@ -12,6 +12,8 @@ import { ShortAddress } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { useMode } from './Mode.tsx';
 import { useToast } from './Toast.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Term } from './ui/Term.tsx';
 import '../service-reply.css';
 
 /** Znacznik czwartej warstwy: informacja z odpowiedzi usługi wprowadzonej przez analityka — nie ze źródeł publicznych. */
@@ -290,25 +292,10 @@ function ReplyFormPanel({ link }: { link: ServiceLink }) {
         </div>
       )}
 
-      <fieldset>
-        <legend>Szybka ścieżka: wklej JSON</legend>
-        <label htmlFor={`${uid}-json`} className="visually-hidden">
-          JSON odpowiedzi usługi
-        </label>
-        <textarea
-          id={`${uid}-json`}
-          value={json}
-          onChange={(event) => setJson(event.target.value)}
-          placeholder={'{ "matches": [{ "txids": ["…"] }], "customer": { "fullName": "…" }, "fiatPayouts": [{ "time": "2025-03-15", "amount": 1000, "currency": "PLN" }] }'}
-          spellCheck={false}
-        />
-        <div className="actions">
-          <button type="button" className="button button-small" disabled={busy || !json.trim()} onClick={fillFromJson}>
-            Sprawdź JSON i wypełnij formularz
-          </button>
-        </div>
-      </fieldset>
-
+      <fieldset className="reply-step">
+        <legend>
+          <span className="reply-step-no">1</span> Skąd jest odpowiedź
+        </legend>
       <div className="reply-grid">
         <label>
           Sygnatura / numer sprawy
@@ -318,6 +305,14 @@ function ReplyFormPanel({ link }: { link: ServiceLink }) {
           Data otrzymania
           <input type="date" value={form.receivedAt} max={today()} onChange={(event) => set('receivedAt', event.target.value)} />
         </label>
+      </div>
+      </fieldset>
+
+      <fieldset className="reply-step">
+        <legend>
+          <span className="reply-step-no">2</span> Kim jest klient według usługi
+        </legend>
+      <div className="reply-grid">
         <label>
           Klient: imię i nazwisko
           <input type="text" value={form.fullName} onChange={(event) => set('fullName', event.target.value)} autoComplete="off" />
@@ -352,6 +347,14 @@ function ReplyFormPanel({ link }: { link: ServiceLink }) {
           Konto założone
           <input type="date" value={form.registeredAt} max={today()} onChange={(event) => set('registeredAt', event.target.value)} />
         </label>
+      </div>
+      </fieldset>
+
+      <fieldset className="reply-step">
+        <legend>
+          <span className="reply-step-no">3</span> Co usługa potwierdziła
+        </legend>
+      <div className="reply-grid">
         <label>
           Sieć dopasowań
           <select value={form.network} onChange={(event) => set('network', event.target.value)}>
@@ -383,6 +386,12 @@ function ReplyFormPanel({ link }: { link: ServiceLink }) {
           <textarea value={form.payouts} onChange={(event) => set('payouts', event.target.value)} placeholder="2025-03-15; 131500; PLN; PL61 1090 …; txid" spellCheck={false} />
         </label>
       </div>
+      </fieldset>
+
+      <fieldset className="reply-step">
+        <legend>
+          <span className="reply-step-no">4</span> Notatka i zapis
+        </legend>
       <div className="reply-wide">
         <label>
           Notatka
@@ -401,6 +410,25 @@ function ReplyFormPanel({ link }: { link: ServiceLink }) {
           wśród usług powiązanych w sprawie
         </label>
       </p>
+      </fieldset>
+
+      <Disclosure title="Inna droga: wklej odpowiedź w formacie JSON" className="reply-json">
+        <label htmlFor={`${uid}-json`} className="visually-hidden">
+          JSON odpowiedzi usługi
+        </label>
+        <textarea
+          id={`${uid}-json`}
+          value={json}
+          onChange={(event) => setJson(event.target.value)}
+          placeholder={'{ "matches": [{ "txids": ["…"] }], "customer": { "fullName": "…" }, "fiatPayouts": [{ "time": "2025-03-15", "amount": 1000, "currency": "PLN" }] }'}
+          spellCheck={false}
+        />
+        <div className="actions">
+          <button type="button" className="button button-small" disabled={busy || !json.trim()} onClick={fillFromJson}>
+            Sprawdź JSON i wypełnij formularz
+          </button>
+        </div>
+      </Disclosure>
 
       {hints.length > 0 && (
         <ul className="reply-hints">
@@ -417,7 +445,7 @@ function ReplyFormPanel({ link }: { link: ServiceLink }) {
         </ul>
       )}
       <div className="actions">
-        <button type="button" className="button" disabled={busy} onClick={save}>
+        <button type="button" className="button button-primary" disabled={busy} onClick={save}>
           Zapisz odpowiedź usługi
         </button>
         {form.synthetic && <span className="chip chip-synthetic">dane syntetyczne</span>}
@@ -442,7 +470,7 @@ export function ServiceReplyPanel({ link }: { link: ServiceLink }) {
       </header>
       <p className="replies-intro">
         Blockchain nie pokazuje, kto jest klientem usługi ani czy wypłacono pieniądze na rachunek — potwierdza to wyłącznie usługa. Odpowiedź wprowadza
-        analityk; narzędzie nie znalazło jej w źródłach publicznych i nie weryfikuje jej autentyczności.
+        analityk; to <Term id="odpowiedz-uslugi">dokument spoza OSINT</Term>, którego narzędzie nie weryfikuje.
       </p>
       {replies.map((reply) => (
         <ReplyCard key={reply.id} reply={reply} />

@@ -86,8 +86,9 @@ export interface LayeredOptions {
 /** Układ warstwowy: kolumny wg rodzaju węzła, wiersze w stałym odstępie, kolumny wyśrodkowane w pionie. */
 export function layeredLayout(nodes: GraphNode[], edges: GraphEdge[], options: LayeredOptions = {}): GraphLayout {
   const groups = groupByKind(nodes);
-  // Przy wielu kolumnach (graf śledczy ma ich do dziewięciu) odstęp jest mniejszy, żeby graf mieścił się w oknie.
-  const { columnGap = groups.length > 6 ? 200 : 250, rowGap = 48, padding = 48 } = options;
+  // Odstępy dobrane do podpisów 13 px: kolumna mieści podpis z 24 znaków, wiersz — podpis i drugi wiersz opisu.
+  // Przy wielu kolumnach (graf śledczy ma ich do dziewięciu) odstęp jest nieco mniejszy; szerszy graf przesuwa się, a nie kurczy.
+  const { columnGap = groups.length > 6 ? 250 : 280, rowGap = 62, padding = 56 } = options;
   const ordered = orderColumns(groups, adjacency(nodes, edges));
   const rows = Math.max(1, ...ordered.map((ids) => ids.length));
   const positions = new Map<string, Point>();
@@ -111,7 +112,8 @@ export function layeredLayout(nodes: GraphNode[], edges: GraphEdge[], options: L
  * w miejscu, w którym krawędź wracałaby do węzła już odwiedzanego.
  */
 export function flowLayout(nodes: GraphNode[], edges: GraphEdge[], options: LayeredOptions = {}): GraphLayout {
-  const { columnGap = 250, rowGap = 48, padding = 48 } = options;
+  // Szerokie kolumny: na krawędziach przepływu stoją kwoty („0,35 BTC · 137 tys. zł”).
+  const { columnGap = 400, rowGap = 72, padding = 56 } = options;
   const ids = new Set(nodes.map((node) => node.id));
   const outgoing = new Map<string, string[]>(nodes.map((node) => [node.id, []]));
   const incoming = new Map<string, number>(nodes.map((node) => [node.id, 0]));
@@ -200,13 +202,49 @@ export function radialLayout(nodes: GraphNode[], edges: GraphEdge[], options: Ra
   }
 
   const centre = { x: radius + padding, y: radius + padding };
-  const positions = new Map<string, Point>();
-  for (const node of nodes) {
+  const placed = nodes.map((node) => {
     const r = radii.get(node.id) ?? 0;
     const angle = angles.get(node.id) ?? 0;
-    positions.set(node.id, { x: centre.x + r * Math.cos(angle), y: centre.y + r * Math.sin(angle) });
+    return { id: node.id, x: centre.x + r * Math.cos(angle), y: centre.y + r * Math.sin(angle) };
+  });
+  // Podpisy stoją pod węzłami: rozsuwamy te, które by na siebie zachodziły.
+  const separated = separateBoxes(placed.map((item) => ({ ...item, width: LABEL_BOX.width, height: LABEL_BOX.height })));
+  const positions = new Map<string, Point>(separated.map((item) => [item.id, { x: item.x, y: item.y }]));
+  const maxY = Math.max(centre.y * 2, ...separated.map((item) => item.y + padding));
+  return { positions, width: centre.x * 2, height: maxY, columns: [], rings, centre };
+}
+
+/** Prostokąt podpisu węzła w układzie promienistym (podpis i drugi wiersz pod węzłem). */
+export const LABEL_BOX = { width: 118, height: 46 };
+
+export interface Box {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const overlaps = (a: Box, b: Box, gap: number) => Math.abs(a.x - b.x) < (a.width + b.width) / 2 + gap && Math.abs(a.y - b.y) < (a.height + b.height) / 2 + gap;
+
+/**
+ * Proste rozsuwanie kolizji: prostokąty (środek, wymiary) przetwarzamy od góry; ten, który nachodzi
+ * na już ustawiony, przesuwamy w dół o brakującą odległość. Deterministyczne, bez zmiany kolejności.
+ */
+export function separateBoxes(boxes: Box[], gap = 4, maxRounds = 50): Box[] {
+  const sorted = [...boxes].sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id));
+  const done: Box[] = [];
+  for (const box of sorted) {
+    const current = { ...box };
+    for (let round = 0; round < maxRounds; round += 1) {
+      const hit = done.find((other) => overlaps(current, other, gap));
+      if (!hit) break;
+      current.y = hit.y + (hit.height + current.height) / 2 + gap;
+    }
+    done.push(current);
   }
-  return { positions, width: centre.x * 2, height: centre.y * 2, columns: [], rings, centre };
+  const byId = new Map(done.map((box) => [box.id, box]));
+  return boxes.map((box) => byId.get(box.id)!);
 }
 
 export interface GraphFilter {
@@ -252,6 +290,24 @@ export interface EdgeGeometry {
   mid: Point;
   /** Kierunek krawędzi w połowie długości, w stopniach. */
   angle: number;
+}
+
+/** Punkt i kierunek na krzywej `edgeGeometry` w miejscu `t` (0 = początek, 1 = koniec) — np. strzałka bliżej celu. */
+export function pointOnEdge(from: Point, to: Point, curved: boolean, t: number): { point: Point; angle: number } {
+  const degrees = (dx: number, dy: number) => (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (!curved || from.x === to.x) {
+    return { point: { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t }, angle: degrees(to.x - from.x, to.y - from.y) };
+  }
+  const bend = (to.x - from.x) / 2;
+  const c1 = { x: from.x + bend, y: from.y };
+  const c2 = { x: to.x - bend, y: to.y };
+  const u = 1 - t;
+  const at = (a: number, b: number, c: number, d: number) => u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
+  const slope = (a: number, b: number, c: number, d: number) => 3 * u * u * (b - a) + 6 * u * t * (c - b) + 3 * t * t * (d - c);
+  return {
+    point: { x: at(from.x, c1.x, c2.x, to.x), y: at(from.y, c1.y, c2.y, to.y) },
+    angle: degrees(slope(from.x, c1.x, c2.x, to.x), slope(from.y, c1.y, c2.y, to.y)),
+  };
 }
 
 /** Krzywa między węzłami: w układzie warstwowym pozioma „esowata”, w promienistym odcinek. */

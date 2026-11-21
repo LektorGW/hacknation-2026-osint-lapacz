@@ -9,8 +9,9 @@ import { href, navigate } from '../router.ts';
 import { EmptyState, ExternalLink, Initial, LayerTag, ScoreBadge, ShortAddress } from './common.tsx';
 import { EvidenceRefItem, StatusBadge } from './Indicators.tsx';
 import { SyntheticTag } from './Mode.tsx';
-import { ORDINAL_NOTE } from '../labels.ts';
 import { useDossier } from './DossierContext.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 import { useToast } from './Toast.tsx';
 
 const IDENTITY_STATUS_LABEL = { hypothesis: 'hipoteza', confirmed: 'potwierdzona', rejected: 'odrzucona' } as const;
@@ -75,19 +76,17 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
         <div className="identity-relation">
           <StatusBadge status={status} label={IDENTITY_STATUS_LABEL[status]} />
           <strong>{RELATION_TEXT[identity.relation] ?? identity.relation}</strong>
-          <span className="bar bar-wide" title={ORDINAL_NOTE}>
-            <span className="bar-track" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={identity.score} aria-label={`Siła powiązania z ${identity.displayName}`}>
-              <span className="bar-fill" style={{ width: `${Math.max(0, Math.min(100, identity.score))}%` }} />
-            </span>
-            <span className="bar-value">{identity.score}</span>
-          </span>
+          <Score value={identity.score} kind="strength" reasons={identity.path} caption="siła powiązania" />
         </div>
       </header>
-      {rejected && <p className="chip chip-warn">Hipoteza odrzucona przez analityka — tożsamość zostaje jako powiązana</p>}
-      {status === 'confirmed' && <p className="chip chip-ok">✓ Wspólny operator potwierdzony decyzją analityka</p>}
+      {rejected && <p className="status status-rejected">Hipoteza odrzucona przez analityka — tożsamość zostaje jako powiązana</p>}
+      {status === 'confirmed' && <p className="status status-ok">✓ Wspólny operator potwierdzony decyzją analityka</p>}
       {status === 'hypothesis' && (
         <p className="identity-hypothesis">
-          To przypuszczenie narzędzia, a nie ustalenie. Liczba obok jest wskaźnikiem porządkowym z jawnych reguł — nie prawdopodobieństwem.
+          <span className="status status-inference">
+            <Term id="hipoteza-operatora">hipoteza</Term>
+          </span>{' '}
+          przypuszczenie narzędzia, a nie ustalenie — wymaga Twojej decyzji.
         </p>
       )}
 
@@ -215,7 +214,9 @@ export function IdentitiesTab() {
     <section aria-labelledby="tozsamosci">
       <header className="section-head">
         <div>
-          <h2 id="tozsamosci">Powiązane tożsamości ({identities.length})</h2>
+          <h2 id="tozsamosci">
+            <Term id="tozsamosc-powiazana">Powiązane tożsamości</Term> ({identities.length})
+          </h2>
           <p className="muted">
             Każde konto podmiotu jest punktem wyjścia do dalszych ścieżek: ten sam adres, telefon lub adres wpłat giełdy pod inną nazwą. Każde powiązanie
             to hipoteza wspólnego operatora — potwierdzenie albo odrzucenie jest decyzją analityka.

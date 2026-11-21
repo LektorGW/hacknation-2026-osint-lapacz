@@ -2,7 +2,8 @@
 // krawędzie z kwotami w PLN. Płótno ma własne ciemne tło niezależnie od motywu aplikacji.
 import { useMemo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { DualScore, ExternalLink, LayerTag, ShortAddress } from '../components/common.tsx';
+import { ExternalLink, LayerTag, ShortAddress } from '../components/common.tsx';
+import { Score } from '../components/ui/Score.tsx';
 import { useDossier } from '../components/DossierContext.tsx';
 import { ServiceCard } from '../components/ServiceCards.tsx';
 import { jointProbability } from '../dossier.ts';
@@ -215,7 +216,7 @@ function Panel({ selection, nodes, edges, onClose }: { selection: Selection; nod
         <>
           <p className="mono address">{finding.address}</p>
           <p>
-            {NETWORK_LABEL[finding.network]} · <DualScore joint={jointProbability(dossier, finding)} score={finding.confidence.score} excluded={finding.confidence.excluded} />
+            {NETWORK_LABEL[finding.network]} · <Score value={jointProbability(dossier, finding) ?? finding.confidence.score} kind={jointProbability(dossier, finding) === undefined ? 'publication' : 'joint'} size="sm" ledger={finding.confidence.ledger} excluded={finding.confidence.excluded} />
           </p>
           <p>{finding.confidence.tier}</p>
           <p>

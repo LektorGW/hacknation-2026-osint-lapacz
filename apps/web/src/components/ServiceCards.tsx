@@ -4,7 +4,10 @@ import { api, serviceRequestUrl } from '../api.ts';
 import { fmtAmount, fmtDate, fmtDateTime, fmtPln, fmtPlnCompact } from '../format.ts';
 import { BASIS_LABEL, NETWORK_LABEL, SERVICE_KIND_LABEL } from '../labels.ts';
 import { useAsync } from '../useAsync.ts';
-import { Bar, CopyButton, EmptyState, ExternalLink, Initial, LayerSection, LayerTag, ShortAddress } from './common.tsx';
+import { CopyButton, EmptyState, ExternalLink, Initial, LayerTag, ShortAddress } from './common.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { OrphanReplies, ServiceReplyPanel } from './ServiceReplies.tsx';
 
@@ -64,8 +67,7 @@ function Stat({ label, value, note }: { label: string; value: string; note?: str
 function Transfers({ link }: { link: ServiceLink }) {
   const inferred = link.transfers.some((item) => item.viaAddress);
   return (
-    <details className="fold">
-      <summary>Przelewy ({link.transfers.length})</summary>
+    <Disclosure layer="fact" title="Przelewy" meta={link.transfers.length}>
       <div className="table-scroll">
         <table className="table table-dense">
           <thead>
@@ -111,7 +113,7 @@ function Transfers({ link }: { link: ServiceLink }) {
           </>
         )}
       </p>
-    </details>
+    </Disclosure>
   );
 }
 
@@ -120,29 +122,34 @@ function RequestHints({ link }: { link: ServiceLink }) {
   const available = useAsync(() => api.hasServiceRequest(dossier.runId, link.id), `${dossier.runId}|${link.id}`);
   if (link.requestHints.length === 0) return null;
   return (
-    <section className="request">
-      <header>
-        <h4>O co zapytać tę usługę</h4>
-        <div className="actions">
-          <CopyButton value={link.requestHints.join('\n')} label={`Kopiuj wszystkie punkty zapytania do ${link.name}`} text="Kopiuj wszystko" />
-          {available.data && (
-            <a className="button button-small" href={serviceRequestUrl(dossier.runId, link.id)} target="_blank" rel="noopener noreferrer">
-              Materiał do zapytania
-            </a>
-          )}
-        </div>
-      </header>
-      <ul>
-        {link.requestHints.map((hint) => (
-          <li key={hint}>
-            <span>{hint}</span>
-            <CopyButton value={hint} label="Kopiuj ten punkt zapytania" />
-          </li>
-        ))}
-      </ul>
-    </section>
+    <Disclosure title="Przygotuj zapytanie do usługi" meta={`${link.requestHints.length} pkt`} className="service-action">
+      <div className="pt-questions">
+        <header>
+          <h4>O co zapytać {link.name}</h4>
+          <div className="actions">
+            <CopyButton value={link.requestHints.join('\n')} label={`Kopiuj wszystkie punkty zapytania do ${link.name}`} text="Kopiuj wszystkie" />
+            {available.data && (
+              <a className="button button-small button-primary" href={serviceRequestUrl(dossier.runId, link.id)} target="_blank" rel="noopener noreferrer">
+                Materiał do zapytania
+              </a>
+            )}
+          </div>
+        </header>
+        <ol className="checklist">
+          {link.requestHints.map((hint) => (
+            <li key={hint}>
+              <span className="checklist-box" aria-hidden="true" />
+              <span className="checklist-text">{hint}</span>
+              <CopyButton value={hint} label="Kopiuj ten punkt zapytania" />
+            </li>
+          ))}
+        </ol>
+      </div>
+    </Disclosure>
   );
 }
+
+const BASIS_TERM: Partial<Record<string, 'adres-wplat' | 'portfel-powierniczy'>> = { deposit_address: 'adres-wplat' };
 
 /** Karta usługi: podstawa powiązania, kwoty, przelewy, wzmianki i gotowe punkty zapytania. */
 export function ServiceCard({ link, compact = false }: { link: ServiceLink; compact?: boolean }) {
@@ -159,17 +166,22 @@ export function ServiceCard({ link, compact = false }: { link: ServiceLink; comp
           </p>
         </div>
         <div className="service-strength">
-          <span className="muted">siła powiązania</span>
-          <Bar value={link.strength} label={`Siła powiązania z ${link.name}`} wide />
+          <Score value={link.strength} kind="strength" reasons={link.reasons} caption="siła powiązania z osobą" />
         </div>
       </header>
 
       <p className="basis">
+        <span className="muted small">Na jakiej podstawie: </span>
         {link.basis.map((basis) => (
           <span key={basis} className={`chip ${basis === 'deposit_address' ? 'chip-inference' : basis.startsWith('transfer') ? 'chip-fact' : ''}`}>
-            {BASIS_LABEL[basis] ?? basis}
+            {BASIS_TERM[basis] ? <Term id={BASIS_TERM[basis]!}>{BASIS_LABEL[basis] ?? basis}</Term> : (BASIS_LABEL[basis] ?? basis)}
           </span>
         ))}
+        {link.kind === 'exchange' && (
+          <span className="chip">
+            <Term id="portfel-powierniczy">portfel zbiorczy giełdy</Term>
+          </span>
+        )}
         {link.inferredOnly && <LayerTag layer="inference" />}
       </p>
 
@@ -187,17 +199,20 @@ export function ServiceCard({ link, compact = false }: { link: ServiceLink; comp
         />
       </dl>
 
-      <ul className="reasons">
-        {link.reasons.map((reason) => (
-          <li key={reason}>{reason}</li>
-        ))}
-      </ul>
+      {link.reasons.length > 0 && (
+        <Disclosure title="Dlaczego powiązano tę usługę" meta={link.reasons.length}>
+          <ul className="reasons">
+            {link.reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        </Disclosure>
+      )}
 
-      <RequestHints link={link} />
-      {!compact && <ServiceReplyPanel link={link} />}
+      {link.transfers.length > 0 && <Transfers link={link} />}
 
       {link.mentions.length > 0 && (
-        <LayerSection layer="fact" title={`Wzmianki i konta w publicznych treściach (${link.mentions.length})`}>
+        <Disclosure layer="fact" title="Wzmianki i konta w publicznych treściach" meta={link.mentions.length}>
           <ul className="plain-list">
             {link.mentions.map((mention) => (
               <li key={`${mention.url}-${mention.excerpt}`}>
@@ -206,10 +221,11 @@ export function ServiceCard({ link, compact = false }: { link: ServiceLink; comp
               </li>
             ))}
           </ul>
-        </LayerSection>
+        </Disclosure>
       )}
 
-      {link.transfers.length > 0 && <Transfers link={link} />}
+      <RequestHints link={link} />
+      {!compact && <ServiceReplyPanel link={link} />}
     </article>
   );
 }

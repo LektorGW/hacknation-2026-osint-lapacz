@@ -1,15 +1,18 @@
 // Graf śledczy: podmiot → hipotezy operatora → persony → konta → adresy → usługi. Własny SVG,
 // układ warstwowy, promienisty albo przepływowy (warstwa blockchain), statusy relacji, zwijanie gałęzi,
 // filtry, ścieżka dowodowa i decyzje analityka w panelu bocznym.
-import { useMemo, useState } from 'react';
-import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode, RefObject } from 'react';
 import type { ClaimStatus, Dossier, GraphEdge, GraphNode, GraphNodeKind } from '@olcys/core';
-import { DualScore, EmptyState, ExternalLink, ScoreBadge } from '../components/common.tsx';
+import { EmptyState, ExternalLink } from '../components/common.tsx';
+import { Disclosure } from '../components/ui/Disclosure.tsx';
+import { Score, ScoreSteps } from '../components/ui/Score.tsx';
+import { Term } from '../components/ui/Term.tsx';
 import { DecisionControls, DecisionHistory, useDossier } from '../components/DossierContext.tsx';
 import { EvidenceRefs, OperatorDecision, OperatorHypothesisDetails, IndicatorScore, StatusBadge } from '../components/Indicators.tsx';
 import { SyntheticTag } from '../components/Mode.tsx';
 import { addressKey, jointProbability } from '../dossier.ts';
-import { fmtAmount, fmtDelta, fmtPln, scoreLevel, truncate } from '../format.ts';
+import { fmtAmount, fmtPln, scoreLevel, truncate } from '../format.ts';
 import {
   CLAIM_STATUSES,
   CLAIM_STATUS_LABEL,
@@ -21,26 +24,29 @@ import {
   NODE_KIND_PLURAL,
   ORDINAL_NOTE,
   RELATION_LABEL,
-  ruleLabel,
 } from '../labels.ts';
 import { Canvas } from './Canvas.tsx';
+import type { CanvasCentre } from './Canvas.tsx';
 import { RELATION_TEXT } from '../identities.ts';
 import type { FullDossier } from '../proof.ts';
 import {
   applyView,
   childMap,
   collapseGraph,
+  declutter,
   edgeLayer,
   edgeStatus,
   findEvidencePath,
   hypothesisForEdge,
   linkKeyOf,
   nodeStatus,
+  searchNodes,
   sourceCounts,
   toggled,
+  withinHops,
 } from './investigation.ts';
 import type { EvidencePath, LayerView } from './investigation.ts';
-import { KIND_ORDER, edgeGeometry, flowLayout, layeredLayout, neighbourhood, radialLayout } from './layout.ts';
+import { KIND_ORDER, edgeGeometry, flowLayout, layeredLayout, neighbourhood, pointOnEdge, radialLayout } from './layout.ts';
 import type { Point } from './layout.ts';
 
 const hexagon = (r: number) =>
@@ -85,26 +91,24 @@ function NodeDetails({ node, dossier }: { node: GraphNode; dossier: Dossier }) {
   if (node.kind === 'address') {
     const finding = dossier.findings.find((item) => node.id.includes(item.address));
     if (!finding) return null;
+    const joint = jointProbability(dossier, finding);
     return (
       <>
         <p className="mono address">{finding.address}</p>
+        <div className="panel-scores">
+          {joint !== undefined && !finding.confidence.excluded && <Score value={joint} kind="joint" caption={<Term id="osoba-adres">powiązanie z osobą</Term>} />}
+          <Score value={finding.confidence.score} kind="publication" excluded={finding.confidence.excluded} ledger={finding.confidence.ledger} caption={<Term id="wskaznik-pewnosci">publikacja adresu</Term>} />
+        </div>
+        <Disclosure title="Skąd wynik — krok po kroku" meta={finding.confidence.ledger.length}>
+          <ScoreSteps ledger={finding.confidence.ledger} compact />
+        </Disclosure>
         <p>
-          <DualScore joint={jointProbability(dossier, finding)} score={finding.confidence.score} excluded={finding.confidence.excluded} />
-        </p>
-        <h4>Skrót księgi reguł</h4>
-        <ul className="plain-list">
-          {finding.confidence.ledger.map((entry, index) => (
-            <li key={index}>
-              <strong>{fmtDelta(entry.delta)}</strong> {ruleLabel(entry.rule)}
-            </li>
-          ))}
-        </ul>
-        <p>
-          <a href={tabHref('adresy')}>Pełna karta adresu</a>
+          <a href={tabHref('adresy')}>Pełna karta adresu →</a>
         </p>
         <DecisionControls target="address" decisionKey={addressKey(finding)} confirmLabel="To adres tej osoby" rejectLabel="To nie jest adres tej osoby" />
-        <h4>Historia zmian</h4>
-        <DecisionHistory keys={[addressKey(finding)]} />
+        <Disclosure title="Historia zmian">
+          <DecisionHistory keys={[addressKey(finding)]} />
+        </Disclosure>
       </>
     );
   }
@@ -113,21 +117,28 @@ function NodeDetails({ node, dossier }: { node: GraphNode; dossier: Dossier }) {
     if (!profile) return null;
     return (
       <>
+        <div className="panel-scores">
+          <Score value={profile.identityScore} kind="person" reasons={profile.identityReasons} caption="pewność, że to konto osoby ze sprawy" />
+        </div>
         <p>
-          Ocena tożsamości: <ScoreBadge score={profile.identityScore} /> — {IDENTITY_LABEL[profile.identityMatch] ?? profile.identityMatch}
+          <span className="status status-calc">{IDENTITY_LABEL[profile.identityMatch] ?? profile.identityMatch}</span>
         </p>
-        <ul className="reasons">
-          {profile.identityReasons.map((reason) => (
-            <li key={reason}>{reason}</li>
-          ))}
-        </ul>
         <p>
-          <a href={tabHref('profile')}>Karta profilu</a>
+          <a href={tabHref('profile')}>Karta profilu →</a>
         </p>
         <DecisionControls target="profile" decisionKey={profile.id} confirmLabel="Potwierdź: konto podmiotu" rejectLabel="Odrzuć: to nie konto podmiotu" />
-        <h4>Historia zmian</h4>
-        <DecisionHistory keys={[profile.id]} />
+        <Disclosure title="Historia zmian">
+          <DecisionHistory keys={[profile.id]} />
+        </Disclosure>
       </>
+    );
+  }
+  if (node.kind === 'source' && node.id.startsWith('reply:')) {
+    return (
+      <p className="reply-banner is-confirmed">
+        <Term id="odpowiedz-uslugi">Dokument spoza OSINT</Term> — odpowiedź usługi wprowadzona przez analityka. Narzędzie nie weryfikuje jego autentyczności.{' '}
+        <a href={tabHref('uslugi')}>Treść odpowiedzi →</a>
+      </p>
     );
   }
   if (node.kind === 'service') {
@@ -223,10 +234,9 @@ function StatusExplained({ status }: { status: ClaimStatus }) {
 
 function OrdinalScore({ label, value }: { label: string; value: number }) {
   return (
-    <p className="ordinal-score">
-      {label}: <strong>{value}/100</strong>
-      <span className="cell-note">{ORDINAL_NOTE}</span>
-    </p>
+    <div className="panel-scores">
+      <Score value={value} kind="strength" caption={label} />
+    </div>
   );
 }
 
@@ -310,7 +320,7 @@ function NodePanel({ node, edges, label, actions, collapsed, sourceCount, source
       {node.kind === 'operator' && (
         <p className="notice notice-inline">Węzeł oznacza przypuszczenie, że kilka kont obsługuje ten sam operator. Nie jest ustaloną osobą.</p>
       )}
-      {node.score !== undefined && <OrdinalScore label="Wynik węzła" value={node.score} />}
+      {node.score !== undefined && node.kind !== 'address' && node.kind !== 'profile' && <OrdinalScore label="Wynik węzła" value={node.score} />}
       {node.url && (
         <p>
           <ExternalLink url={node.url}>otwórz źródło</ExternalLink> <SyntheticTag source={{ url: node.url }} />
@@ -337,22 +347,23 @@ function NodePanel({ node, edges, label, actions, collapsed, sourceCount, source
           </button>
         )}
       </div>
-      <h4>Połączenia ({touching.length})</h4>
-      <ul className="plain-list connections">
-        {touching.map((edge) => (
-          <li key={edge.id}>
-            <button type="button" className="link-button" onClick={() => actions.select({ type: 'edge', id: edge.id })}>
-              {edge.from === node.id ? '→' : '←'} <strong>{label(edge.from === node.id ? edge.to : edge.from)}</strong>
-            </button>
-            <span className="muted">
-              {' '}
-              · {EDGE_KIND_LABEL[edge.kind] ?? edge.kind}
-              {edge.label && ` · ${edge.label}`}
-            </span>{' '}
-            <StatusBadge status={edgeStatus(edge)} />
-          </li>
-        ))}
-      </ul>
+      <Disclosure title="Połączenia" meta={touching.length} defaultOpen={touching.length <= 6}>
+        <ul className="plain-list connections">
+          {touching.map((edge) => (
+            <li key={edge.id}>
+              <button type="button" className="link-button" onClick={() => actions.select({ type: 'edge', id: edge.id })}>
+                {edge.from === node.id ? '→' : '←'} <strong>{label(edge.from === node.id ? edge.to : edge.from)}</strong>
+              </button>
+              <span className="muted">
+                {' '}
+                · {EDGE_KIND_LABEL[edge.kind] ?? edge.kind}
+                {edge.label && ` · ${edge.label}`}
+              </span>{' '}
+              <StatusBadge status={edgeStatus(edge)} />
+            </li>
+          ))}
+        </ul>
+      </Disclosure>
     </>
   );
 }
@@ -437,25 +448,68 @@ function StatusSwatch({ status }: { status: ClaimStatus }) {
   );
 }
 
+/** Kwota na krawędzi przepływu bez przedrostka „krok N:” — w widoku przepływów kolumny i tak są krokami. */
+const flowCaption = (edge: GraphEdge) => (edge.label ? edge.label.replace(/^krok \d+:\s*/u, '').replace(/ przel\.,/u, ' przel. ·') : null);
+
+/** Szerokość szuflady szczegółów (24rem + margines) w pikselach ekranu. */
+const DRAWER_WIDTH = 400;
+
+/** Szerokość pudełka usługi w widoku przepływów. */
+const SERVICE_BOX = 196;
+
+/** Pełny ekran: Fullscreen API, a gdy niedostępne — warstwa na całe okno (Esc zamyka). */
+function useFullscreen(target: RefObject<HTMLElement | null>) {
+  const [native, setNative] = useState(false);
+  const [fallback, setFallback] = useState(false);
+  useEffect(() => {
+    const onChange = () => setNative(document.fullscreenElement === target.current && target.current !== null);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, [target]);
+  useEffect(() => {
+    if (!fallback) return;
+    const onKey = (event: globalThis.KeyboardEvent) => event.key === 'Escape' && setFallback(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fallback]);
+  const toggle = async () => {
+    if (native) return void document.exitFullscreen?.();
+    if (fallback) return setFallback(false);
+    try {
+      if (!target.current?.requestFullscreen) throw new Error('brak Fullscreen API');
+      await target.current.requestFullscreen();
+    } catch {
+      setFallback(true);
+    }
+  };
+  return { on: native || fallback, fallback, toggle };
+}
+
 export function GraphView() {
   const { dossier } = useDossier();
   const all = dossier.graph;
+  const stage = useRef<HTMLDivElement>(null);
+  const full = useFullscreen(stage);
   const [layer, setLayer] = useState<LayerView>('both');
   const [radial, setRadial] = useState(false);
   const [statuses, setStatuses] = useState<ReadonlySet<ClaimStatus>>(new Set(CLAIM_STATUSES));
   const [hiddenKinds, setHiddenKinds] = useState<ReadonlySet<GraphNodeKind>>(new Set());
   const [minScore, setMinScore] = useState(0);
+  const [showWeak, setShowWeak] = useState(false);
+  const [showRejected, setShowRejected] = useState(false);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [sourcesShown, setSourcesShown] = useState<ReadonlySet<string>>(new Set());
   const [active, setActive] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   const [pathEnds, setPathEnds] = useState<{ from: string; to: string } | null>(null);
   const [picking, setPicking] = useState(false);
+  const [query, setQuery] = useState('');
+  const [centre, setCentre] = useState<CanvasCentre | null>(null);
 
-  const viewed = useMemo(
-    () => applyView(all.nodes, all.edges, { statuses, kinds: new Set(KIND_ORDER.filter((kind) => !hiddenKinds.has(kind))), minScore, layer }),
-    [all, statuses, hiddenKinds, minScore, layer],
-  );
+  const viewed = useMemo(() => {
+    const base = applyView(all.nodes, all.edges, { statuses, kinds: new Set(KIND_ORDER.filter((kind) => !hiddenKinds.has(kind))), minScore, layer });
+    return declutter(base.nodes, base.edges, { showWeak, showRejected });
+  }, [all, statuses, hiddenKinds, minScore, layer, showWeak, showRejected]);
   const graph = useMemo(() => collapseGraph(viewed.nodes, viewed.edges, { collapsed, sourcesShown }), [viewed, collapsed, sourcesShown]);
   const flow = layer === 'chain';
   const layout = useMemo(
@@ -469,14 +523,23 @@ export function GraphView() {
   const path = useMemo(() => (pathEnds ? findEvidencePath(graph.edges, pathEnds.from, pathEnds.to) : null), [graph.edges, pathEnds]);
   const pathEdges = useMemo(() => new Set(path?.steps.map((step) => step.edge.id)), [path]);
   const pathNodes = useMemo(() => new Set(path?.nodes), [path]);
+  const subject = all.nodes.find((node) => node.kind === 'subject');
+  const selectedId = selection?.type === 'node' ? selection.id : null;
+  // Tryb skupienia: zaznaczony węzeł, jego otoczenie (2 kroki) i droga dowodowa do podmiotu.
+  const focus = useMemo(() => {
+    if (!selectedId || pathEnds) return null;
+    const set = withinHops(graph.edges, selectedId, 2);
+    if (subject && selectedId !== subject.id) for (const id of findEvidencePath(graph.edges, selectedId, subject.id)?.nodes ?? []) set.add(id);
+    return set;
+  }, [graph.edges, selectedId, subject, pathEnds]);
   const near = useMemo(() => (active ? neighbourhood(graph.edges, active) : null), [graph.edges, active]);
   const at = (id: string): Point => layout.positions.get(id) ?? { x: 0, y: 0 };
   const curved = flow || !radial;
   const kinds = KIND_ORDER.filter((kind) => all.nodes.some((node) => node.kind === kind));
   const label = (id: string) => all.nodes.find((item) => item.id === id)?.label ?? id;
-  const subject = all.nodes.find((node) => node.kind === 'subject');
   const statusCount = (status: ClaimStatus) => all.edges.filter((edge) => edgeStatus(edge) === status).length;
   const chainEdges = all.edges.filter((edge) => edgeLayer(edge) === 'chain').length;
+  const results = useMemo(() => searchNodes(graph.nodes, query), [graph.nodes, query]);
 
   if (all.nodes.length <= 1) {
     return <EmptyState title="Graf jest pusty">Analiza nie znalazła profili ani adresów do połączenia z podmiotem.</EmptyState>;
@@ -491,6 +554,23 @@ export function GraphView() {
     }
     setPicking(false);
     setSelection({ type: 'node', id });
+    // Panel szczegółów zasłania prawą część płótna — węzeł pod nim przesuwamy w widoczne miejsce.
+    const point = layout.positions.get(id);
+    if (point) setCentre({ ...point, key: `${id}-${Date.now()}`, avoidRight: DRAWER_WIDTH, onlyIfHidden: true });
+  }
+
+  function find(node: GraphNode) {
+    setSelection({ type: 'node', id: node.id });
+    setPathEnds(null);
+    const point = layout.positions.get(node.id);
+    if (point) setCentre({ ...point, key: `${node.id}-${Date.now()}`, avoidRight: DRAWER_WIDTH });
+    setQuery('');
+  }
+
+  function showAll() {
+    setSelection(null);
+    setPathEnds(null);
+    setPicking(false);
   }
 
   const onKey = (run: (event: KeyboardEvent) => void) => (event: KeyboardEvent) => {
@@ -519,12 +599,7 @@ export function GraphView() {
     ...(selectedNode ? { toggleSources: () => toggleSources(selectedNode.id) } : {}),
   };
 
-  let panel: ReactNode = (
-    <p className="muted">
-      Kliknij węzeł albo relację, żeby zobaczyć wyjaśnienie, status, dowody i decyzje. Dwuklik zwija lub rozwija gałąź. Shift + klik drugiego węzła pokazuje
-      ścieżkę dowodową między nimi.
-    </p>
-  );
+  let panel: ReactNode = null;
   if (selectedNode) {
     panel = (
       <NodePanel
@@ -541,40 +616,91 @@ export function GraphView() {
   } else if (selectedEdge) {
     panel = <EdgePanel edge={selectedEdge} nodes={all.nodes} label={label} actions={actions} />;
   }
+  const panelOpen = panel !== null || pathEnds !== null;
+  const dimmed = focus !== null || path !== null;
+  const columns = layout.columns.map((column) => ({ x: column.x, label: column.label ?? NODE_KIND_PLURAL[column.kind] ?? column.kind }));
+  const maxWeight = Math.max(1, ...graph.edges.filter((edge) => edgeLayer(edge) === 'chain').map((edge) => edge.weight ?? 0));
 
   return (
-    <section aria-labelledby="graf-powiazan">
+    <section aria-labelledby="graf-powiazan" className="graph-section">
       <header className="section-head">
         <div>
           <h2 id="graf-powiazan">Graf śledczy</h2>
-          <p className="muted">
-            Widocznych {graph.nodes.length} z {all.nodes.length} węzłów i {graph.edges.length} z {all.edges.length} relacji. Styl linii oznacza status relacji —
-            hipoteza (linia przerywana) nie jest ustaleniem.
+          <p className="muted small">
+            Widać {graph.nodes.length} z {all.nodes.length} węzłów i {graph.edges.length} z {all.edges.length} relacji. Linia przerywana to{' '}
+            <Term id="hipoteza">hipoteza</Term> — nie ustalenie. Kliknij węzeł, aby skupić widok na jego otoczeniu.
           </p>
-        </div>
-        <div className="graph-switches">
-          <div className="segmented" role="group" aria-label="Warstwa grafu">
-            {LAYER_OPTIONS.map((option) => (
-              <button key={option.id} type="button" aria-pressed={layer === option.id} onClick={() => setLayer(option.id)}>
-                {option.label}
-                {option.id === 'chain' && ` (${chainEdges})`}
-              </button>
-            ))}
-          </div>
-          {!flow && (
-            <div className="segmented" role="group" aria-label="Układ grafu">
-              <button type="button" aria-pressed={!radial} onClick={() => setRadial(false)}>
-                Warstwowy
-              </button>
-              <button type="button" aria-pressed={radial} onClick={() => setRadial(true)}>
-                Promienisty
-              </button>
-            </div>
-          )}
         </div>
       </header>
 
-      <div className="card graph-filters">
+      <div className="graph-toolbar" role="toolbar" aria-label="Widok grafu">
+        <div className="segmented" role="group" aria-label="Warstwa grafu">
+          {LAYER_OPTIONS.map((option) => (
+            <button key={option.id} type="button" aria-pressed={layer === option.id} onClick={() => setLayer(option.id)}>
+              {option.label}
+              {option.id === 'chain' && ` (${chainEdges})`}
+            </button>
+          ))}
+        </div>
+        {!flow && (
+          <div className="segmented" role="group" aria-label="Układ grafu">
+            <button type="button" aria-pressed={!radial} onClick={() => setRadial(false)}>
+              Kolumny
+            </button>
+            <button type="button" aria-pressed={radial} onClick={() => setRadial(true)}>
+              Promieniście
+            </button>
+          </div>
+        )}
+        <div className="graph-search">
+          <label htmlFor="znajdz-w-grafie" className="visually-hidden">
+            Znajdź w grafie
+          </label>
+          <input
+            id="znajdz-w-grafie"
+            type="search"
+            placeholder="Znajdź w grafie: konto, adres, usługa"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && results[0]) {
+                event.preventDefault();
+                find(results[0]);
+              }
+            }}
+            autoComplete="off"
+            aria-controls="wyniki-grafu"
+          />
+          {results.length > 0 && (
+            <ul id="wyniki-grafu" className="graph-results" role="listbox" aria-label="Wyniki wyszukiwania w grafie">
+              {results.map((node) => (
+                <li key={node.id}>
+                  <button type="button" onClick={() => find(node)}>
+                    <span className="muted small">{NODE_KIND_LABEL[node.kind] ?? node.kind}</span> {node.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {(viewed.weak > 0 || showWeak) && (
+          <button type="button" className="button button-small" aria-pressed={showWeak} onClick={() => setShowWeak(!showWeak)} title="Hipotezy o wyniku lub wadze poniżej 40">
+            {showWeak ? `Ukryj słabe hipotezy (${viewed.weak})` : `Pokaż słabe hipotezy (${viewed.weak})`}
+          </button>
+        )}
+        {(viewed.rejected > 0 || showRejected) && (
+          <button type="button" className="button button-small" aria-pressed={showRejected} onClick={() => setShowRejected(!showRejected)} title="Relacje odrzucone decyzją analityka albo sprzecznością">
+            {showRejected ? `Ukryj odrzucone (${viewed.rejected})` : `Pokaż odrzucone (${viewed.rejected})`}
+          </button>
+        )}
+        {dimmed && (
+          <button type="button" className="button button-small button-primary" onClick={showAll}>
+            Pokaż wszystko
+          </button>
+        )}
+      </div>
+
+      <Disclosure title="Filtry" meta="status relacji, rodzaj węzła, minimalny wynik" className="graph-filters">
         <fieldset className="filters">
           <legend>Status relacji</legend>
           {CLAIM_STATUSES.map((status) => (
@@ -609,42 +735,60 @@ export function GraphView() {
             Schowaj źródła
           </button>
         </fieldset>
-        {picking && (
-          <p className="notice notice-inline" role="status">
-            Wskaż na grafie drugi węzeł ścieżki dowodowej.{' '}
-            <button type="button" className="link-button" onClick={() => setPicking(false)}>
-              Anuluj
-            </button>
-          </p>
-        )}
-      </div>
+      </Disclosure>
+
+      {picking && (
+        <p className="status-box" role="status">
+          <span>Wskaż na grafie drugi węzeł ścieżki dowodowej.</span>
+          <button type="button" className="button button-small" onClick={() => setPicking(false)}>
+            Anuluj
+          </button>
+        </p>
+      )}
 
       {graph.nodes.length === 0 ? (
         <EmptyState title={flow ? 'Brak przepływów blockchain do pokazania' : 'Żaden element nie spełnia filtrów'}>
           {flow ? 'Teczka nie zawiera przelewów ani ścieżek środków spełniających filtry.' : 'Włącz więcej statusów, rodzajów węzłów albo obniż minimalny wynik.'}
         </EmptyState>
       ) : (
-        <div className="graph-layout">
-          <Canvas minFit={0.72} width={layout.width} height={layout.height} label={flow ? 'Przepływy blockchain: od lewej do prawej zgodnie z kierunkiem przelewów' : 'Graf śledczy podmiotu'} className={`link-graph ${picking ? 'is-picking' : ''}`}>
-            {layout.columns.map((column, index) => (
-              <text key={`${column.kind}-${index}`} className="graph-column" x={column.x} y={14} textAnchor="middle">
-                {column.label ?? NODE_KIND_PLURAL[column.kind]}
-              </text>
-            ))}
+        <div ref={stage} className={`graph-stage ${full.on ? 'is-full' : ''} ${full.fallback ? 'is-full-fallback' : ''} ${panelOpen ? 'has-panel' : ''}`}>
+          <Canvas
+            width={layout.width}
+            height={layout.height}
+            minFit={0.8}
+            columns={radial && !flow ? undefined : columns}
+            centre={centre}
+            label={flow ? 'Przepływy blockchain: od lewej do prawej zgodnie z kierunkiem przelewów' : 'Graf śledczy podmiotu'}
+            className={`link-graph ${flow ? 'is-flow' : ''} ${picking ? 'is-picking' : ''} ${dimmed ? 'is-focus' : ''}`}
+            tools={
+              <button type="button" className="icon-button canvas-fit" onClick={full.toggle} aria-pressed={full.on} title={full.on ? 'Zamknij pełny ekran (Esc)' : 'Pełny ekran'}>
+                {full.on ? 'Zamknij pełny ekran' : 'Pełny ekran'}
+              </button>
+            }
+          >
             {layout.centre && layout.rings.map((ring) => <circle key={ring.kind} className="graph-ring" cx={layout.centre!.x} cy={layout.centre!.y} r={ring.radius} />)}
             {graph.edges.map((edge) => {
-              const geometry = edgeGeometry(at(edge.from), at(edge.to), curved);
               const status = edgeStatus(edge);
-              const dim = (near && !(edge.from === active || edge.to === active)) || (path && !pathEdges.has(edge.id));
               const chain = edgeLayer(edge) === 'chain';
+              const toService = flow && kindOf.get(edge.to) === 'service';
+              const end = toService ? { x: at(edge.to).x - 16, y: at(edge.to).y } : at(edge.to);
+              const geometry = edgeGeometry(at(edge.from), end, curved);
+              // W przepływach strzałka i kwota stoją w 3/4 drogi — za podpisem adresu źródłowego, nie pod nim.
+              const marker = flow && chain ? pointOnEdge(at(edge.from), end, curved, 0.8) : { point: geometry.mid, angle: geometry.angle };
+              const inFocus = !focus || (focus.has(edge.from) && focus.has(edge.to));
+              const dim = (near && !focus && !(edge.from === active || edge.to === active)) || (path && !pathEdges.has(edge.id)) || !inFocus;
               const description = `${EDGE_KIND_LABEL[edge.kind] ?? edge.kind}: ${label(edge.from)} → ${label(edge.to)}, ${CLAIM_STATUS_LABEL[status]}${edge.label ? `, ${edge.label}` : ''}`;
-              const caption = status === 'rejected' ? truncate(edge.label ?? 'odrzucone', 26) : status === 'hypothesis' && (edge.kind === 'same_operator' || edge.kind === 'operates') ? 'hipoteza' : null;
+              const selected = selection?.type === 'edge' && selection.id === edge.id;
+              const touched = active !== null && (edge.from === active || edge.to === active);
+              // Podpisy krawędzi tylko na żądanie (najechanie, zaznaczenie); w widoku przepływów — zawsze kwoty.
+              const caption = flow && chain ? flowCaption(edge) : selected || touched || pathEdges.has(edge.id) ? (edge.label ? truncate(edge.label, 30) : status === 'hypothesis' ? 'hipoteza' : null) : null;
+              const width = flow && chain ? 1.5 + ((edge.weight ?? 0) / maxWeight) * 7 : status === 'source_fact' ? 1.4 + (edge.weight ?? 20) / 45 : undefined;
               const pick = () => setSelection({ type: 'edge', id: edge.id });
               return (
                 <g
                   key={edge.id}
                   data-node
-                  className={`gedge gedge-${edge.kind} st-${status} ${dim ? 'is-dim' : ''} ${pathEdges.has(edge.id) ? 'is-path' : ''} ${selection?.type === 'edge' && selection.id === edge.id ? 'is-selected' : ''}`}
+                  className={`gedge gedge-${edge.kind} st-${status} ${dim ? 'is-dim' : ''} ${pathEdges.has(edge.id) ? 'is-path' : ''} ${selected ? 'is-selected' : ''}`}
                   tabIndex={0}
                   role="button"
                   aria-label={description}
@@ -653,16 +797,22 @@ export function GraphView() {
                 >
                   <title>{description}</title>
                   <path className="gedge-hit" d={geometry.path} />
-                  <path className="gedge-line" d={geometry.path} strokeWidth={status === 'source_fact' ? 1.4 + (edge.weight ?? 20) / 45 : undefined} />
-                  {chain && <polygon className="gedge-arrow" points="-5,-4 5,0 -5,4" transform={`translate(${geometry.mid.x},${geometry.mid.y}) rotate(${geometry.angle})`} />}
+                  <path className="gedge-line" d={geometry.path} strokeWidth={width} />
+                  {chain && <polygon className="gedge-arrow" points="-6,-5 6,0 -6,5" transform={`translate(${marker.point.x},${marker.point.y}) rotate(${marker.angle})`} />}
                   {status === 'confirmed' && (
-                    <g className="gedge-mark" transform={`translate(${geometry.mid.x},${geometry.mid.y - (chain ? 12 : 0)})`}>
+                    <g className="gedge-mark" transform={`translate(${geometry.mid.x},${geometry.mid.y - (chain ? 14 : 0)})`}>
                       <circle r={8} />
                       <path className="gedge-check" d="M-4,0 l3,3 l5,-6" />
                     </g>
                   )}
                   {caption && (
-                    <text className={`gedge-label ${status === 'rejected' ? 'is-struck' : ''}`} x={geometry.mid.x} y={geometry.mid.y - 6} textAnchor="middle">
+                    <text
+                      className={`gedge-label ${flow && chain ? 'is-amount' : ''} ${status === 'rejected' ? 'is-struck' : ''}`}
+                      // W przepływach kwota stoi bliżej celu — za podpisem adresu źródłowego, nie na nim.
+                      x={marker.point.x}
+                      y={marker.point.y - 12}
+                      textAnchor="middle"
+                    >
                       {caption}
                     </text>
                   )}
@@ -677,14 +827,15 @@ export function GraphView() {
               const isCollapsed = collapsed.has(node.id);
               const sourceCount = sources.get(node.id) ?? 0;
               const shown = sourcesShown.has(node.id);
-              const caption = status === 'hypothesis' ? 'hipoteza' : status === 'confirmed' ? '✓ potwierdzone przez analityka' : status === 'rejected' ? 'odrzucone' : null;
+              const caption = status === 'hypothesis' ? 'hipoteza' : status === 'confirmed' ? '✓ potwierdzone' : status === 'rejected' ? 'odrzucone' : null;
               const description = `${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}`;
-              const dim = (near && !near.has(node.id)) || (path && !pathNodes.has(node.id));
+              const dim = (near && !focus && !near.has(node.id)) || (path && !pathNodes.has(node.id)) || (focus !== null && !focus.has(node.id));
+              const serviceBox = flow && node.kind === 'service';
               return (
                 <g
                   key={node.id}
                   data-node
-                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''}`}
+                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''}`}
                   transform={`translate(${point.x},${point.y})`}
                   tabIndex={0}
                   role="button"
@@ -698,37 +849,63 @@ export function GraphView() {
                   onBlur={() => setActive(null)}
                 >
                   <title>{description}</title>
-                  <Glyph kind={node.kind} />
-                  {radial && !flow ? (
+                  {serviceBox ? (
                     <>
-                      <text className="gnode-label" y={30} textAnchor="middle">
+                      <rect className="gnode-box" x={-16} y={-22} width={SERVICE_BOX} height={44} rx={10} />
+                      <text className="gnode-label" x={-4} y={-3}>
+                        {truncate(node.label, 22)}
+                      </text>
+                      <text className="gnode-sub" x={-4} y={13}>
+                        {truncate(node.sublabel ?? 'usługa', 28)}
+                      </text>
+                    </>
+                  ) : (
+                    <Glyph kind={node.kind} />
+                  )}
+                  {serviceBox ? null : radial && !flow ? (
+                    <>
+                      <text className="gnode-label" y={32} textAnchor="middle">
                         {truncate(node.label, 16)}
                       </text>
                       {caption && (
-                        <text className="gnode-caption" y={42} textAnchor="middle">
+                        <text className="gnode-caption" y={46} textAnchor="middle">
                           {caption}
                         </text>
                       )}
                     </>
                   ) : (
                     <>
-                      <text className="gnode-label" x={22} y={node.sublabel || caption ? -3 : 4}>
+                      {/* Tło podpisu: krawędzie przechodzące pod podpisem nie przekreślają tekstu. */}
+                      <rect
+                        className="gnode-label-bg"
+                        x={18}
+                        y={node.sublabel || caption ? -16 : -9}
+                        width={
+                          Math.max(
+                            truncate(node.label, 24).length * 8.2 + (node.score !== undefined && !node.excluded ? 26 : 0),
+                            ((caption ?? '').length + (caption && node.sublabel ? 3 : 0) + (node.sublabel ? truncate(node.sublabel, caption ? 18 : 28).length : 0)) * 6.8,
+                          ) + 10
+                        }
+                        height={node.sublabel || caption ? 36 : 20}
+                        rx={6}
+                      />
+                      <text className="gnode-label" x={22} y={node.sublabel || caption ? -3 : 5}>
                         {truncate(node.label, 24)}
                         {node.score !== undefined && !node.excluded && <tspan className="gnode-score"> {node.score}</tspan>}
                       </text>
                       {(caption || node.sublabel) && (
-                        <text className="gnode-sub" x={22} y={12}>
+                        <text className="gnode-sub" x={22} y={14}>
                           {caption && <tspan className="gnode-caption">{caption}</tspan>}
                           {caption && node.sublabel ? ' · ' : ''}
-                          {node.sublabel ? truncate(node.sublabel, caption ? 20 : 30) : ''}
+                          {node.sublabel ? truncate(node.sublabel, caption ? 18 : 28) : ''}
                         </text>
                       )}
                     </>
                   )}
-                  {branch > 0 && (
+                  {branch > 0 && !serviceBox && (
                     <g
                       className="gnode-toggle"
-                      transform="translate(-27,0)"
+                      transform="translate(-28,0)"
                       role="button"
                       tabIndex={0}
                       aria-expanded={!isCollapsed}
@@ -749,7 +926,7 @@ export function GraphView() {
                   {sourceCount > 0 && (
                     <g
                       className={`gnode-sources ${shown ? 'is-open' : ''}`}
-                      transform="translate(0,-22)"
+                      transform={serviceBox ? 'translate(150,-22)' : 'translate(0,-24)'}
                       role="button"
                       tabIndex={0}
                       aria-expanded={shown}
@@ -758,8 +935,8 @@ export function GraphView() {
                       onDoubleClick={(event) => event.stopPropagation()}
                       onKeyDown={onKey(() => toggleSources(node.id))}
                     >
-                      <rect x={-19} y={-7} width={38} height={14} rx={7} />
-                      <text y={3.5} textAnchor="middle">
+                      <rect x={-21} y={-8} width={42} height={16} rx={8} />
+                      <text y={4} textAnchor="middle">
                         {shown ? '−' : '+'}
                         {sourceCount} źr.
                       </text>
@@ -769,14 +946,16 @@ export function GraphView() {
               );
             })}
           </Canvas>
-          <aside className={`side-panel ${selectedNode || selectedEdge || pathEnds ? '' : 'side-panel-empty'}`} aria-label="Szczegóły elementu grafu">
-            {pathEnds && <PathSection path={path} ends={pathEnds} label={label} onClear={() => setPathEnds(null)} />}
-            {panel}
-          </aside>
+          {panelOpen && (
+            <aside className="side-panel graph-drawer" aria-label="Szczegóły elementu grafu">
+              {pathEnds && <PathSection path={path} ends={pathEnds} label={label} onClear={() => setPathEnds(null)} />}
+              {panel}
+            </aside>
+          )}
         </div>
       )}
 
-      <div className="graph-legend" aria-label="Legenda grafu">
+      <Disclosure title="Legenda — kształty i linie" className="graph-legend">
         <ul className="legend-row">
           {CLAIM_STATUSES.map((status) => (
             <li key={status} title={CLAIM_STATUS_MEANING[status]}>
@@ -787,7 +966,7 @@ export function GraphView() {
             <svg className="legend-glyph gnode gnode-operator st-hypothesis" viewBox="-20 -20 40 40" aria-hidden="true">
               <Glyph kind="operator" />
             </svg>
-            obrys przerywany + podpis „hipoteza”: węzeł nie jest ustaloną tożsamością
+            obrys przerywany i podpis „hipoteza”: nie ustalona tożsamość
           </li>
         </ul>
         <ul className="legend-row">
@@ -803,10 +982,11 @@ export function GraphView() {
             <span className="legend-arrow" aria-hidden="true">
               ➤
             </span>{' '}
-            strzałka: kierunek przepływu w blockchainie
+            strzałka: kierunek przepływu; grubość linii: wartość
           </li>
         </ul>
-      </div>
+      </Disclosure>
     </section>
   );
 }
+

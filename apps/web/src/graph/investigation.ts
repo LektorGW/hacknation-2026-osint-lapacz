@@ -83,13 +83,101 @@ export function applyView(nodes: GraphNode[], edges: GraphEdge[], filter: ViewFi
   return prune(keptNodes, keptEdges, (node) => node.kind === 'subject' && !chainOnly);
 }
 
+// ---------- Mniej szumu: słabe hipotezy i relacje odrzucone za przełącznikami ----------
+
+/** Próg „słabej” hipotezy: wynik albo waga poniżej tej wartości. */
+export const WEAK_HYPOTHESIS = 40;
+
+export interface DeclutterOptions {
+  showWeak: boolean;
+  showRejected: boolean;
+}
+
+/** Relacja tożsamości oparta na słabej hipotezie (waga < 40). Przepływy blockchain mają wagę względnej wartości — nie są „słabe”. */
+export const isWeakEdge = (edge: GraphEdge): boolean =>
+  edgeLayer(edge) === 'identity' && edgeStatus(edge) === 'hypothesis' && edge.weight !== undefined && edge.weight < WEAK_HYPOTHESIS;
+
+/** Węzeł-hipoteza ze słabym wynikiem (np. powiązana osoba o sile < 40). */
+export const isWeakNode = (node: GraphNode): boolean => nodeStatus(node) === 'hypothesis' && node.score !== undefined && node.score < WEAK_HYPOTHESIS;
+
+/**
+ * Domyślny widok bez szumu: słabe hipotezy i relacje odrzucone są schowane za przełącznikami,
+ * a liczby schowanych elementów zwracamy, żeby nic nie znikało po cichu.
+ */
+export function declutter(nodes: GraphNode[], edges: GraphEdge[], options: DeclutterOptions): Graph & { weak: number; rejected: number } {
+  const weakEdges = edges.filter(isWeakEdge);
+  const weakNodes = nodes.filter(isWeakNode);
+  const rejectedEdges = edges.filter((edge) => edgeStatus(edge) === 'rejected');
+  const rejectedNodes = nodes.filter((node) => nodeStatus(node) === 'rejected');
+  const dropNodes = new Set([...(options.showWeak ? [] : weakNodes), ...(options.showRejected ? [] : rejectedNodes)].map((node) => node.id));
+  const dropEdges = new Set([...(options.showWeak ? [] : weakEdges), ...(options.showRejected ? [] : rejectedEdges)].map((edge) => edge.id));
+  const graph = prune(
+    nodes.filter((node) => !dropNodes.has(node.id)),
+    edges.filter((edge) => !dropEdges.has(edge.id)),
+    // Zostają podmiot i węzły, które od początku nie miały połączeń; resztę bez połączeń usuwamy.
+    (node) => node.kind === 'subject' || edges.every((edge) => edge.from !== node.id && edge.to !== node.id),
+  );
+  return { ...graph, weak: weakEdges.length + weakNodes.length, rejected: rejectedEdges.length + rejectedNodes.length };
+}
+
+// ---------- Tryb skupienia i wyszukiwanie ----------
+
+/** Węzły w odległości do `hops` kroków od wskazanego (relacje nieskierowane). */
+export function withinHops(edges: { from: string; to: string }[], id: string, hops = 2): Set<string> {
+  const result = new Set([id]);
+  let frontier = [id];
+  for (let step = 0; step < hops; step += 1) {
+    const next: string[] = [];
+    for (const edge of edges) {
+      for (const [a, b] of [
+        [edge.from, edge.to],
+        [edge.to, edge.from],
+      ] as const) {
+        if (frontier.includes(a) && !result.has(b)) {
+          result.add(b);
+          next.push(b);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return result;
+}
+
+/** Wyszukiwanie w grafie: nazwa, podpis i identyfikator węzła (konto, adres, usługa), bez względu na wielkość liter. */
+export function searchNodes(nodes: GraphNode[], query: string, limit = 8): GraphNode[] {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2) return [];
+  const score = (node: GraphNode) => {
+    const label = node.label.toLowerCase();
+    if (label === needle) return 0;
+    if (label.startsWith(needle)) return 1;
+    if (label.includes(needle)) return 2;
+    if ((node.sublabel ?? '').toLowerCase().includes(needle) || node.id.toLowerCase().includes(needle)) return 3;
+    return -1;
+  };
+  return nodes
+    .map((node) => ({ node, rank: score(node) }))
+    .filter((item) => item.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || a.node.label.localeCompare(b.node.label))
+    .slice(0, limit)
+    .map((item) => item.node);
+}
+
 // ---------- Zwijanie gałęzi ----------
+
+/**
+ * Odpowiedź usługi (dokument spoza OSINT, węzeł `reply:<id>`) to źródło, którego nie chowamy za licznikiem:
+ * potwierdza ustalenia i musi być widoczna od razu — w warstwie tożsamości i w widoku obu warstw.
+ */
+export const isPinnedSource = (node: Pick<GraphNode, 'id' | 'kind'>): boolean => node.kind === 'source' && node.id.startsWith('reply:');
 
 /** Węzeł nadrzędny źródła: `parent`, a gdy go brak — drugi koniec relacji „udokumentowane w źródle”. */
 export function sourceParents(nodes: GraphNode[], edges: GraphEdge[]): Map<string, string> {
-  const kinds = new Map(nodes.map((node) => [node.id, node.kind]));
+  const kinds = new Map(nodes.filter((node) => !isPinnedSource(node)).map((node) => [node.id, node.kind]));
+  const known = new Set(nodes.map((node) => node.id));
   const result = new Map<string, string>();
-  for (const node of nodes) if (node.kind === 'source' && node.parent && kinds.has(node.parent)) result.set(node.id, node.parent);
+  for (const node of nodes) if (node.kind === 'source' && !isPinnedSource(node) && node.parent && known.has(node.parent)) result.set(node.id, node.parent);
   for (const edge of edges) {
     for (const [source, other] of [
       [edge.to, edge.from],

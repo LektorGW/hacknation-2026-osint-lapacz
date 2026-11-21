@@ -223,7 +223,7 @@ const SECTION_HINT: Partial<Record<string, { id: string; text: string }>> = {
   },
   graf: {
     id: 'sekcja-graf',
-    text: 'Kliknij węzeł, aby zobaczyć szczegóły. Linia przerywana to hipoteza, ciągła — fakt lub obliczenie.',
+    text: 'Kliknij węzeł: widok skupi się na jego otoczeniu, a z prawej otworzą się szczegóły. „Pełny ekran” daje więcej miejsca, wyszukiwarka znajdzie konto, adres albo usługę.',
   },
 };
 

@@ -7,9 +7,11 @@ import { proofSummary } from '../proof.ts';
 import { identityHeadline, likelySameTotal } from '../identities.ts';
 import { fmtPln, shorten, sum } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
-import { isExternalDocumentText } from '../service-reply.ts';
 import type { ServiceReplyRef } from '../service-reply.ts';
-import { DualScore, Gauge, Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
+import { Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 import { ExternalDocTag } from './ServiceReplies.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { ServiceChips } from './ServiceCards.tsx';
@@ -75,7 +77,7 @@ export function Determination() {
 function PersonDetermination() {
   const { dossier, tabHref } = useDossier();
   const person = dossier.persons[0];
-  const { totals, keyFindings } = dossier;
+  const { totals } = dossier;
   const strongest = proofSummary(dossier.cashOutProof ?? []).strongest;
   const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0 || item.note);
   const headline = identityHeadline(dossier.linkedIdentities ?? []);
@@ -85,21 +87,31 @@ function PersonDetermination() {
   return (
     <section className="determination card" aria-labelledby="ustalenie">
       <header className="determination-head">
-        <h2 id="ustalenie">Ustalenie</h2>
-        <LayerTag layer="inference" />
-        <span className="muted">
-          {replyRef(person) ? 'osoba potwierdzona odpowiedzią usługi — dokumentem spoza OSINT wprowadzonym przez analityka' : 'wynik automatycznego łączenia profili — bez udziału analityka'}
-        </span>
+        <h2 id="ustalenie">Ustalenie osoby</h2>
+        {replyRef(person) ? (
+          <span className="status status-external">potwierdzone odpowiedzią usługi</span>
+        ) : person?.status === 'confirmed' ? (
+          <span className="status status-ok">potwierdzone przez analityka</span>
+        ) : (
+          <span className="status status-inference">
+            <Term id="hipoteza">hipoteza</Term> — wynik automatycznego łączenia profili
+          </span>
+        )}
       </header>
 
-      {dossier.summary && (
-        <p className="ai-summary">
-          {dossier.summary.text}
-          <span className="muted">
-            Streszczenie wygenerowane przez model z ustaleń poniżej · {dossier.summary.model} · wersja polecenia {dossier.summary.promptVersion}
-          </span>
+      {person && replyRef(person) && (
+        <p className="reply-banner is-confirmed" role="note">
+          <ExternalDocTag short /> <strong>Tożsamość potwierdzona odpowiedzią usługi {replyRef(person)!.serviceName}</strong> (sygn. {replyRef(person)!.reference}).
+          To <Term id="odpowiedz-uslugi">dokument spoza OSINT</Term> wprowadzony przez analityka — narzędzie nie weryfikuje jego autentyczności.{' '}
+          <a href={tabHref('uslugi')}>Treść odpowiedzi →</a>
         </p>
       )}
+      {person &&
+        contradictionsOf(person).map((text) => (
+          <p key={text} className="reply-banner is-contradiction" role="alert">
+            <ExternalDocTag short /> <strong>Według odpowiedzi usługi konto należy do innej osoby.</strong> {text} <a href={tabHref('uslugi')}>Treść odpowiedzi →</a>
+          </p>
+        ))}
       {headline.length > 0 && (
         <p className="identities-short">
           <LayerTag layer="inference" /> <strong>Możliwe inne tożsamości:</strong> {headline.join('; ')}. <a href={tabHref('tozsamosci')}>Ścieżki dojścia i dowody</a>
@@ -118,28 +130,25 @@ function PersonDetermination() {
         <div className="determination-person">
           {person ? (
             <>
-              <Gauge value={person.probability} label="prawdopodobieństwo, że to osoba, której dotyczy sprawa" size={132} />
               <div>
                 <p className="person-name">{person.fullName ?? 'Imię i nazwisko: nie ustalono — źródła nie ujawniają'}</p>
-                {replyRef(person) && (
-                  <p className="reply-note">
-                    <ExternalDocTag short /> <strong>Potwierdzone odpowiedzią usługi {replyRef(person)!.serviceName}</strong>, sygn. {replyRef(person)!.reference}.{' '}
-                    <a href={tabHref('uslugi')}>Treść odpowiedzi</a>
-                  </p>
-                )}
-                {contradictionsOf(person).map((text) => (
-                  <p key={text} className="reply-note is-contradiction">
-                    <ExternalDocTag short /> <strong>Konto w usłudze należy do innej osoby.</strong> {text} <a href={tabHref('uslugi')}>Treść odpowiedzi</a>
-                  </p>
-                ))}
+                <Score
+                  value={person.probability}
+                  kind="person"
+                  size="lg"
+                  reasons={person.reasons.filter((reason) => !contradictionsOf(person).includes(reason))}
+                  caption={<Term id="pewnosc-osoby">pewność, że to osoba ze sprawy</Term>}
+                />
                 {person.nameVariants.length > 0 && (
                   <p className="muted person-variants">występuje też jako: {person.nameVariants.join(', ')}</p>
                 )}
-                <ul className="reasons">
-                  {person.reasons.filter((reason) => !contradictionsOf(person).includes(reason)).map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ul>
+                <Disclosure title="Dlaczego ta osoba" meta={person.reasons.length}>
+                  <ul className="reasons">
+                    {person.reasons.filter((reason) => !contradictionsOf(person).includes(reason)).map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                </Disclosure>
               </div>
             </>
           ) : (
@@ -172,7 +181,7 @@ function PersonDetermination() {
                     <code className="mono" title={finding?.address}>
                       {shorten(finding?.address ?? item.key.split(':').slice(1).join(':'), 7, 5)}
                     </code>
-                    <DualScore joint={finding ? (jointProbability(dossier, finding) ?? item.probability) : item.probability} score={finding?.confidence.score ?? 0} excluded={finding?.confidence.excluded} />
+                    <Score value={finding ? (jointProbability(dossier, finding) ?? item.probability) : item.probability} kind="joint" size="sm" ledger={finding?.confidence.ledger} excluded={finding?.confidence.excluded} />
                   </li>
                 );
               })}
@@ -183,34 +192,27 @@ function PersonDetermination() {
           <h3>Giełdy i portfele</h3>
           <ServiceChips />
           <div className="determination-totals">
-            <Gauge value={totals.priority} label="priorytet sprawy" unit="" size={84} />
             <div>
-              <p className="total-value">{total > 0 ? fmtPln(total) : 'brak oznak wypłat'}</p>
-              <p className="muted">szacowane wypłaty na waluty tradycyjne</p>
+              <p className="total-value tabular">{total > 0 ? fmtPln(total) : 'brak oznak wypłat'}</p>
+              <p className="muted">
+                szacowane wypłaty na waluty tradycyjne (<Term id="wycena">szacunek</Term>)
+              </p>
               {withLikelySame !== undefined && (
                 <p
                   className="total-combined"
                   title="Suma wypłat podmiotu powiększona o wypłaty tożsamości z mocną hipotezą wspólnego operatora. Nie jest ustaleniem — liczby łączą się dopiero po scaleniu przez analityka."
                 >
-                  <strong>{fmtPln(withLikelySame)}</strong> łącznie z tożsamościami z hipotezą wspólnego operatora
+                  <strong>{fmtPln(withLikelySame)}</strong> łącznie z tożsamościami z <Term id="hipoteza-operatora">hipotezą wspólnego operatora</Term>
                 </p>
               )}
-              <details className="why">
-                <summary>Skąd priorytet {totals.priority}/100</summary>
-                <ul>
-                  {totals.priorityReasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ul>
-              </details>
+              <Score value={totals.priority} kind="priority" reasons={totals.priorityReasons} caption="priorytet sprawy" />
             </div>
           </div>
         </div>
       </div>
 
       {mentions.length > 0 && (
-        <div className="key-findings">
-          <h3>Wzmianki innych osób (niewliczone)</h3>
+        <Disclosure title="Wzmianki innych osób (niewliczone do wyniku)" meta={mentions.length} className="mentions">
           <ul className="plain-list">
             {mentions.map((item, index) => {
               const services = mentionServices(item.services);
@@ -225,26 +227,9 @@ function PersonDetermination() {
               );
             })}
           </ul>
-        </div>
+        </Disclosure>
       )}
 
-      {keyFindings.length > 0 && (
-        <div className="key-findings">
-          <h3>Kluczowe ustalenia</h3>
-          <ol>
-            {keyFindings.map((item) => (
-              <li key={item.text} className={`key-finding layer-${isExternalDocumentText(item.text) ? 'external' : toLayer(item.layer)}`}>
-                {isExternalDocumentText(item.text) ? <ExternalDocTag short /> : <LayerTag layer={toLayer(item.layer)} />}
-                <span>{item.text}</span>
-              </li>
-            ))}
-          </ol>
-          <p className="muted">
-            Szczegóły: <a href={tabHref('profile')}>profile</a>, <a href={tabHref('adresy')}>adresy</a>,{' '}
-            <a href={tabHref('przeplywy')}>przepływy</a>.
-          </p>
-        </div>
-      )}
     </section>
   );
 }

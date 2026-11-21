@@ -1,4 +1,5 @@
 // Płótno grafu: przybliżanie (kółko myszy, przyciski, klawiatura) i przesuwanie (przeciąganie, strzałki).
+// Nagłówki kolumn stoją nad grafem (zawsze widoczne), przyciski powiększenia — w rogu.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
 import { clamp } from '../format.ts';
@@ -12,6 +13,15 @@ interface View {
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 3;
 
+/** Punkt do pokazania: `avoidRight` — pas z prawej zasłonięty panelem; `onlyIfHidden` — przesuń tylko, gdy punkt jest niewidoczny. */
+export interface CanvasCentre {
+  x: number;
+  y: number;
+  key: string;
+  avoidRight?: number;
+  onlyIfHidden?: boolean;
+}
+
 interface CanvasProps {
   width: number;
   height: number;
@@ -20,24 +30,36 @@ interface CanvasProps {
   children: ReactNode;
   /** Elementy SVG rysowane pod treścią, w układzie ekranu (np. tło). */
   defs?: ReactNode;
-  /** Najmniejsze powiększenie przy dopasowaniu: szerszy graf zaczyna od lewej krawędzi i jest czytelny, zamiast kurczyć się do nieczytelnej miniatury. */
+  /**
+   * Najmniejsze powiększenie przy dopasowaniu: szerszy graf zaczyna od lewej krawędzi i jest czytelny,
+   * zamiast kurczyć się do nieczytelnej miniatury — resztę widać po przesunięciu.
+   */
   minFit?: number;
+  /** Nagłówki kolumn (współrzędne grafu) — rysowane nad płótnem, przesuwają się tylko w poziomie. */
+  columns?: { x: number; label: string }[];
+  /** Punkt grafu do wyśrodkowania (np. wynik wyszukiwania); zmiana `key` wyśrodkowuje ponownie. */
+  centre?: CanvasCentre | null;
+  /** Dodatkowe przyciski w pasku narzędzi płótna. */
+  tools?: ReactNode;
 }
 
-export function Canvas({ width, height, label, className = '', children, defs, minFit = MIN_ZOOM }: CanvasProps) {
+export function Canvas({ width, height, label, className = '', children, defs, minFit = 0.8, columns, centre, tools }: CanvasProps) {
   const container = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number } | null>(null);
+  const top = columns && columns.length > 0 ? 34 : 0;
 
   const fit = useCallback(() => {
     const element = container.current;
     if (!element) return;
-    const { clientWidth, clientHeight } = element;
+    const { clientWidth } = element;
+    const clientHeight = element.clientHeight - top;
     const k = clamp(Math.min(clientWidth / width, clientHeight / height), minFit, 1.25);
-    // Treść, która się nie mieści, zaczyna od lewego górnego rogu; mieszcząca się jest wyśrodkowana.
-    const place = (space: number, size: number) => (size <= space ? (space - size) / 2 : 8);
-    setView({ k, x: place(clientWidth, width * k), y: place(clientHeight, height * k) });
-  }, [width, height, minFit]);
+    // Za szeroka treść zaczyna od lewej krawędzi (tam jest podmiot); za wysoka — od środka wysokości,
+    // bo kolumny są wyśrodkowane w pionie i tam leżą połączenia z podmiotem. Mieszcząca się jest wyśrodkowana.
+    const placeX = (space: number, size: number) => (size <= space ? (space - size) / 2 : 8);
+    setView({ k, x: placeX(clientWidth, width * k), y: top + (clientHeight - height * k) / 2 });
+  }, [width, height, minFit, top]);
 
   useEffect(() => {
     fit();
@@ -47,6 +69,25 @@ export function Canvas({ width, height, label, className = '', children, defs, m
     observer.observe(element);
     return () => observer.disconnect();
   }, [fit]);
+
+  // Wyśrodkowanie wskazanego punktu (wyszukiwanie „Znajdź w grafie”).
+  useEffect(() => {
+    const element = container.current;
+    if (!centre || !element) return;
+    setView((current) => {
+      // Na wąskim ekranie panel jest pod spodem — nie zasłania prawej części płótna.
+      const avoid = element.clientWidth > 720 ? Math.min(centre.avoidRight ?? 0, element.clientWidth / 2) : 0;
+      const visibleWidth = element.clientWidth - avoid;
+      if (centre.onlyIfHidden) {
+        const sx = current.x + centre.x * current.k;
+        const sy = current.y + centre.y * current.k;
+        if (sx > 40 && sx < visibleWidth - 40 && sy > top + 30 && sy < element.clientHeight - 30) return current;
+      }
+      const k = centre.onlyIfHidden ? current.k : Math.max(current.k, 1);
+      return { k, x: visibleWidth / 2 - centre.x * k, y: (element.clientHeight + top) / 2 - centre.y * k };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centre?.key]);
 
   const zoomAt = useCallback((factor: number, cx?: number, cy?: number) => {
     setView((current) => {
@@ -73,7 +114,7 @@ export function Canvas({ width, height, label, className = '', children, defs, m
   }, [zoomAt]);
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || (event.target as Element).closest('[data-node], button')) return;
+    if (event.button !== 0 || (event.target as Element).closest('[data-node], button, input')) return;
     drag.current = { x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -88,6 +129,7 @@ export function Canvas({ width, height, label, className = '', children, defs, m
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if ((event.target as Element).closest('input')) return;
     const pan: Record<string, [number, number]> = {
       ArrowLeft: [48, 0],
       ArrowRight: [-48, 0],
@@ -121,16 +163,29 @@ export function Canvas({ width, height, label, className = '', children, defs, m
         {defs}
         <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>{children}</g>
       </svg>
+      {columns && columns.length > 0 && (
+        <div className="canvas-columns" aria-hidden="true">
+          {columns.map((column, index) => (
+            <span key={`${column.label}-${index}`} style={{ left: view.x + column.x * view.k }}>
+              {column.label}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="canvas-tools">
-        <button type="button" className="icon-button" onClick={() => zoomAt(1.25)} aria-label="Przybliż">
+        {tools}
+        <button type="button" className="icon-button" onClick={() => zoomAt(1.25)} aria-label="Przybliż" title="Przybliż (+)">
           +
         </button>
-        <button type="button" className="icon-button" onClick={() => zoomAt(0.8)} aria-label="Oddal">
+        <button type="button" className="icon-button" onClick={() => zoomAt(0.8)} aria-label="Oddal" title="Oddal (−)">
           −
         </button>
-        <button type="button" className="icon-button canvas-fit" onClick={fit}>
+        <button type="button" className="icon-button canvas-fit" onClick={fit} title="Dopasuj (0)">
           Dopasuj
         </button>
+        <span className="canvas-zoom" aria-hidden="true">
+          {Math.round(view.k * 100)}%
+        </span>
       </div>
     </div>
   );

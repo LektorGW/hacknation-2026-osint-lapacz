@@ -4,9 +4,9 @@ import { CLASS_LABEL, NETWORK_LABEL } from '../labels.ts';
 import { mentionServices } from '../funds.ts';
 import { proofSummary } from '../proof.ts';
 import type { FullDossier } from '../proof.ts';
-import { isExternalDocumentText } from '../service-reply.ts';
-import { CopyButton, Gauge, LayerTag, toLayer } from './common.tsx';
-import { ExternalDocTag } from './ServiceReplies.tsx';
+import { CopyButton, LayerTag, toLayer } from './common.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { ServiceChips } from './ServiceCards.tsx';
 
@@ -20,7 +20,7 @@ export function AddressSummary() {
   const given = dossier.subject.identifiers.find((item) => item.identifier.type === 'crypto_address')!.identifier.value;
   const finding = dossier.findings.find((item) => item.address.toLowerCase() === given.toLowerCase()) ?? dossier.findings[0];
   const profile = finding?.chain?.profile;
-  const { totals, keyFindings } = dossier;
+  const { totals } = dossier;
   const strongest = proofSummary(dossier.cashOutProof ?? []).strongest;
   const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0 || item.note);
   const total = (totals as { cashOutPlnTotal?: number }).cashOutPlnTotal ?? sum(Object.values(totals.cashOutPlnByYear));
@@ -111,36 +111,17 @@ export function AddressSummary() {
 
         <div>
           <div className="determination-totals address-totals">
-            <Gauge value={totals.priority} label="priorytet adresu" unit="" size={84} />
             <div>
-              <p className="total-value">{total > 0 ? fmtPln(total) : 'brak oznak wypłat'}</p>
-              <p className="muted">szacowane przekazania do giełd i usług</p>
-              <details className="why">
-                <summary>Skąd priorytet {totals.priority}/100 (dotyczy adresu, nie osoby)</summary>
-                <ul>
-                  {totals.priorityReasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ul>
-              </details>
+              <p className="total-value tabular">{total > 0 ? fmtPln(total) : 'brak oznak wypłat'}</p>
+              <p className="muted">
+                szacowane przekazania do giełd i usług (<Term id="wycena">szacunek</Term>)
+              </p>
+              <Score value={totals.priority} kind="priority" reasons={totals.priorityReasons} caption="priorytet adresu (dotyczy adresu, nie osoby)" />
             </div>
           </div>
         </div>
       </div>
 
-      {keyFindings.length > 0 && (
-        <div className="key-findings">
-          <h3>Kluczowe ustalenia</h3>
-          <ol>
-            {keyFindings.map((item) => (
-              <li key={item.text} className={`key-finding layer-${isExternalDocumentText(item.text) ? 'external' : toLayer(item.layer)}`}>
-                {isExternalDocumentText(item.text) ? <ExternalDocTag short /> : <LayerTag layer={toLayer(item.layer)} />}
-                <span>{item.text}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
     </section>
   );
 }

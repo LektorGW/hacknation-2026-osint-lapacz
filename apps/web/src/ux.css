@@ -331,9 +331,12 @@ a[aria-current='page'] > .sections-count { background: color-mix(in srgb, var(--
 .kf-more { flex: none; border: 0; background: none; padding: 0.1rem 0.3rem; border-radius: 6px; font: inherit; font-size: 0.8rem; font-weight: 600; color: var(--primary); cursor: pointer; }
 .kf-more:hover { background: var(--surface-sunken); }
 
-/* Karta ustalenia osoby (komponent zewnętrzny): kluczowe ustalenia są już w podsumowaniu. */
-.determination-wrap .determination > .key-findings:has(> ol) { display: none; }
+/* Karta ustalenia osoby. */
 .determination-wrap .determination { border-top-width: 3px; }
+.determination-head .status { font-size: 0.8rem; }
+.determination .mentions { margin-top: var(--s4); }
+.determination-person .person-name { font-size: 1.4rem; font-weight: 750; margin-bottom: var(--s2); }
+.reply-banner.is-confirmed { border-color: var(--external, var(--calc)); }
 .identifiers-card h2 { margin-bottom: var(--s1); }
 
 /* Wyjaśnienia braków: spokojna lista zamiast ściany tekstu. */
@@ -416,6 +419,120 @@ a[aria-current='page'] > .sections-count { background: color-mix(in srgb, var(--
 .checklist li + li { border-top: 1px dashed var(--border); }
 .checklist-box { width: 1rem; height: 1rem; margin-top: 0.2rem; border: 2px solid var(--border-strong); border-radius: 4px; }
 .checklist-text { overflow-wrap: anywhere; max-width: var(--prose); }
+
+/* ---------- Graf: pełna szerokość, wysokie płótno, panel jako szuflada ---------- */
+
+.graph-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin: 0 0 var(--s2); }
+.graph-search { position: relative; flex: 1 1 16rem; max-width: 24rem; }
+.graph-search input { width: 100%; min-height: 2.2rem; padding: 0.3rem 0.7rem; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.9rem; }
+.graph-results { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0; list-style: none; margin: 0; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-pop); }
+.graph-results button { display: block; width: 100%; padding: 0.35rem 0.6rem; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 0.9rem; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.graph-results button:hover, .graph-results button:focus-visible { background: var(--surface-sunken); }
+.graph-section .graph-filters { display: block; margin: 0 0 var(--s2); padding: 0; border: 0; background: none; box-shadow: none; }
+.graph-section .graph-filters > summary { padding: 0.35rem 0; font-size: 0.9rem; }
+.graph-section .graph-filters .disclosure-body { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.graph-section .graph-filters .disclosure-meta { margin-left: var(--s2); }
+.graph-section .graph-legend { margin-top: var(--s2); }
+.graph-section .graph-legend > summary { font-size: 0.9rem; }
+
+.graph-stage { position: relative; }
+.graph-stage .canvas { height: clamp(540px, calc(100vh - 250px), 1600px); min-height: 540px; border-radius: 14px; }
+.graph-stage.is-full { background: var(--bg); }
+.graph-stage.is-full .canvas { height: 100vh; border-radius: 0; border: 0; }
+.graph-stage.is-full-fallback { position: fixed; inset: 0; z-index: 95; }
+.graph-drawer {
+  position: absolute;
+  top: 44px;
+  right: var(--s3);
+  bottom: 64px;
+  width: min(24rem, calc(100% - 2 * var(--s3)));
+  max-height: none;
+  z-index: 5;
+  overflow-y: auto;
+  border-radius: 14px;
+  box-shadow: var(--shadow-pop);
+  animation: drawer-in 180ms var(--ease);
+}
+.graph-stage.is-full .graph-drawer { top: 52px; }
+.panel-scores { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); margin: var(--s2) 0; }
+.side-panel .disclosure { margin-top: var(--s2); }
+
+/* Nagłówki kolumn nad grafem — zawsze widoczne. */
+.canvas-columns { position: absolute; top: 0; left: 0; right: 0; height: 34px; pointer-events: none; overflow: hidden; background: color-mix(in srgb, var(--surface) 88%, transparent); border-bottom: 1px solid var(--border); }
+.canvas-columns span { position: absolute; top: 9px; transform: translateX(-12px); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.canvas-tools { align-items: center; padding: 4px; border-radius: 12px; background: color-mix(in srgb, var(--surface) 90%, transparent); box-shadow: var(--shadow); }
+.canvas-zoom { min-width: 3.2rem; font-size: 0.78rem; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+
+/* Czytelność przy powiększeniu 1: podpisy ≥ 13 px, krawędzie spokojniejsze. */
+.link-graph .gnode-label { font-size: 14px; }
+.link-graph .gnode .gnode-label-bg { fill: color-mix(in srgb, var(--surface) 92%, transparent) !important; stroke: none !important; stroke-width: 0 !important; }
+.link-graph .gnode.is-selected .gnode-label-bg { fill: color-mix(in srgb, var(--primary) 16%, var(--surface)) !important; }
+.link-graph .gnode-sub { font-size: 12px; }
+.link-graph .gedge-label { font-size: 12px; }
+.link-graph .gedge-label.is-amount { font-size: 12.5px; font-weight: 700; fill: var(--text); }
+.link-graph .gnode-sources text { font-size: 11px; }
+.link-graph.is-focus .is-dim { opacity: 0.12; }
+.link-graph .is-dim { transition: opacity 160ms var(--ease); }
+.gnode.is-box .gnode-box { fill: var(--surface); stroke: var(--calc); stroke-width: 2; }
+.gnode.is-box.is-selected .gnode-box { stroke-width: 3; }
+.gnode.is-box .gnode-label { font-size: 14px; }
+
+@media (max-width: 720px) {
+  .graph-stage .canvas { height: 70vh; min-height: 420px; }
+  .graph-drawer { top: auto; left: var(--s2); right: var(--s2); bottom: var(--s2); width: auto; max-height: 60%; }
+  .graph-search { max-width: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-drawer { animation: none; }
+  .link-graph .is-dim { transition: none; }
+}
+
+/* ---------- Karty usług i odpowiedzi usług ---------- */
+
+.service-card .basis { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+.service-card .basis .chip { margin: 0; }
+.service-card .service-strength { margin-left: auto; }
+.service-card > .disclosure:first-of-type { margin-top: var(--s3); }
+.service-action .pt-questions { margin-top: 0; }
+.replies { border-left-width: 1px; border-radius: 14px; }
+.reply-form > summary { display: inline-flex; align-items: center; min-height: 2.3rem; padding: 0.3rem 1rem; border: 1px solid var(--external, var(--calc)); border-radius: var(--radius-small); background: var(--surface); color: var(--external, var(--calc)); list-style: none; }
+.reply-form > summary::-webkit-details-marker { display: none; }
+.reply-form[open] > summary { margin-bottom: var(--s3); }
+.reply-step { border: 1px solid var(--border) !important; border-radius: 12px !important; background: var(--surface); padding: var(--s3) var(--s4) !important; }
+.reply-step legend { display: inline-flex; align-items: center; gap: var(--s2); font-size: 0.95rem !important; }
+.reply-step-no { display: inline-grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--external-bg, var(--calc-bg)); color: var(--external, var(--calc)); font-weight: 800; font-size: 0.85rem; }
+.reply-json { margin: var(--s3) 0; }
+.reply-json textarea { width: 100%; min-height: 5rem; }
+
+/* ---------- Wskaźniki A/B/C ---------- */
+
+.indicator-card { border-radius: 16px; }
+.indicator-letter { display: inline-grid; place-items: center; width: 2rem; height: 2rem; margin-right: var(--s2); border-radius: 10px; background: var(--fact-bg); color: var(--fact); font-weight: 800; }
+.indicator-item .disclosure { margin-top: var(--s2); }
+.ladder-stepper { gap: 0; }
+.ladder-stepper li { position: relative; flex-direction: column; align-items: flex-start; margin: 0 var(--s1); border-radius: 12px; }
+.ladder-stepper li + li::before { content: ''; position: absolute; top: 1.35rem; left: calc(-1 * var(--s2) - 2px); width: var(--s2); border-top: 2px solid var(--border-strong); }
+.ladder-stepper li.is-passed + li::before, .ladder-stepper li.is-reached::before { border-top-color: var(--ok); }
+.ladder-stepper .ladder-text .cell-note { font-size: 0.8rem; }
+@media (max-width: 720px) {
+  .ladder-stepper { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
+  .ladder-stepper li + li::before { display: none; }
+}
+
+/* ---------- Zasady punktacji ---------- */
+
+.rules-example { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s4) var(--s6); margin: var(--s3) 0 var(--s4); padding: var(--s3) var(--s4); border-radius: 12px; background: var(--surface-alt); }
+.rules-example .ledger-steps { flex: 1 1 26rem; margin: 0; }
+.rules-example-result { flex: none; }
+.tier-scale { list-style: none; display: flex; gap: 4px; margin: var(--s2) 0 0; padding: 0; }
+.tier-scale li { display: flex; flex-direction: column; gap: 2px; min-width: 5.5rem; font-size: 0.86rem; }
+.tier-bar { display: block; height: 10px; border-radius: 999px; background: var(--level); }
+.tier-scale strong { color: var(--level); }
+.rule-sections > .disclosure:first-of-type { margin-top: var(--s2); }
+.rules-visual h3 { margin-top: var(--s4); }
+@media (max-width: 720px) {
+  .tier-scale { flex-direction: column; }
+}
 
 /* ---------- Pulpit ---------- */
 

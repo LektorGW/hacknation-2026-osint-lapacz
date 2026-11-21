@@ -20,6 +20,9 @@ import type { FullDossier } from '../proof.ts';
 import { CopyButton, EmptyState, ExternalLink, ShortAddress } from './common.tsx';
 import { DecisionControls, DecisionHistory, useDossier } from './DossierContext.tsx';
 import { SyntheticTag } from './Mode.tsx';
+import { Disclosure } from './ui/Disclosure.tsx';
+import { Score } from './ui/Score.tsx';
+import { Term } from './ui/Term.tsx';
 
 /** Odnośnik do eksploratora dla transakcji — tylko gdy teczka go podaje. */
 export function txExplorer(dossier: FullDossier, txid: string): string | undefined {
@@ -128,11 +131,16 @@ export function StatusBadge({ status, label }: { status: string | undefined; lab
 /** Liczba wskaźnika z poziomem słownym; podpowiedź przypomina, że to nie jest prawdopodobieństwo. */
 export function IndicatorScore({ indicator }: { indicator: Indicator | undefined }) {
   if (!indicator) return <span className="muted">brak wskaźnika</span>;
+  // Jednolity wygląd wyniku; poziom z usługi analizy trafia do wyjaśnienia pod przyciskiem „i”.
   return (
-    <span className={`indicator-score level-${scoreLevel(indicator.score)}`} title={indicator.scale ?? ORDINAL_NOTE}>
-      <strong>{indicator.score}</strong>
-      <span className="indicator-max">/100</span>
-      <span className="indicator-level">{indicator.level}</span>
+    <span className="indicator-score" data-level={scoreLevel(indicator.score)}>
+      <Score
+        value={indicator.score}
+        kind="strength"
+        size="sm"
+        reasons={(indicator.components ?? []).filter((item) => item.applied !== 0).map((item) => `${item.applied > 0 ? '+' : '−'}${Math.abs(item.applied)} · ${item.explanation}`)}
+        extra={indicator.scale ? <p className="score-pop-sub-text">{indicator.scale}</p> : undefined}
+      />
     </span>
   );
 }
@@ -240,10 +248,9 @@ function Item({ title, indicator, status, statusLabel, children, details }: { ti
         <StatusBadge status={status} label={statusLabel} />
       </header>
       {children}
-      <details className="why">
-        <summary>Składniki wskaźnika ({indicator?.components?.length ?? 0})</summary>
+      <Disclosure title="Składniki wskaźnika — przesłanki i kontrdowody" meta={indicator?.components?.length ?? 0}>
         {details}
-      </details>
+      </Disclosure>
     </li>
   );
 }
@@ -380,7 +387,7 @@ function BlockedMerges() {
 export function CashOutLadder({ stage }: { stage: CashOutAssessment['stage'] }) {
   const reached = CASH_OUT_STAGES.indexOf(stage);
   return (
-    <ol className="ladder" aria-label="Drabina dowodowa wyjścia do walut tradycyjnych">
+    <ol className="ladder ladder-stepper" aria-label={`Drabina dowodowa wyjścia do walut tradycyjnych — osiągnięty szczebel ${reached + 1} z ${CASH_OUT_STAGES.length}`}>
       {CASH_OUT_STAGES.map((id, index) => (
         <li key={id} className={index < reached ? 'is-passed' : index === reached ? 'is-reached' : 'is-open'} aria-current={index === reached ? 'step' : undefined}>
           <span className="ladder-step" aria-hidden="true">
@@ -448,7 +455,7 @@ export function IndicatorsTab() {
           <p className="muted">Trzy osobne wskaźniki — nie sumuje się ich ani nie mnoży. Każdy ma jawną tabelę składników, którą można odtworzyć i zakwestionować.</p>
         </div>
       </header>
-      <p className="notice scale-note" role="note">
+      <p className="notice notice-quiet scale-note" role="note">
         <strong>Jak czytać liczby.</strong> {scale}
         {interpretation && interpretation !== scale && <> {interpretation}</>}
       </p>
@@ -463,7 +470,7 @@ export function IndicatorsTab() {
         <>
           <article className="card indicator-card" aria-labelledby="wskaznik-a">
             <h3 id="wskaznik-a">
-              <span className="indicator-letter">A</span> Konto → portfel ({accountWallet.length})
+              <span className="indicator-letter">A</span> Konto → <Term id="adres-krypto">portfel</Term> ({accountWallet.length})
             </h3>
             <p className="muted">Na ile konkretne konto publicznie deklaruje związek z adresem. Nie mówi, kto obsługuje konto.</p>
             {accountWallet.length === 0 ? <p className="muted">Brak pozycji.</p> : <ul className="indicator-list">{accountWallet.map((link) => <AccountWalletItem key={link.id} link={link} />)}</ul>}
@@ -471,7 +478,7 @@ export function IndicatorsTab() {
 
           <article className="card indicator-card" aria-labelledby="wskaznik-b">
             <h3 id="wskaznik-b">
-              <span className="indicator-letter">B</span> Wspólny operator ({commonOperator.length})
+              <span className="indicator-letter">B</span> <Term id="hipoteza-operatora">Wspólny operator</Term> ({commonOperator.length})
             </h3>
             <p className="muted">
               Na ile dwa konkretne konta może obsługiwać ten sam operator. To hipoteza narzędzia — staje się ustaleniem wyłącznie decyzją analityka albo
@@ -483,9 +490,11 @@ export function IndicatorsTab() {
 
           <article className="card indicator-card" aria-labelledby="wskaznik-c">
             <h3 id="wskaznik-c">
-              <span className="indicator-letter">C</span> Wyjście do walut tradycyjnych ({cashOut.length})
+              <span className="indicator-letter">C</span> <Term id="spieniezenie">Wyjście do walut tradycyjnych</Term> ({cashOut.length})
             </h3>
-            <p className="muted">Na ile dane wskazują wymianę kryptowalut na waluty tradycyjne — według czteroszczeblowej drabiny dowodowej.</p>
+            <p className="muted">
+              Na ile dane wskazują wymianę kryptowalut na waluty tradycyjne — według czteroszczeblowej <Term id="szczebel-drabiny">drabiny dowodowej</Term>.
+            </p>
             <p className="notice notice-inline" role="note">
               <strong>Stałe ograniczenie.</strong> {CASH_OUT_LIMITATION}
             </p>
