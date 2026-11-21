@@ -16,6 +16,9 @@ importers:
       '@fastify/cors':
         specifier: ^11.0.0
         version: 11.4.3
+      '@olcys/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@olcys/chain':
         specifier: workspace:*
         version: link:../../packages/chain
@@ -65,6 +68,12 @@ importers:
       vite:
         specifier: ^7.0.0
         version: 7.3.8
+
+  packages/ai:
+    dependencies:
+      '@olcys/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/chain:
     dependencies:

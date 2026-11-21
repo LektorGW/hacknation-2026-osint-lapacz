@@ -1,0 +1,10 @@
+{
+  "name": "@olcys/ai",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "node --test test/*.test.ts" },
+  "dependencies": { "@olcys/core": "workspace:*" }
+}

@@ -138,6 +138,10 @@ export interface ChainActivity {
   cashOutPlnByYear: Record<string, number>;
   /** Opis ograniczeń danych, np. limit liczby pobranych transakcji. */
   limitations: string[];
+  /** Udokumentowane ścieżki środków do usług wymiany na waluty tradycyjne. */
+  trails?: CashOutTrail[];
+  /** Inne adresy tego samego portfela ustalone heurystykami. */
+  cluster?: AddressCluster;
 }
 
 /** Dostawca danych o jednej lub kilku sieciach. */
@@ -528,4 +532,95 @@ export interface MonitorStatus {
   running: boolean;
   sources: MonitorSourceStatus[];
   totals: { documentsSeen: number; hits: number; analyzed: number; newHits: number };
+}
+
+// ---------- Ścieżka środków: dowód możliwego spieniężenia ----------
+
+/** Jeden krok ścieżki środków w blockchainie. */
+export interface FlowHop {
+  txid: string;
+  time: string;
+  from: string;
+  to: string;
+  asset: string;
+  amount: number;
+  /** Etykieta adresu docelowego, jeśli jest znana. */
+  toLabel?: string;
+  toClass?: AddressClass;
+  explorerUrl: string;
+  /** Krok ustalony heurystyką (np. adres reszty, wspólne wejścia), a nie wprost z transakcji. */
+  inferred?: boolean;
+  /** Dlaczego ten krok należy do ścieżki. */
+  reason?: string;
+}
+
+/**
+ * Udokumentowana ścieżka od adresu podmiotu do usługi, w której krypto można
+ * zamienić na waluty tradycyjne. Podstawa ustalenia „środki zostały spieniężone”.
+ */
+export interface CashOutTrail {
+  id: string;
+  /** Adres podmiotu, od którego zaczyna się ścieżka. */
+  sourceAddress: string;
+  network: Network;
+  hops: FlowHop[];
+  /** Usługa na końcu ścieżki. */
+  serviceName: string;
+  serviceKind: CashOutKind;
+  /** Kwota, która dotarła do usługi, w walucie ostatniego kroku. */
+  asset: string;
+  amount: number;
+  valuePln?: number;
+  valuation?: string;
+  /** Pewność 0–100, że środki podmiotu trafiły do tej usługi. */
+  confidence: number;
+  reasons: string[];
+  /** Co pozostaje do potwierdzenia poza blockchainem (np. dane klienta w giełdzie). */
+  openQuestions: string[];
+}
+
+/** Adresy uznane za należące do tego samego portfela co adres podmiotu. */
+export interface AddressCluster {
+  seed: string;
+  network: Network;
+  addresses: { address: string; reason: string; txid?: string }[];
+  /** Zastosowane heurystyki i ich ograniczenia. */
+  method: string[];
+}
+
+// ---------- Wsparcie modelu językowego ----------
+
+/** Odczyt publikacji przez model językowy — wyłącznie sugestia; o wyniku decydują reguły. */
+export interface TextInsight {
+  /** Czyj jest adres według treści. */
+  ownership: 'own_address' | 'third_party_address' | 'warning_about_address' | 'quoted' | 'unclear';
+  suggestedCategory?: SourceCategory;
+  offer?: {
+    side: 'sell' | 'buy' | 'exchange' | 'accepts_payment';
+    asset?: string;
+    amount?: number;
+    currency?: string;
+    paymentMethods: string[];
+    location?: string;
+  };
+  language: string;
+  polishNexus?: ScoredSignal;
+  /** Tłumaczenie na polski, gdy treść jest w innym języku. */
+  translationPl?: string;
+  /** Dosłowny fragment treści, na którym model oparł odczyt. */
+  quote: string;
+  model: string;
+  promptVersion: string;
+}
+
+export interface AiAssistant {
+  id: string;
+  model: string;
+  /** Opis dla analityka: gdzie działa model i co do niego trafia. */
+  description: string;
+  analyzePublication(input: { text: string; address?: string; author?: string; title?: string }): Promise<TextInsight | null>;
+  /** Streszczenie ustaleń prostym językiem — wyłącznie z podanych faktów. */
+  summarize(facts: string[]): Promise<{ text: string; model: string; promptVersion: string } | null>;
+  /** Czy dwa zbiory wypowiedzi mógł napisać ten sam autor — słaba przesłanka. */
+  compareAuthors(a: string[], b: string[]): Promise<{ likelihood: number; reasons: string[]; model: string } | null>;
 }
