@@ -9,6 +9,7 @@ import { createPoliteFetch } from './http.ts';
 import type { FetchLike } from './http.ts';
 import { BlockscoutProvider } from './providers/blockscout.ts';
 import { EsploraProvider } from './providers/esplora.ts';
+import { LabChainProvider } from './providers/lab.ts';
 import { SandboxChainProvider } from './providers/sandbox.ts';
 import { TronGridProvider } from './providers/trongrid.ts';
 import { DEFAULT_REQUEST_BUDGET } from './deposit.ts';
@@ -37,12 +38,18 @@ export { ChainProviderError, DEFAULT_HOST_POLICIES, RequestBudget, USER_AGENT, c
 export type { FetchLike, HostPolicy, ProviderErrorCode } from './http.ts';
 export { BlockscoutProvider, parseBlockscoutParty } from './providers/blockscout.ts';
 export { EsploraProvider } from './providers/esplora.ts';
+export { LAB_LIMITATIONS, LabChainProvider } from './providers/lab.ts';
 export { SandboxChainProvider } from './providers/sandbox.ts';
 export { TronGridProvider } from './providers/trongrid.ts';
 
 export interface ChainConfig extends ActivityOptions, HistoryOptions {
   /** Adres środowiska demonstracyjnego; włącza dostawcę danych syntetycznych. */
   sandboxUrl?: string;
+  /**
+   * Adres laboratorium tożsamości (apps/identity-lab); włącza dostawcę sieci laboratoryjnej (adresy `lab1…`,
+   * token LAB bez wartości — bez wyceny w PLN). Domyślnie wyłączony.
+   */
+  labUrl?: string;
   /** Zgoda na zapytania do publicznych API w internecie. */
   enableLive?: boolean;
   /** Podmiana `fetch`, używana w testach. */
@@ -137,6 +144,10 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
   };
 
   const providers: ChainProvider[] = [];
+  // Dostawca laboratoryjny obsługuje wyłącznie sieć `lab`, więc stoi pierwszy i nie zasłania pozostałych.
+  if (config.labUrl) {
+    providers.push(new LabChainProvider({ labUrl: config.labUrl, labels: config.labels, sanctions: config.sanctions, fetch: rawFetch }));
+  }
   if (config.sandboxUrl) {
     providers.push(new SandboxChainProvider({ ...shared, sandboxUrl: config.sandboxUrl }));
   }

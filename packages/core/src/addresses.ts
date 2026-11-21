@@ -5,7 +5,16 @@
 import { createHash } from 'node:crypto';
 import { keccak_256 } from '@noble/hashes/sha3';
 
-export type Network = 'bitcoin' | 'bitcoin-testnet' | 'ethereum' | 'tron';
+/**
+ * `lab` to sieć LABORATORYJNA (apps/identity-lab): lokalny, syntetyczny łańcuch testowy z tokenem LAB
+ * bez wartości. To nie jest prawdziwa sieć — adresy `lab1…` nie istnieją poza laboratorium.
+ */
+export type Network = 'bitcoin' | 'bitcoin-testnet' | 'ethereum' | 'tron' | 'lab';
+
+/** Identyfikator sieci laboratoryjnej (syntetycznej, bez wartości pieniężnej). */
+export const LAB_NETWORK: Network = 'lab';
+/** Czy sieć jest laboratoryjna — jej adresy nie są prawdziwe i nigdy nie są wyceniane. */
+export const isLabNetwork = (network: Network): boolean => network === LAB_NETWORK;
 
 export type AddressFormat =
   | 'p2pkh'
@@ -13,7 +22,9 @@ export type AddressFormat =
   | 'bech32'
   | 'bech32m'
   | 'evm'
-  | 'tron-base58';
+  | 'tron-base58'
+  /** Adres sieci laboratoryjnej: `lab1` + 40 znaków szesnastkowych (format bez sumy kontrolnej). */
+  | 'lab-hex';
 
 export interface DetectedAddress {
   /** Adres w postaci kanonicznej (EVM: z sumą kontrolną EIP-55). */
@@ -152,6 +163,9 @@ export function toChecksumAddress(address: string): string {
 
 type Validation = Omit<DetectedAddress, 'raw' | 'index' | 'context'>;
 
+/** Adres sieci laboratoryjnej: jednolita wielkość liter, dokładnie 40 znaków hex po przedrostku `lab1`. */
+const LAB_ADDRESS = /^(?:lab1[0-9a-f]{40}|LAB1[0-9A-F]{40})$/;
+
 /** Sprawdza pojedynczy ciąg znaków. Zwraca `null`, gdy nie jest poprawnym adresem. */
 export function validateAddress(candidate: string): Validation | null {
   if (/^0x[0-9a-fA-F]{40}$/.test(candidate)) {
@@ -165,6 +179,13 @@ export function validateAddress(candidate: string): Validation | null {
       format: 'evm',
       checksumVerified: !singleCase,
     };
+  }
+
+  // Sieć laboratoryjna (apps/identity-lab), nie prawdziwa: `lab1` + 40 znaków hex. Format nie ma
+  // sumy kontrolnej, więc sprawdzamy sam kształt; zapis kanoniczny to małe litery.
+  if (/^lab1/i.test(candidate)) {
+    if (!LAB_ADDRESS.test(candidate)) return null;
+    return { address: candidate.toLowerCase(), network: 'lab', format: 'lab-hex', checksumVerified: false };
   }
 
   if (/^(bc|tb)1/i.test(candidate)) {
@@ -198,6 +219,8 @@ const CANDIDATE_PATTERNS: RegExp[] = [
   /(?<![0-9a-zA-Z])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g,
   /(?<![0-9a-zA-Z])(?:bc|tb|BC|TB)1[0-9a-zA-Z]{11,87}(?![0-9a-zA-Z])/g,
   /(?<![0-9a-zA-Z])[1-9A-HJ-NP-Za-km-z]{26,35}(?![0-9a-zA-Z])/g,
+  // Sieć laboratoryjna (syntetyczna): lab1 + 40 znaków hex.
+  /(?<![0-9a-zA-Z])(?:lab1[0-9a-f]{40}|LAB1[0-9A-F]{40})(?![0-9a-zA-Z])/g,
 ];
 
 const CONTEXT_RADIUS = 120;

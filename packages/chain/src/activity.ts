@@ -37,6 +37,8 @@ export const NATIVE_ASSET: Record<Network, string> = {
   'bitcoin-testnet': 'tBTC',
   ethereum: 'ETH',
   tron: 'TRX',
+  // Sieć laboratoryjna (apps/identity-lab): token bez wartości, nigdy nie wyceniany.
+  lab: 'LAB',
 };
 
 export interface RawTransfer {

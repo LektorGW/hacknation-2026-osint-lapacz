@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractAddresses, validateAddress } from '../src/addresses.ts';
+import { extractAddresses, isLabNetwork, validateAddress } from '../src/addresses.ts';
 
 test('rozpoznaje poprawne adresy w każdym obsługiwanym formacie', () => {
   const cases: [string, string, string][] = [
@@ -55,4 +55,41 @@ test('wyodrębnia adresy z tekstu, pomija duplikaty i skróty transakcji', () =>
     ['1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'],
   );
   assert.match(found[0]!.context, /Sprzedam laptopa/);
+});
+
+test('sieć laboratoryjna: lab1 + 40 znaków hex, oznaczona jako sieć lab, bez sumy kontrolnej', () => {
+  const address = 'lab16a79cfb6229fd50bc9dd4b0be29d76579b19dcd4';
+  const result = validateAddress(address);
+  assert.ok(result);
+  assert.equal(result.network, 'lab');
+  assert.equal(result.format, 'lab-hex');
+  assert.equal(result.checksumVerified, false);
+  assert.equal(isLabNetwork(result.network), true);
+  assert.equal(isLabNetwork('bitcoin'), false);
+  // Wielkie litery w całości są dopuszczalne; postać kanoniczna to małe litery.
+  assert.equal(validateAddress(address.toUpperCase())?.address, address);
+});
+
+test('sieć laboratoryjna: odrzuca zły kształt adresu', () => {
+  const invalid = [
+    'lab16a79cfb6229fd50bc9dd4b0be29d76579b19dcd', // 39 znaków
+    'lab16a79cfb6229fd50bc9dd4b0be29d76579b19dcd4a', // 41 znaków
+    'lab16a79cfb6229fd50bc9dd4b0be29d76579b19dcdg', // znak spoza hex
+    'lab16A79cfb6229fd50bc9dd4b0be29d76579b19dcd4', // mieszana wielkość liter
+    'lab26a79cfb6229fd50bc9dd4b0be29d76579b19dcd4', // zły przedrostek
+  ];
+  for (const address of invalid) assert.equal(validateAddress(address), null, address);
+});
+
+test('sieć laboratoryjna: wykrywanie w tekście obok prawdziwych sieci, bez wycinania z dłuższych ciągów', () => {
+  const lab = 'lab1324351a41e89b0b63785694683173ef09b7cd6f7';
+  const text = `Mój adres na napiwki LAB to ${lab}. #PortfelLAB
+    BTC: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa, powtórka ${lab}
+    za długi: ${lab}ab, sklejony: x${lab}`;
+  const found = extractAddresses(text);
+  assert.deepEqual(found.map((item) => [item.network, item.address]), [
+    ['lab', lab],
+    ['bitcoin', '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'],
+  ]);
+  assert.equal(found[0]!.format, 'lab-hex');
 });

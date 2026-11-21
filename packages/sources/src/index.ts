@@ -15,6 +15,7 @@ import { createDeepSearchConnector } from './deep/search.ts';
 import { createMonitorConnectors, loadMonitorSources, mergeMonitorSources } from './monitor/index.ts';
 import type { MonitorSourceConfig } from './monitor/index.ts';
 import type { DeepSearchOptions } from './deep/search.ts';
+import { createLabConnectors } from './lab.ts';
 import { createSandboxConnectors } from './sandbox.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
@@ -26,6 +27,8 @@ export { addressFromHref, findEnsNames, normalizeAddressText } from './address-t
 export { deepTargets } from './deep/search.ts';
 export type { DeepSearchOptions, DeepTarget } from './deep/search.ts';
 export type { Fetcher } from './http.ts';
+export { LAB_PORTALS, LAB_PREFIX, createLabConnectors } from './lab.ts';
+export type { LabConnectorOptions, LabPortal } from './lab.ts';
 export {
   isLowRelevance,
   listMonitorConnectors,
@@ -57,6 +60,11 @@ export type {
 export interface SourcesConfig {
   /** Adres piaskownicy (apps/sandbox); gdy podany, powstają łączniki fikcyjnych serwisów. */
   sandboxUrl?: string;
+  /**
+   * Adres laboratorium tożsamości (apps/identity-lab, np. `http://127.0.0.1:8787`); gdy podany, powstają
+   * łączniki `lab-*` do 27 portali laboratorium. To symulacja lokalna na danych syntetycznych — domyślnie wyłączona.
+   */
+  labUrl?: string;
   /** Włącza łączniki do prawdziwych, publicznych serwisów. */
   enableLive?: boolean;
   /** Adres proxy HTTP Tora (HTTPTunnelPort), np. `http://127.0.0.1:8118`. */
@@ -138,6 +146,7 @@ function monitorConnectors(config: SourcesConfig, http: ReturnType<typeof create
 export function createConnectors(config: SourcesConfig): SourceConnector[] {
   const connectors: SourceConnector[] = [];
   if (config.sandboxUrl) connectors.push(...createSandboxConnectors(config.sandboxUrl));
+  if (config.labUrl) connectors.push(...createLabConnectors(config.labUrl, config.fetcher ? { fetcher: config.fetcher } : {}));
   if (config.enableLive) connectors.push(...createLiveConnectors(config));
   if (config.torProxyUrl) connectors.push(createTorConnector(config.torProxyUrl));
   return connectors;
