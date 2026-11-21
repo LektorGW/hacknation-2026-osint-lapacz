@@ -8,6 +8,8 @@ import { paginate } from '../proof.ts';
 import type { TextInsight } from '@olcys/core';
 import { Bar, Crumbs, EmptyState, ErrorBox, ExternalLink, LayerTag, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
+import { KnownFromCases } from '../components/common.tsx';
+import type { KnownFromCase } from '../identities.ts';
 import { fmtDateTime, fmtPln } from '../format.ts';
 import { NETWORK_LABEL, NETWORK_SHORT } from '../labels.ts';
 import { href, navigate } from '../router.ts';
@@ -282,6 +284,7 @@ function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
           {extra.insight.quote && ` — „${extra.insight.quote}”`} <span className="muted">({extra.insight.model})</span>
         </p>
       )}
+      <KnownFromCases items={(hit as WatchHit & { knownFromCases?: KnownFromCase[] }).knownFromCases} />
       <p>
         <span className="chip">język: {LANGUAGE[hit.language] ?? hit.language}</span>
         {hit.addresses.map((item) => (

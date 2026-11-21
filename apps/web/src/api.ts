@@ -338,6 +338,7 @@ function complete(dossier: Dossier): FullDossier {
     cashOutProof: partial.cashOutProof ?? [],
     explanations: partial.explanations ?? [],
     unconfirmedAddresses: partial.unconfirmedAddresses ?? [],
+    linkedIdentities: partial.linkedIdentities ?? [],
     mentions: partial.mentions ?? [],
   };
 }
@@ -362,6 +363,24 @@ export async function loadDossier(source: { caseId: string } | { runId: string }
 }
 
 /** „Kogo sprawdzić?”: sprawa, analiza i teczka z jednego identyfikatora. */
+const periods = new Map<string, Promise<Period | undefined>>();
+
+/**
+ * Okres wskazany przy uruchomieniu analizy. Analizy uruchomione w tej karcie znamy od razu;
+ * dla pozostałych pytamy usługę najwyżej raz i zapamiętujemy odpowiedź.
+ */
+export function runPeriod(runId: string): Promise<Period | undefined> {
+  let known = periods.get(runId);
+  if (!known) {
+    known = api.getRun(runId).then(
+      (run) => (run as { period?: Period }).period,
+      () => undefined,
+    );
+    periods.set(runId, known);
+  }
+  return known;
+}
+
 const POLL_MS = 1500;
 
 /** Czeka na zakończenie analizy w tle, przekazując kolejne stany postępu. */
@@ -390,6 +409,7 @@ export async function runAnalysis(
   onProgress: (progress: RunProgress) => void,
 ): Promise<void> {
   const run = await api.startRun(caseId, connectors, options);
+  periods.set(run.id, Promise.resolve(options.period));
   if (run.status === 'running') await trackRun(run.id, onProgress);
   else if (run.status === 'failed') throw new ApiError('Analiza zakończyła się błędem — szczegóły w dzienniku analizy.', 500);
 }
@@ -404,6 +424,7 @@ export async function quickCheck(
   const identifier = normalizeIdentifier(type, raw);
   const quick = await api.quick(identifier.value, type, options);
   if (quick) {
+    if (quick.run) periods.set(quick.run.id, Promise.resolve(options.period));
     if (quick.run?.status === 'running') await trackRun(quick.run.id, onProgress);
     return quick.case;
   }

@@ -6,7 +6,7 @@ Syntetyczne środowisko demonstracyjne: fikcyjny „internet" (sześć serwisów
 node src/server.ts        # http://localhost:4100 (SANDBOX_PORT, SANDBOX_HOST)
 ```
 
-Dane są w `data/scenario.ts` (scenariusze a–h) i `data/market.ts` („rynek P2P": kilkanaście osób handlujących na Targu); serwer (`src/app.ts`, funkcja `buildApp()`) tylko je renderuje. Łącznie w piaskownicy występuje 25 fikcyjnych osób, nie licząc kont tła.
+Dane są w `data/scenario.ts` (scenariusze a–h) i `data/market.ts` („rynek P2P": kilkanaście osób handlujących na Targu); serwer (`src/app.ts`, funkcja `buildApp()`) tylko je renderuje. Trzecia część, `data/related.ts`, zawiera przypadki „powiązanych tożsamości". Łącznie w piaskownicy występują 32 fikcyjne osoby, nie licząc kont tła.
 
 ## Serwisy
 
@@ -25,7 +25,7 @@ Każdy serwis ma wyszukiwarkę `GET /<serwis>/api/search?q=<fraza>` zwracającą
 
 Każde trafienie ma też pole `profile` z publicznymi danymi konta autora: `{ handle, displayName?, emails?, phones?, location?, createdAt? }`.
 
-Lista najnowszych publikacji: `GET /<serwis>/api/recent?limit=<1–100>` (domyślnie 20) zwraca w tym samym kształcie (bez `matchedBy`) ogłoszenia, posty, wiadomości z listy, komentarze i wiadomości kanałów, od najświeższych. Profile i strony osobiste nie są publikacjami, więc `/gitpub` i `/www` zwracają pustą listę.
+Lista najnowszych publikacji: `GET /<serwis>/api/recent?limit=<1–100>` (domyślnie 20) zwraca w tym samym kształcie (bez `matchedBy`) ogłoszenia, posty, wiadomości z listy, komentarze, wiadomości kanałów, profile i strony, od najświeższych. Lista obejmuje także profile i strony osobiste (z danymi kontaktowymi autora), więc jeden przebieg monitoringu po wszystkich serwisach zasila indeks publikacji telefonami, e-mailami i adresami.
 
 Eksplorator: `GET /explorer/api/address/:address` zgodnie z kontraktem z `docs/ARCHITEKTURA.md` (nieznany adres → 404), strona `GET /explorer/address/:address`. Ponad kontrakt: adres usługi ma pole `kind` (`p2p_service`, `payment_gateway`, `crypto_card`, `stablecoin_swap`), a przelew do lub od opisanego kontrahenta — pola `counterpartyLabel`, `counterpartyClass`, `counterpartyKind`. Każdy adres występujący w przelewach odpowiada kodem 200.
 
@@ -83,6 +83,22 @@ Powiązania do pokazania:
 - **Spójne dane jednej osoby**: Kacper Wrzosek — GitPub i Targ podają tę samą miejscowość (Bydgoszcz), a telefon z ogłoszenia jest na koncie Targu; Igor Baran — Targ i Społeczność mają ten sam e-mail, telefon i miejscowość (Lublin).
 - **Imiennik**: drugi Kacper Wrzosek (`wrzosek_ryby`) ma to samo imię i nazwisko, ale miejscowość Olsztyn i e-mail `wrzosek.ryby@jeziora.example`.
 - **Pospolity nick**: `marek88` na Targu to Marek Sikora z Poznania (BTC, `marek.sikora@skup.example`), a `marek88` na Forum — Marek Wrona z Suwałk (USDT, `m.wrona@suwalki-net.example`). Inne nazwisko, e-mail, miejscowość i adres; w eksploratorze nic ich nie łączy.
+
+### Powiązane tożsamości
+
+Dane w `data/related.ts`. Wyniki scenariuszy a–h i części rynkowej pozostają bez zmian (parze Igor ↔ Dariusz doszły tylko przelewy między ich adresami).
+
+| Przypadek | Identyfikator do wpisania | Oczekiwana powiązana tożsamość | Ścieżka dojścia |
+|---|---|---|---|
+| Ta sama osoba pod innym nazwiskiem | login `rkowalski_btc` (Rafał Kowalski) | Julia Kowalska, `julka_k` | Adres `bc1q43zh…2g98` jest na profilu GitPub i w ogłoszeniu `/targ/oferta/2101` Rafała; ten sam adres jako własny publikują profil `/spolecznosc/u/julka_k` i ogłoszenie `/targ/oferta/2102`. Ta sama miejscowość (Toruń). Z adresu: wypłaty na „Giełda Bursztyn" w 2024 i 2025 r. |
+| To samo w drugą stronę | nick `julka_k` | Rafał Kowalski, `rkowalski_btc` | jak wyżej — wyszukiwanie adresu zwraca dwóch autorów, obaj z kategorią własnego profilu / ogłoszenia |
+| Wspólny indywidualny adres wpłat giełdy | nick `t_nowak_foto` (Tomasz Nowak) | Ewa Wiśniewska, `ewa_wisniewska` | Adres Tomasza `0xDA63…08a4` (ogłoszenie `/targ/oferta/2103`) i adres Ewy `0x5E03…90Db` (profil w Społeczności, ogłoszenie `2104`) wysyłają środki na ten sam adres pośredni `0xEdE6…A8aD` — bez etykiety, 6 transakcji — który po 22–36 minutach przekazuje całość na „Giełda Bursztyn: Hot Wallet". Widać to w historii wszystkich trzech adresów w eksploratorze. |
+| Wspólny telefon, różne nazwiska | nick `auto_czesci_wwa` (Piotr Zając) | Anna Maj, `ania_handmade` | oba ogłoszenia (`/targ/oferta/2105`, `2106`) podają tel. 500 000 840; różne adresy Tron (`TRCwAH…A4Q5`, `TNS8s3…fx8k`) |
+| Wspólny e-mail, różne nazwiska | nick `ania_handmade` (Anna Maj) | Karolina Lis, `maj_studio` | ogłoszenia `2106` i `2107` podają e-mail `pracownia@maj-studio.example`; inny telefon i inny adres (`14rGHX…SEP8`) |
+| Łańcuch telefon → e-mail | nick `auto_czesci_wwa` | Anna Maj (telefon), dalej Karolina Lis (e-mail) | dwa kroki: wspólny telefon, potem wspólny e-mail |
+| Przelewy w obie strony | nick `igor_baran` | Dariusz Mróz, `darek_mroz` | między adresami `bc1qw87m…0jcj` i `bc1qq5xk…q8v9`: 4 przelewy od Igora i 3 od Dariusza w latach 2024–2026; adres Dariusza jest na jego profilu w Społeczności. Pojedyncze przelewy w obie strony mają też pary Natalia Wilk ↔ Kinga Sowa i Paweł Gajda ↔ Robert Dudek. |
+
+Wyszukiwanie po telefonie i e-mailu opiera się na indeksie publikacji: `GET /<serwis>/api/recent` (metoda `discover` łączników piaskownicy) zwraca wszystkie powyższe ogłoszenia i profile z polami `profile.phones` / `profile.emails`.
 
 ### Podmiana adresu między analizami
 

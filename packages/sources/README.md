@@ -19,8 +19,8 @@ Pozostałe pola konfiguracji: `fediverseInstances` (nadpisuje `config/fediverse-
 
 | id | service | Kiedy powstaje | Co przeszukuje | `discover` |
 |---|---|---|---|---|
-| `sandbox-gitpub` | `gitpub.sandbox` | `sandboxUrl` | profile programistów | — |
-| `sandbox-www` | `www.sandbox` | `sandboxUrl` | strony osobiste | — |
+| `sandbox-gitpub` | `gitpub.sandbox` | `sandboxUrl` | profile programistów | profile (z danymi kontaktowymi) |
+| `sandbox-www` | `www.sandbox` | `sandboxUrl` | strony osobiste | strony osobiste |
 | `sandbox-targ` | `targ.sandbox` | `sandboxUrl` | ogłoszenia i oferty P2P | najnowsze ogłoszenia |
 | `sandbox-forum` | `forum.sandbox` | `sandboxUrl` | posty forum, lista dyskusyjna | najnowsze posty i wiadomości listy |
 | `sandbox-spolecznosc` | `spolecznosc.sandbox` | `sandboxUrl` | profile, wpisy, komentarze | najnowsze wpisy i komentarze |
@@ -74,7 +74,7 @@ Uwagi:
 
 ## Typowanie: `discover(context, limit)`
 
-Łączniki `sandbox-targ`, `sandbox-forum`, `sandbox-spolecznosc`, `sandbox-komunikator`, `live-telegram` i `tor-onion` implementują `DiscoveringConnector`: zwracają najnowsze publikacje bez podawania identyfikatora osoby. Dokumenty mają tę samą postać co w `search`, z `author`, `profile` i `matchedIdentifier = { type: 'nick', value: <autor> }`.
+Łączniki piaskownicy (wszystkie poza archiwum), `live-telegram` i `tor-onion` implementują `DiscoveringConnector`: zwracają najnowsze publikacje bez podawania identyfikatora osoby. Dokumenty mają tę samą postać co w `search`, z `author`, `profile` i `matchedIdentifier = { type: 'nick', value: <autor> }`.
 
 - Piaskownica: `GET /<serwis>/api/recent?limit=` — od najświeższych.
 - Telegram: wiadomości z adresem kryptowalutowym z publicznych kanałów wymienionych w `config/telegram-channels.json` (`{ "channels": ["nazwa_kanalu"] }`, domyślnie pusta lista; najwyżej 10 kanałów, jedno żądanie na kanał).

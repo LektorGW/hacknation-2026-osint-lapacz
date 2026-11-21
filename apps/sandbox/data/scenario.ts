@@ -6,6 +6,7 @@
 // kontrolne, ale nie należą do nikogo.
 
 import { MARKET_ADDR, marketAccounts, marketLabeledAddresses, marketLedger, marketPages, marketThreads } from './market.ts';
+import { RELATED_ADDR, relatedAccounts, relatedLabeledAddresses, relatedLedger, relatedPages } from './related.ts';
 
 export type Service = 'gitpub' | 'www' | 'targ' | 'forum' | 'spolecznosc' | 'komunikator';
 
@@ -714,12 +715,28 @@ export const snapshots: Snapshot[] = [
 // ---------- Całość: scenariusze a–h oraz „rynek P2P" z data/market.ts ----------
 
 /** Adresy części rynkowej — do testów i dokumentacji. */
-export { MARKET_ADDR };
+export { MARKET_ADDR, RELATED_ADDR };
 
-export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses];
-export const ledger: LedgerRow[] = [...baseLedger, ...marketLedger(ADDR)];
-export const accounts: Account[] = [...baseAccounts, ...marketAccounts];
-export const pages: Page[] = [...basePages, ...marketPages];
+export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses];
+export const ledger: LedgerRow[] = [
+  ...baseLedger,
+  ...marketLedger(ADDR),
+  // Część „powiązane tożsamości" (data/related.ts) korzysta z adresów usług i anonimowych kontrahentów części rynkowej.
+  ...relatedLedger({
+    exchangeBtc: ADDR.exchangeBtc,
+    exchangeEth: ADDR.exchangeEth,
+    exchangeTron: ADDR.exchangeTron,
+    p2pBtc: ADDR.p2pBtc,
+    p2pTron: ADDR.p2pTron,
+    anonBtc: MARKET_ADDR.anonBtc6,
+    anonEth: MARKET_ADDR.anonEth4,
+    anonTron: MARKET_ADDR.anonTron4,
+    igorBtc: MARKET_ADDR.igorBtc,
+    darekBtc: MARKET_ADDR.darekBtc,
+  }),
+];
+export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts];
+export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages];
 export const threads: Thread[] = [...baseThreads, ...marketThreads];
 
 export const scenario = { accounts, pages, threads, snapshots, labeledAddresses, ledger };

@@ -12,8 +12,10 @@ import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
 import { traceUtxoFlows } from '../trace.ts';
 import type { TracedTrail } from '../trace.ts';
-import { describeRange, inHistoryRange, planHistory, traceBudgetLimit } from '../history.ts';
+import { describeRange, inHistoryRange, linkBudgetLimit, planHistory, traceBudgetLimit } from '../history.ts';
 import type { HistoryOptions } from '../history.ts';
+import { DEFAULT_LINK_BUDGET, findLinkedAddresses } from '../links.ts';
+import type { LinkOptions, LinkedAddress } from '../links.ts';
 import { ChainProviderError, RequestBudget, fetchJson } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -51,6 +53,11 @@ export interface EsploraProviderConfig extends ActivityOptions {
   requestBudget?: number;
   /** Czy badać dalszą drogę środków (prawdopodobne adresy wpłat na giełdy); domyślnie nie. */
   followDeposits?: boolean;
+  /** Czy szukać powiązanych adresów (inne adresy tej samej osoby); domyślnie nie. */
+  findLinks?: boolean;
+  /** Osobny budżet żądań na szukanie powiązań (domyślnie 12). */
+  linkBudget?: number;
+  links?: LinkOptions;
   /** Domyślny zakres historii; kontekst wywołania może go zmienić dla pojedynczego adresu. */
   history?: HistoryOptions;
   /** Zapasowy eksplorator sieci głównej z tym samym API (np. `https://mempool.space`) — używany, gdy podstawowy zwróci błąd przy stronicowaniu. */
@@ -111,6 +118,9 @@ export class EsploraProvider implements ChainProvider {
   labelLookup: LabelLookup | undefined;
   requestBudget: number;
   followDeposits: boolean;
+  findLinks: boolean;
+  linkBudget: number;
+  linkOptions: LinkOptions | undefined;
   history: HistoryOptions;
   fallbackSiteUrl: string | undefined;
 
@@ -131,6 +141,9 @@ export class EsploraProvider implements ChainProvider {
     this.labelLookup = config.labelLookup;
     this.requestBudget = config.requestBudget ?? DEFAULT_REQUEST_BUDGET;
     this.followDeposits = config.followDeposits ?? false;
+    this.findLinks = config.findLinks ?? false;
+    this.linkBudget = config.linkBudget ?? DEFAULT_LINK_BUDGET;
+    this.linkOptions = config.links;
     this.history = config.history ?? {};
     this.fallbackSiteUrl = config.fallbackSiteUrl?.replace(/\/+$/, '');
   }
@@ -216,10 +229,15 @@ export class EsploraProvider implements ChainProvider {
 
     const asset = NATIVE_ASSET[network];
     const transfers: RawTransfer[] = [];
+    // Dokładne zmiany salda (z opłatami): otrzymane wyjścia minus wydane wejścia w każdej transakcji.
+    const flows: { asset: string; time: string; delta: number }[] = [];
     for (const tx of txs) {
       const time = new Date((tx.status?.block_time ?? 0) * 1000).toISOString();
       const transfer = esploraTransfer(tx, address, time, `${site}/tx/${tx.txid}`);
       if (transfer) transfers.push({ ...transfer, asset });
+      const received = (tx.vout ?? []).filter((output) => output.scriptpubkey_address === address).reduce((sum, output) => sum + (output.value ?? 0), 0);
+      const spent = (tx.vin ?? []).filter((input) => input.prevout?.scriptpubkey_address === address).reduce((sum, input) => sum + (input.prevout?.value ?? 0), 0);
+      if (received !== spent) flows.push({ asset, time, delta: (received - spent) / SATOSHI });
     }
 
     const limitations = [
@@ -305,18 +323,64 @@ export class EsploraProvider implements ChainProvider {
       limitations.push(...found.limitations);
     }
 
+    const cluster = mainnet ? { seed: address, network, addresses: clusterAddresses, method: CLUSTER_METHOD_UTXO } : undefined;
+    let linkedAddresses: LinkedAddress[] = [];
+    if (mainnet && this.findLinks) {
+      const found = await findLinkedAddresses({
+        network,
+        address,
+        transfers,
+        deposits: inferredDeposits,
+        cluster,
+        historyComplete: complete,
+        labels,
+        sourceName: this.label,
+        budget: new RequestBudget(linkBudgetLimit(context, this.linkBudget)),
+        options: this.linkOptions,
+        signal: context.signal,
+        fetchIncoming: async (other) => {
+          const page = await fetchJson<EsploraTx[]>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(other)}/txs`, request);
+          const incoming: RawTransfer[] = [];
+          for (const tx of Array.isArray(page) ? page : []) {
+            if (!tx.status?.confirmed) continue;
+            const time = new Date((tx.status.block_time ?? 0) * 1000).toISOString();
+            const transfer = esploraTransfer(tx, other, time, `${site}/tx/${tx.txid}`);
+            if (transfer?.direction === 'in') incoming.push({ ...transfer, asset });
+          }
+          return { incoming, more: Array.isArray(page) && page.filter((tx) => tx.status?.confirmed).length >= PAGE_SIZE };
+        },
+        countTransactions: async (other) => {
+          const info = await fetchJson<EsploraAddress>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(other)}`, request);
+          return info.chain_stats?.tx_count;
+        },
+      });
+      linkedAddresses = found.links;
+      limitations.push(...found.limitations);
+    }
+
     return buildChainActivity(
       {
         network,
         address,
         sourceName: this.label,
         isContract: false,
+        linkedAddresses,
+        ...(mainnet
+          ? {
+              balanceInputs: {
+                current: [{ asset, amount: (stats.funded_txo_sum - stats.spent_txo_sum) / SATOSHI }],
+                flows,
+                complete: complete ? [asset] : [],
+                networkName: 'Bitcoin',
+              },
+            }
+          : {}),
         label: subjectLabel,
         ...(subjectLabel ? { labelSource: lookup!.sourceName } : {}),
         inferredDeposits,
         trails,
         openQuestions,
-        ...(mainnet ? { cluster: { seed: address, network, addresses: clusterAddresses, method: CLUSTER_METHOD_UTXO } } : {}),
+        ...(cluster ? { cluster } : {}),
         txCount: stats.tx_count,
         totalReceived: stats.funded_txo_sum / SATOSHI,
         totalSent: stats.spent_txo_sum / SATOSHI,

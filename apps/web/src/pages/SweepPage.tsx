@@ -4,6 +4,8 @@ import type { Lead, Sweep } from '@olcys/core';
 import { api } from '../api.ts';
 import { Bar, Crumbs, EmptyState, ErrorBox, LayerTag, Loading, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
+import { KnownFromCases } from '../components/common.tsx';
+import type { KnownFromCase } from '../identities.ts';
 import { fmtDateTime, fmtPln } from '../format.ts';
 import { NETWORK_SHORT, STATUS_LABEL } from '../labels.ts';
 import { href, navigate } from '../router.ts';
@@ -104,6 +106,7 @@ function LeadRow({ lead, sweepId, rank }: { lead: Lead; sweepId: string; rank: n
       <th scope="row">
         {lead.handle}
         <span className="cell-note">{lead.services.join(', ')}</span>
+        <KnownFromCases items={(lead as Lead & { knownFromCases?: KnownFromCase[] }).knownFromCases} />
       </th>
       <td>
         <Bar value={lead.priority} label={`Priorytet wskazania ${lead.handle}`} />

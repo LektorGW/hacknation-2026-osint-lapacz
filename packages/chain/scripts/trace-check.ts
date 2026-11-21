@@ -112,6 +112,17 @@ for (const target of targets) {
   }
   for (const member of (activity.cluster?.addresses ?? []).slice(0, verbose ? 25 : 3)) console.log(`  klaster: ${short(member.address)} — ${redact(member.reason)}`);
   for (const question of (activity as { openQuestions?: string[] }).openQuestions ?? []) console.log(`  do wyjaśnienia: ${redact(question)}`);
+  const extra = activity as { networks?: { networkId: string; name: string; txCount: number; tokenTransfers: number; balance?: number; nativeAsset: string }[]; balances?: { asset: string; amount: number; kind: string; asOf: string; chain?: string; valuePln?: number }[] };
+  for (const item of extra.networks ?? []) console.log(`  sieć ${item.networkId} (${item.name}): ${item.txCount} transakcji, ${item.tokenTransfers} transferów tokenów, saldo ${item.balance ?? '?'} ${item.nativeAsset}`);
+  const byChain: Record<string, number> = {};
+  for (const transfer of activity.transfers) byChain[(transfer as { chain?: string }).chain ?? activity.profile.network] = (byChain[(transfer as { chain?: string }).chain ?? activity.profile.network] ?? 0) + 1;
+  console.log(`  przelewy wg sieci: ${JSON.stringify(byChain)}`);
+  for (const item of extra.balances ?? []) console.log(`  saldo ${item.kind === 'current' ? 'bieżące' : `na ${item.asOf}`}: ${item.amount} ${item.asset}${item.chain ? ` [${item.chain}]` : ''}${item.valuePln !== undefined ? ` ≈ ${item.valuePln.toLocaleString('pl-PL')} PLN` : ''}`);
+  const links = (activity as { linkedAddresses?: { address: string; kind: string; strength: number; reason: string; txids: string[] }[] }).linkedAddresses ?? [];
+  const byKind: Record<string, number> = {};
+  for (const link of links) byKind[link.kind] = (byKind[link.kind] ?? 0) + 1;
+  console.log(`  powiązane adresy: ${links.length} ${JSON.stringify(byKind)}`);
+  for (const link of links.slice(0, verbose ? 30 : 6)) console.log(`    ${link.kind} ${short(link.address)} siła ${link.strength} (tx: ${link.txids.length})${verbose ? ` — ${redact(link.reason)}` : ''}`);
   console.log('  ograniczenia:');
   for (const item of activity.limitations.filter((entry) => !entry.startsWith('Do wyjaśnienia: '))) console.log(`    - ${redact(item).slice(0, verbose ? 2000 : 260)}`);
   console.log(`  żądania: ${requests.length} ${JSON.stringify(perHost)}; czas ${seconds.toFixed(1)} s`);

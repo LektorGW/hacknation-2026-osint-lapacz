@@ -199,6 +199,8 @@ const SECTION_TITLE: Record<string, string> = {
   ai: 'Model językowy: co wolno mu zmienić',
   proof: 'Jak powstaje łączna pewność dowodu spieniężenia',
   analysis: 'Tryby analizy i limity',
+  aliases: 'Powiązane tożsamości: kiedy inne nazwisko to prawdopodobnie ta sama osoba',
+  pivot: 'Rozszerzanie poszukiwań: każdy profil jako punkt wyjścia',
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);

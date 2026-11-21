@@ -29,6 +29,14 @@ export interface HistoryOptions {
 export interface ChainRequestContext extends ConnectorContext, HistoryOptions {
   /** Budżet żądań na etykiety i śledzenie środków dla TEGO adresu; nadpisuje ustawienie dostawcy (15 / 40 w trybie głębokim). */
   requestBudget?: number;
+  /** Budżet żądań na szukanie powiązanych adresów dla TEGO adresu (domyślnie 12 / 40 w trybie głębokim); 0 wyłącza zapytania. */
+  linkBudget?: number;
+}
+
+/** Budżet szukania powiązań z kontekstu wywołania albo domyślny dostawcy. */
+export function linkBudgetLimit(context: ConnectorContext, fallback: number): number {
+  const requested = (context as ChainRequestContext).linkBudget;
+  return typeof requested === 'number' && requested >= 0 ? requested : fallback;
 }
 
 /** Budżet śledzenia z kontekstu wywołania albo domyślny dostawcy. */

@@ -97,11 +97,14 @@ export function Explanations() {
   const { dossier, summary, tabHref } = useDossier();
   const toast = useToast();
   const { depth, progress, rerun } = useRerun();
-  const [adding, setAdding] = useState(false);
+  const noAddresses = (dossier.explanations ?? []).some((item) => item.kind === 'no_addresses');
+  const [adding, setAdding] = useState(noAddresses);
   const [opening, setOpening] = useState<string>();
   const explanations = dossier.explanations ?? [];
   if (explanations.length === 0) return null;
   const busy = depth !== undefined;
+  // Jeden przycisk dla całego bloku, niezależnie od tego, ile sugestii mówi o identyfikatorze.
+  const wantsIdentifier = explanations.some((item) => item.suggestions.some((suggestion) => suggestionAction(suggestion) === 'add_identifier'));
   const hasUnconfirmed = (dossier.unconfirmedAddresses ?? []).length > 0;
 
   async function analyseAddress(address: string) {
@@ -132,11 +135,6 @@ export function Explanations() {
                 return (
                   <li key={suggestion}>
                     <span>{suggestion}</span>
-                    {action === 'add_identifier' && (
-                      <button type="button" className="button button-small" aria-expanded={adding} onClick={() => setAdding(!adding)}>
-                        Dodaj identyfikator
-                      </button>
-                    )}
                     {action === 'deep' && (
                       <button type="button" className="button button-small" disabled={busy} onClick={() => rerun('deep')}>
                         Uruchom tryb głęboki
@@ -171,7 +169,12 @@ export function Explanations() {
           )}
         </article>
       ))}
-      {(adding || explanations.some((item) => item.kind === 'no_addresses')) && <AddIdentifier onSubmit={addAndRerun} disabled={busy} />}
+      {wantsIdentifier && !adding && (
+        <button type="button" className="button" onClick={() => setAdding(true)}>
+          Dodaj identyfikator
+        </button>
+      )}
+      {adding && <AddIdentifier onSubmit={addAndRerun} disabled={busy} />}
       {depth && <AnalysisProgress title="Analiza w toku" progress={progress} depth={depth} />}
     </section>
   );

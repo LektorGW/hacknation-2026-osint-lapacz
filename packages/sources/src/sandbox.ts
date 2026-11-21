@@ -48,6 +48,7 @@ interface SandboxService {
 const SERVICES: SandboxService[] = [
   {
     prefix: 'gitpub',
+    recent: true,
     label: 'GitPub (piaskownica)',
     description: 'Profile programistów: bio, README i sekcja „Wesprzyj mnie". Wyszukiwanie po loginie, e-mailu, nazwisku lub adresie.',
     fallbackCategory: 'own_profile',
@@ -55,6 +56,7 @@ const SERVICES: SandboxService[] = [
   },
   {
     prefix: 'www',
+    recent: true,
     label: 'Strony osobiste (piaskownica)',
     description: 'Prywatne strony WWW. Wyszukiwanie po właścicielu strony (nick, e-mail, nazwisko) lub adresie.',
     fallbackCategory: 'own_profile',

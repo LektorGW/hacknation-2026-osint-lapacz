@@ -9,6 +9,8 @@ import { jointProbability } from '../dossier.ts';
 import { fmtAmount, fmtDelta, fmtPln, scoreLevel, truncate } from '../format.ts';
 import { CLASS_LABEL, EDGE_KIND_LABEL, IDENTITY_LABEL, NODE_KIND_LABEL, NODE_KIND_PLURAL, RELATION_LABEL, ruleLabel } from '../labels.ts';
 import { Canvas } from './Canvas.tsx';
+import { RELATION_TEXT } from '../identities.ts';
+import type { FullDossier } from '../proof.ts';
 import { KIND_ORDER, edgeGeometry, filterGraph, layeredLayout, neighbourhood, radialLayout } from './layout.ts';
 import type { GraphFilter, Point } from './layout.ts';
 
@@ -120,6 +122,27 @@ function NodeDetails({ node, dossier }: { node: GraphNode; dossier: Dossier }) {
             </div>
           )}
         </dl>
+      </>
+    );
+  }
+  if (node.kind === 'person' && node.id.startsWith('identity:')) {
+    const identity = (dossier as FullDossier).linkedIdentities?.find((item) => node.id === `identity:${item.id}`);
+    if (!identity) return null;
+    return (
+      <>
+        <p>
+          {RELATION_TEXT[identity.relation] ?? identity.relation} — siła powiązania {identity.score}/100.
+        </p>
+        <ol className="plain-list">
+          {identity.path.map((step, index) => (
+            <li key={index}>
+              {index + 1}. {step}
+            </li>
+          ))}
+        </ol>
+        <p>
+          <a href={tabHref('tozsamosci')}>Karta powiązanej tożsamości</a>
+        </p>
       </>
     );
   }

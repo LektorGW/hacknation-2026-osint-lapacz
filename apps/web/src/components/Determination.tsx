@@ -3,6 +3,7 @@ import type { Dossier, PersonCandidate, ProfileCard } from '@olcys/core';
 import { addressKey, jointProbability } from '../dossier.ts';
 import { IDENTIFIER_LABEL } from '../labels.ts';
 import { proofSummary } from '../proof.ts';
+import { identityHeadline, likelySameTotal } from '../identities.ts';
 import { fmtPln, shorten, sum } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
 import { DualScore, Gauge, Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
@@ -69,6 +70,8 @@ function PersonDetermination() {
   const { totals, keyFindings } = dossier;
   const strongest = proofSummary(dossier.cashOutProof ?? []).strongest;
   const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0);
+  const headline = identityHeadline(dossier.linkedIdentities ?? []);
+  const withLikelySame = likelySameTotal(totals);
   const total = (totals as { cashOutPlnTotal?: number }).cashOutPlnTotal ?? sum(Object.values(totals.cashOutPlnByYear));
 
   return (
@@ -85,6 +88,11 @@ function PersonDetermination() {
           <span className="muted">
             Streszczenie wygenerowane przez model z ustaleń poniżej · {dossier.summary.model} · wersja polecenia {dossier.summary.promptVersion}
           </span>
+        </p>
+      )}
+      {headline.length > 0 && (
+        <p className="identities-short">
+          <LayerTag layer="inference" /> <strong>Możliwe inne tożsamości:</strong> {headline.join('; ')}. <a href={tabHref('tozsamosci')}>Ścieżki dojścia i dowody</a>
         </p>
       )}
       {strongest && (
@@ -158,6 +166,14 @@ function PersonDetermination() {
             <div>
               <p className="total-value">{total > 0 ? fmtPln(total) : 'brak oznak wypłat'}</p>
               <p className="muted">szacowane wypłaty na waluty tradycyjne</p>
+              {withLikelySame !== undefined && (
+                <p
+                  className="total-combined"
+                  title="Suma wypłat podmiotu powiększona o wypłaty tożsamości ocenionych jako prawdopodobnie ta sama osoba. Nie jest ustaleniem — liczby łączą się dopiero po scaleniu przez analityka."
+                >
+                  <strong>{fmtPln(withLikelySame)}</strong> łącznie z tożsamościami prawdopodobnie tymi samymi
+                </p>
+              )}
               <details className="why">
                 <summary>Skąd priorytet {totals.priority}/100</summary>
                 <ul>

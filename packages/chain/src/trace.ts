@@ -368,7 +368,7 @@ export interface AccountTraceSearch {
 
 // Zgrubne wagi służą WYŁĄCZNIE do ustalenia kolejności „największych przelewów”
 // między różnymi walutami; nie są kursami i nie trafiają do żadnej wyceny.
-const ORDER_WEIGHTS: Record<string, number> = { BTC: 300_000, ETH: 10_000, WETH: 10_000, TRX: 1, USDT: 4, USDC: 4, DAI: 4 };
+const ORDER_WEIGHTS: Record<string, number> = { BTC: 300_000, ETH: 10_000, WETH: 10_000, TRX: 1, USDT: 4, USDC: 4, DAI: 4, BNB: 2_500, POL: 1, CELO: 0.5, XDAI: 4 };
 const STABLECOINS = new Set(['USDT', 'USDC', 'DAI']);
 const SWAP_SAME_TX_WINDOW_MS = 30 * 60_000;
 const MAX_TRANSFERS_PER_CANDIDATE = 4;

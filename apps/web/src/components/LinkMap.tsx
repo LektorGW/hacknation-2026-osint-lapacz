@@ -21,6 +21,8 @@ interface MapEdge {
   /** Krawędzie prowadzące do adresu dziedziczą jego poziom wyniku. */
   score?: number;
   excluded?: boolean;
+  /** Opis krawędzi do powiązanej tożsamości. */
+  label?: string;
 }
 
 const COLUMNS = ['Podmiot', 'Identyfikatory', 'Źródła i profile', 'Adresy', 'Kontrahenci z etykietą'];
@@ -29,7 +31,19 @@ const NODE_HEIGHT = 46;
 const ROW_HEIGHT = 62;
 const COLUMN_GAP = 62;
 const HEADER_HEIGHT = 34;
-const WIDTH = COLUMNS.length * NODE_WIDTH + (COLUMNS.length - 1) * COLUMN_GAP;
+const IDENTITY_COLUMN = COLUMNS.length;
+const IDENTITY_LABEL = 'Powiązane tożsamości';
+const widthFor = (columns: number) => columns * NODE_WIDTH + (columns - 1) * COLUMN_GAP;
+
+/** Powiązana tożsamość na mapie: krawędź wychodzi z adresu, który ją łączy z podmiotem. */
+export interface MapIdentity {
+  id: string;
+  name: string;
+  relation: string;
+  addresses: string[];
+  /** Rodzaj dowodu opisujący krawędź. */
+  label: string;
+}
 const MAX_COUNTERPARTIES = 8;
 
 function buildGraph(subjectName: string, query: SubjectQuery, findings: Finding[]) {
@@ -105,7 +119,7 @@ function buildGraph(subjectName: string, query: SubjectQuery, findings: Finding[
 
 /** Rozmieszcza węzły: stała pozycja kolumny, w pionie równomiernie i centralnie. */
 function layout(nodes: MapNode[]) {
-  const columns = COLUMNS.map((_, column) => nodes.filter((node) => node.column === column));
+  const columns = [...COLUMNS, IDENTITY_LABEL].map((_, column) => nodes.filter((node) => node.column === column));
   const rows = Math.max(1, ...columns.map((column) => column.length));
   const height = HEADER_HEIGHT + rows * ROW_HEIGHT;
   const positions = new Map<string, { x: number; y: number }>();
@@ -175,11 +189,21 @@ interface LinkMapProps {
   subjectName: string;
   query: SubjectQuery;
   findings: Finding[];
+  identities?: MapIdentity[];
   onSelectAddress: (address: string) => void;
 }
 
-export function LinkMap({ subjectName, query, findings, onSelectAddress }: LinkMapProps) {
+export function LinkMap({ subjectName, query, findings, identities = [], onSelectAddress }: LinkMapProps) {
   const { nodes, edges } = buildGraph(subjectName, query, findings);
+  for (const identity of identities) {
+    const id = `identity:${identity.id}`;
+    // Krawędź z adresu wspólnego z podmiotem albo z kontrahenta; w ostateczności z samego podmiotu.
+    const via = identity.addresses.flatMap((address) => [`addr:${address}`, `cp:${address}`]).find((candidate) => nodes.some((node) => node.id === candidate));
+    nodes.push({ id, column: IDENTITY_COLUMN, title: truncate(identity.name, 26), subtitle: truncate(identity.relation, 34) });
+    edges.push({ from: via ?? 'subject', to: id, label: identity.label });
+  }
+  const columnLabels = identities.length > 0 ? [...COLUMNS, IDENTITY_LABEL] : COLUMNS;
+  const WIDTH = widthFor(columnLabels.length);
   const { positions, height } = layout(nodes);
 
   return (
@@ -188,9 +212,9 @@ export function LinkMap({ subjectName, query, findings, onSelectAddress }: LinkM
         className="link-map"
         viewBox={`0 0 ${WIDTH} ${height}`}
         role="group"
-        aria-label="Mapa powiązań: podmiot, identyfikatory, źródła, adresy i kontrahenci"
+        aria-label="Mapa powiązań: podmiot, identyfikatory, źródła, adresy, kontrahenci i powiązane tożsamości"
       >
-        {COLUMNS.map((label, index) => (
+        {columnLabels.map((label, index) => (
           <text key={label} className="map-column-label" x={index * (NODE_WIDTH + COLUMN_GAP)} y={16}>
             {label}
           </text>
@@ -207,7 +231,7 @@ export function LinkMap({ subjectName, query, findings, onSelectAddress }: LinkM
             return (
               <path
                 key={`${edge.from}>${edge.to}`}
-                className={edgeClass(edge)}
+                className={edge.label ? 'map-edge map-edge-identity' : edgeClass(edge)}
                 d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${to.x - bend} ${y2}, ${to.x} ${y2}`}
                 // Grubość krawędzi rośnie z wynikiem adresu.
                 strokeWidth={edge.score !== undefined && !edge.excluded ? 1.5 + (edge.score / 100) * 3.5 : 1.5}
@@ -215,6 +239,14 @@ export function LinkMap({ subjectName, query, findings, onSelectAddress }: LinkM
             );
           })}
         </g>
+        {edges.map((edge) => {
+          const to = positions.get(edge.to);
+          return edge.label && to ? (
+            <text key={`label-${edge.to}`} className="map-edge-label" x={to.x - 8} y={to.y - 4} textAnchor="end">
+              {truncate(edge.label, 40)}
+            </text>
+          ) : null;
+        })}
         {nodes.map((node) => {
           const position = positions.get(node.id)!;
           return <NodeBox key={node.id} node={node} x={position.x} y={position.y} onSelect={onSelectAddress} />;

@@ -124,7 +124,16 @@ export class NbpRateSource implements RateSource {
 }
 
 /** Pary notowań Binance używane do wyceny; pozostałe waluty nie są wyceniane kursem rynkowym. */
-export const BINANCE_PAIRS: Record<string, string> = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', WETH: 'ETHUSDT', TRX: 'TRXUSDT' };
+export const BINANCE_PAIRS: Record<string, string> = {
+  BTC: 'BTCUSDT',
+  ETH: 'ETHUSDT',
+  WETH: 'ETHUSDT',
+  TRX: 'TRXUSDT',
+  // Waluty natywne innych sieci EVM — pary potwierdzone w API Binance (xDAI nie ma pary, więc nie jest wyceniany).
+  POL: 'POLUSDT',
+  BNB: 'BNBUSDT',
+  CELO: 'CELOUSDT',
+};
 /** Ile dni wstecz od dnia poprzedzającego transakcję szukamy tabeli NBP. */
 export const NBP_PRECEDING_LOOKBACK_DAYS = 7;
 export const SAMPLE_RATE_WARNING = 'UWAGA: KURS PRZYKŁADOWY';

@@ -12,6 +12,9 @@ import { EsploraProvider } from './providers/esplora.ts';
 import { SandboxChainProvider } from './providers/sandbox.ts';
 import { TronGridProvider } from './providers/trongrid.ts';
 import { DEFAULT_REQUEST_BUDGET } from './deposit.ts';
+import { DEEP_LINK_BUDGET, DEFAULT_LINK_BUDGET } from './links.ts';
+import type { LinkOptions } from './links.ts';
+import { EvmMultiChainProvider, loadEvmNetworks } from './networks.ts';
 import { TronScanTagClient, WalletExplorerClient } from './party-labels.ts';
 import { MarketRateSource, StaticRateSource } from './valuation.ts';
 
@@ -20,7 +23,10 @@ export * from './cashout.ts';
 export * from './cluster.ts';
 export * from './deposit.ts';
 export * from './history.ts';
+export * from './balances.ts';
 export * from './labels.ts';
+export * from './networks.ts';
+export * from './links.ts';
 export * from './ofac.ts';
 export * from './party-labels.ts';
 export * from './trace.ts';
@@ -60,6 +66,15 @@ export interface ChainConfig extends ActivityOptions, HistoryOptions {
    * Domyślnie włączone dla prawdziwego `fetch`, wyłączone, gdy `fetch` podmieniono (testy).
    */
   politeFetch?: boolean;
+  /** `false` wyłącza wykrywanie innych sieci EVM (zostaje sam Ethereum mainnet). */
+  evmNetworks?: boolean;
+  /** Ile innych sieci EVM (o największej aktywności adresu) analizować w pełni: domyślnie 0, w trybie głębokim 3. */
+  maxExtraNetworks?: number;
+  /** `false` wyłącza szukanie powiązanych adresów (innych adresów tej samej osoby). */
+  findLinks?: boolean;
+  /** Osobny budżet żądań na szukanie powiązań: domyślnie 12, w trybie głębokim 40. */
+  linkBudget?: number;
+  links?: LinkOptions;
 }
 
 /** Budżet żądań na adres w trybie `depth: 'deep'`. */
@@ -109,6 +124,9 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       requestBudget: config.requestBudget ?? (deep ? DEEP_REQUEST_BUDGET : DEFAULT_REQUEST_BUDGET),
       followDeposits: true,
       extraOutgoing: deep,
+      findLinks: config.findLinks ?? true,
+      linkBudget: config.linkBudget ?? (deep ? DEEP_LINK_BUDGET : DEFAULT_LINK_BUDGET),
+      links: config.links,
       // Ustawienia domyślne dla wszystkich adresów; kontekst wywołania zmienia je dla pojedynczego adresu.
       history: {
         history: config.history,
@@ -124,6 +142,7 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       ? new WalletExplorerClient({ fetch: fetchImpl, minIntervalMs: config.walletExplorerIntervalMs })
       : undefined;
     const tronScan = externalLabels ? new TronScanTagClient({ fetch: fetchImpl }) : undefined;
+    const evm = { ...live, balances: true, ...(externalLabels ? { metadataUrl: 'https://metadata.services.blockscout.com' } : {}) };
     providers.push(
       new EsploraProvider({
         ...live,
@@ -143,7 +162,15 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
         testnetSiteUrl: 'https://mempool.space/testnet',
         fallbackSiteUrl: 'https://blockstream.info',
       }),
-      new BlockscoutProvider({ ...live, ...(externalLabels ? { metadataUrl: 'https://metadata.services.blockscout.com' } : {}) }),
+      // Ethereum mainnet + wykrywanie innych sieci EVM; w trybie głębokim pełna analiza sieci o największej aktywności.
+      (config.evmNetworks ?? true)
+        ? new EvmMultiChainProvider({
+            main: new BlockscoutProvider({ ...evm, chain: loadEvmNetworks().networks.find((item) => item.id === 'ethereum') }),
+            createProvider: (chain) => new BlockscoutProvider({ ...evm, chain }),
+            fetch: fetchImpl,
+            maxExtraNetworks: config.maxExtraNetworks ?? (deep ? 3 : 0),
+          })
+        : new BlockscoutProvider(evm),
       new TronGridProvider({ ...live, labelLookup: tronScan, ...(externalLabels ? { tronScanUrl: 'https://apilist.tronscanapi.com' } : {}) }),
     );
   }

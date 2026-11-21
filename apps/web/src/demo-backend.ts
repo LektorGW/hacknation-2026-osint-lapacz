@@ -54,6 +54,7 @@ import type { RawFinding, RawRun } from './demo-data.ts';
 import { demoHits, demoMonitorSources } from './demo-monitor.ts';
 import { demoAi, demoCorpus, demoExtras, demoOwnInsight, demoProgress, demoProofs, demoWarningEvidence, startDemoProgress } from './demo-proof.ts';
 import type { DossierFinding, FullDossier } from './proof.ts';
+import { applyDemoIdentities } from './demo-identities.ts';
 import { ADDRESS_CASE_ADDR, addressCaseDossier, demoAddressCase, demoAddressRun, demoServiceCase, demoServiceRun, serviceCaseDossier } from './demo-cases.ts';
 import { IDENTITY_SCORE, addressKey, computePriority, dossierFromRun, profileKey } from './dossier.ts';
 import { fmtPln, sum } from './format.ts';
@@ -442,7 +443,7 @@ function buildDossier(raw: RawRun): FullDossier {
         }
       : {}),
   }));
-  return { ...enriched, findings, cashOutProof: demo ? demoProofs(enriched) : [], ...demoExtras };
+  return applyDemoIdentities({ ...enriched, findings, cashOutProof: demo ? demoProofs(enriched) : [], ...demoExtras }, applied);
 }
 
 const latestRun = (caseId: string) => runs.filter((run) => run.caseId === caseId && run.status === 'completed').at(-1);
@@ -451,7 +452,9 @@ const latestRun = (caseId: string) => runs.filter((run) => run.caseId === caseId
 
 const leadWithPriority = (lead: (typeof demoLeads)[number]): Lead => {
   const { priority, reasons } = computePriority(lead.topScore, lead.cashOutPlnByYear, NOW);
-  return { ...lead, priority, priorityReasons: reasons };
+  // Wskazanie „bitkolekcjoner” publikuje adres Tron znany ze sprawy demonstracyjnej.
+  const known = lead.handle === 'bitkolekcjoner' ? { knownFromCases: [{ address: ADDR_TRON, caseId: DEMO_CASE_ID, caseName: demoCase.name }] } : {};
+  return { ...lead, priority, priorityReasons: reasons, ...known };
 };
 
 function buildSweep(connectors: string[], limit: number, startedAt: string): Sweep {
@@ -590,7 +593,11 @@ function leadFromHit(hit: WatchHit, spec: [number, Record<string, number>]): Lea
   };
 }
 
-const hits: WatchHit[] = demoHits.map(({ leadSpec, ...hit }) => (leadSpec ? { ...hit, lead: leadFromHit(hit, leadSpec) } : hit));
+const hits: WatchHit[] = demoHits.map(({ leadSpec, ...hit }) => ({
+  ...hit,
+  ...(leadSpec ? { lead: leadFromHit(hit, leadSpec) } : {}),
+  ...(hit.author === 'tomwzor' ? { knownFromCases: [{ address: ADDR_FORUM, caseId: DEMO_CASE_ID, caseName: demoCase.name }] } : {}),
+}));
 
 function findHit(hitId: string): WatchHit {
   const found = hits.find((item) => item.id === hitId);

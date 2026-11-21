@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { Dossier } from '@olcys/core';
-import { api, isDemo, loadDossier, reportHtmlUrl, reportJsonUrl } from '../api.ts';
+import { api, isDemo, loadDossier, runPeriod, reportHtmlUrl, reportJsonUrl } from '../api.ts';
 import type { CaseSummary } from '../api.ts';
 import { Crumbs, ErrorBox, ExternalLink, LayerLegend, Skeleton } from '../components/common.tsx';
 import { Determination, OtherCandidates } from '../components/Determination.tsx';
@@ -11,9 +11,11 @@ import type { DossierContextValue } from '../components/DossierContext.tsx';
 import { AddressesTab, DecisionsTab, FlowsTab, PeopleTab, ProfilesTab, TimelineTab } from '../components/DossierTabs.tsx';
 import { RunLauncher, RunsTab } from '../components/Runs.tsx';
 import { ProofTab } from '../components/ProofTab.tsx';
+import { IdentitiesTab } from '../components/IdentitiesTab.tsx';
+import { RELATION_TEXT, linkLabel } from '../identities.ts';
 import { Explanations } from '../components/Explanations.tsx';
 import { periodLabel } from '../proof.ts';
-import type { Period } from '../proof.ts';
+import type { FullDossier } from '../proof.ts';
 import { ServiceList } from '../components/ServiceCards.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { fmtDateTime } from '../format.ts';
@@ -38,8 +40,8 @@ function downloadJson(name: string, data: unknown) {
 
 /** Okres wskazany przy uruchomieniu analizy — zapisany w samej analizie, nie w teczce. */
 function RunPeriod({ runId }: { runId: string }) {
-  const run = useAsync(() => api.getRun(runId), `period:${runId}`);
-  const label = periodLabel((run.data as { period?: Period } | undefined)?.period);
+  const period = useAsync(() => runPeriod(runId), `period:${runId}`);
+  const label = periodLabel(period.data);
   return label ? <strong className="period-note"> · analizowany okres: {label}</strong> : null;
 }
 
@@ -94,7 +96,7 @@ function Identifiers({ dossier }: { dossier: Dossier }) {
 }
 
 /** Mapa powiązań w układzie kolumnowym; widok hubów usług dostępny pod przełącznikiem. */
-function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Dossier }) {
+function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: FullDossier }) {
   const [hubs, setHubs] = useState(false);
   const [fitted, setFitted] = useState(false);
   const query = {
@@ -121,6 +123,15 @@ function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Do
           subjectName={dossier.subject.name}
           query={query.identifiers.length > 0 ? query : summary.query}
           findings={dossier.findings}
+          identities={(dossier.linkedIdentities ?? [])
+            .filter((identity) => identity.decision !== 'rejected')
+            .map((identity) => ({
+              id: identity.id,
+              name: identity.displayName,
+              relation: RELATION_TEXT[identity.relation] ?? identity.relation,
+              addresses: identity.addresses.map((item) => item.address),
+              label: linkLabel(identity),
+            }))}
           onSelectAddress={() => {
             location.hash = `#/sprawa/${summary.id}/adresy`;
           }}
@@ -151,6 +162,8 @@ function TabContent({ tab, summary, dossier, onChanged }: { tab: DossierTab; sum
       return <RunsTab summary={summary} dossier={dossier} onChanged={onChanged} />;
     case 'dowod':
       return <ProofTab />;
+    case 'tozsamosci':
+      return <IdentitiesTab />;
     default:
       return (
         <>
@@ -308,6 +321,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
           {DOSSIER_TABS.map((item, index) => (
             <a key={item.id} href={tabHref(item.id)} aria-current={item.id === tab ? 'page' : undefined} title={`Skrót: ${index + 1}`}>
               {item.label}
+              {item.id === 'tozsamosci' && ` (${(dossier.linkedIdentities ?? []).length})`}
             </a>
           ))}
         </nav>

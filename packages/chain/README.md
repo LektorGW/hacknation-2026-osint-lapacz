@@ -169,6 +169,36 @@ Składniki są wypisane w `reasons`. `openQuestions` mówi, co trzeba potwierdzi
 - Oba serwisy bez klucza odrzucają serie żądań (HTTP 429), a TronGrid blokuje potem nadawcę na kilkanaście sekund. `createPoliteFetch` ustawia żądania w kolejce (TronScan co 450 ms, TronGrid co 350 ms) i ponawia raz po 429. Analiza adresu Tron w trybie głębokim trwa przez to 10–40 s.
 - `data/labels.json` zawiera 17 portfeli giełd na Tronie (Binance, OKX, Bybit, KuCoin, Bitfinex, Gate, MEXC) — wyłącznie takie, których znacznik TronScan potwierdzono na żywo 2026-11-21 (znacznik jest w treści etykiety).
 
+## Powiązane adresy (`linkedAddresses`)
+
+Kandydaci na **inne adresy tej samej osoby** — `src/links.ts`, pole dodatkowe wyniku `activity.linkedAddresses` (typ `LinkedAddress`, poza kontraktem core). Każde powiązanie ma `kind`, `strength` 0–100 z jawnych stałych (`LINK_STRENGTH`), `reason` z nazwaną heurystyką i zastrzeżeniami, `txids`, daty, kwotę. To heurystyki, nie ustalenie tożsamości.
+
+| `kind` | Reguła | Siła |
+|---|---|---|
+| `co_depositor` | inny nadawca wpłat na TEN SAM indywidualny adres wpłat giełdy (adres ustalony regułą zamiecenia; w Bitcoinie także adres zaliczony przez WalletExplorer do portfela giełdy). Adres wpłat należy do jednego konta klienta, więc wpłacający to najpewniej ta sama osoba albo ktoś wpłacający na jej konto (kupujący, kontrahent, rodzina) | 80; 70 gdy adres wpłat znany tylko z etykiety; 65 gdy ma ponad 5 innych nadawców |
+| `same_wallet` | adres z klastra portfela: wspólne wejścia albo reszta | 75 wspólne wejścia; 55 / 65 reszta przy 1 / 2+ przesłankach; 25 gdy adres ma bardzo dużą aktywność |
+| `funded_by` | adres prywatny, z którego przyszła PIERWSZA wpłata na adres podmiotu (tylko przy pełnej historii) | 45; 50 przy kilku przelewach; 60 przy przelewach w obie strony |
+| `funds` | adres prywatny, dla którego przelew z adresu podmiotu był pierwszą wpłatą | jak wyżej |
+| `repeated_counterparty` | prywatny kontrahent: co najmniej 3 przelewy, w obie strony, w ciągu co najmniej 30 dni — drugi portfel, osoba bliska albo wspólnik | 30 + 4 za każdy kolejny przelew, najwyżej 50 |
+
+- **Wyjątek pośrednika**: adres wpłat z ponad 10 różnymi nadawcami albo ponad 2000 transakcji to kantor, bramka, serwis przyjmujący wpłaty wielu osób albo portfel zbiorczy — powiązań nie tworzymy, powstaje wpis w `limitations`.
+- Usługi, kontrakty i adresy o dużej aktywności (ponad 200 transakcji) nie są traktowane jak adresy prywatne.
+- **Adresy-podróbki** („address poisoning”: ten sam początek i koniec adresu, mniejszy obrót), przelewy zerowe i tokeny o niezweryfikowanym kontrakcie nie tworzą powiązań; liczba pominiętych jest w `limitations`.
+- **Nie tworzymy powiązania „to samo źródło finansowania”** (dwa adresy zasilone z tego samego adresu wypłat giełdy w krótkim odstępie): giełda wypłaca z kilku gorących portfeli tysiącom klientów na godzinę, więc wspólny adres wypłat występuje między zupełnie obcymi osobami i nie ma wartości dowodowej.
+- Osobny budżet żądań: 12, w trybie głębokim 40 (`linkBudget` w konfiguracji albo w kontekście wywołania); `findLinks: false` wyłącza moduł.
+
+## Sieci EVM (`networks`) i stan posiadania (`balances`)
+
+Ten sam adres EVM działa na wielu sieciach, a wypłata na giełdę przez tańszą sieć jest niewidoczna, gdy analizujemy tylko Ethereum mainnet.
+
+- **Rejestr** `data/evm-networks.json` (`src/networks.ts`): 11 sieci z publicznym API Blockscout v2 potwierdzonych na żywo 2026-11-21 — Ethereum, OP Mainnet, ZKsync Era, Scroll, Celo, Unichain, Soneium, Mode, Ink, Lisk, World Chain. Stablecoiny (USDT/USDC) są wpisane tylko dla sieci, gdzie kontrakt potwierdzono w API (Ethereum, Optimism, ZKsync, Scroll, Celo). Sekcja `unavailable` opisuje sieci sprawdzone i niedostępne: Base, Arbitrum, Polygon (HTTP 403 dla naszego nagłówka `User-Agent`; odpowiadają dopiero na postać „Mozilla/5.0 (compatible; …)” — nagłówka nie zmieniamy, żeby obejść blokadę), Gnosis (przekierowanie na serwis z blokadą), **BNB Smart Chain (brak publicznego eksploratora z API bez klucza)**, Linea, Zora, Mantle, Avalanche.
+- **`discoverNetworks(address, context, options?)`** → `{ networks: NetworkPresence[], limitations }`: jedno żądanie o liczniki na sieć, współbieżnie, w budżecie ~8 s; dla sieci z aktywnością drugie żądanie o saldo. `NetworkPresence = { networkId, name, txCount, tokenTransfers, balance?, nativeAsset, firstSeen?, lastSeen?, explorerUrl }` (`firstSeen`/`lastSeen` tylko dla sieci, które przeszły pełną analizę). Wynik trafia do pola `activity.networks`.
+- **Inne sieci w wyniku**: typ `Network` w core ma dla EVM jedną wartość, więc przelewy, wskaźniki i ścieżki z innych sieci mają `network: 'ethereum'` i pole dodatkowe **`chain: '<id z rejestru>'`** (brak pola = Ethereum mainnet), a `explorerUrl` wskazuje eksplorator właściwej sieci. Wpisy `limitations` z innej sieci zaczynają się od `[Nazwa sieci]`. Profil (`profile`) opisuje Ethereum mainnet.
+- **Tryb głęboki**: do 3 innych sieci o największej aktywności (`maxExtraNetworks`) przechodzi tę samą analizę wypływów, etykiet, ścieżek i powiązań; ich wskaźniki wchodzą do `cashOuts`, `trails` i sum PLN. W trybie standardowym jest samo wykrycie sieci i wpis, których sieci nie przeanalizowano.
+- **Etykiety w innych sieciach**: zbiór etykiet z Ethereum nie jest przenoszony (kontrakt pod tym samym adresem może być czymś innym); giełdy rozpoznajemy po znacznikach eksploratora danej sieci i usługi metadanych Blockscout (parametr `chainId`), tokeny — po kontraktach z rejestru.
+- **Wycena walut natywnych**: ETH na sieciach warstwy 2 jak ETH; POL, BNB i CELO przez Binance (pary potwierdzone); xDAI nie ma pary, więc nie jest wyceniany.
+- **Stan posiadania** (`src/balances.ts`, pole `activity.balances`): `BalanceEntry = { asset, amount, network, chain?, kind: 'current' | 'year_end', asOf, valuePln?, valuation?, basis }`. Saldo bieżące (waluta natywna i zweryfikowane stablecoiny) podaje źródło; **saldo na 31 grudnia** każdego roku z aktywnością jest wynikiem obliczeń — saldo bieżące pomniejszone o przelewy późniejsze (rok wg czasu polskiego). Liczymy je tylko wtedy, gdy historia aktywa jest pełna I jej suma zgadza się z saldem bieżącym (±0,5%); inaczej jest pomijane z wpisem w `limitations`. W praktyce: Bitcoin przy pełnej historii zawsze (zmiany salda liczymy z opłatami), stablecoiny przy pełnej historii zwykle, waluta natywna EVM i TRX zwykle nie (opłat i transakcji wewnętrznych nie ma w przelewach).
+
 ## Zakres historii adresu (`history`)
 
 Domyślnie analizowane jest ~50 najnowszych transakcji. Dla adresu będącego przedmiotem sprawy to za mało: stare, duże wypływy bywają przykryte tysiącem późniejszych drobnych wpłat. Zakres ustawia się **osobno dla każdego adresu w kontekście wywołania** (albo domyślnie w `createChainProviders`):

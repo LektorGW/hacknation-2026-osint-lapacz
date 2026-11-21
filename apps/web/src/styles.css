@@ -534,6 +534,34 @@ input[type='date'] { font: inherit; min-height: 2.35rem; padding: 0.3rem 0.6rem;
 .page, .card, .content { min-width: 0; }
 .rule-groups { overflow-x: auto; }
 
+/* ---------- Powiązane tożsamości ---------- */
+
+.identity { border-left: 5px solid var(--level); }
+.identity.is-rejected { opacity: 0.75; border-left-style: dashed; }
+.identity-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.identity-head > div:nth-child(2) { flex: 1 1 12rem; min-width: 0; }
+.identity-head h3, .identity-head p { margin: 0; }
+.identity-relation { display: flex; flex-direction: column; gap: 2px; color: var(--level); }
+.path { margin: var(--s4) 0; padding: var(--s3) var(--s4); border: 2px solid var(--level); border-radius: var(--radius); background: var(--surface-alt); }
+.path h4 { font-size: 1rem; }
+.path ol { list-style: none; margin: 0; padding: 0; }
+.path li { position: relative; display: flex; gap: var(--s3); padding: 0 0 var(--s4); font-size: 1rem; }
+.path li:last-child { padding-bottom: 0; font-weight: 700; }
+.path li:not(:last-child)::before { content: ''; position: absolute; left: 0.9rem; top: 1.9rem; bottom: 0; border-left: 2px dashed var(--border-strong); }
+.path-mark { flex: none; display: inline-grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: 50%; background: var(--level); color: var(--surface); font-weight: 800; font-size: 0.86rem; }
+.identity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: var(--s4); }
+.identity-reasons { margin: 0; padding-left: 1.1rem; }
+.identity-reasons li { margin-bottom: var(--s2); }
+.identity-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); margin-top: 2px; font-size: 0.86rem; }
+.identity-note { padding: var(--s2) var(--s3); border-left: 4px solid var(--inference); background: var(--inference-bg); border-radius: var(--radius-small); font-size: 0.9rem; }
+.identities-short { padding: var(--s2) var(--s4); border: 1px solid var(--inference); border-left-width: 5px; border-radius: var(--radius-small); background: var(--inference-bg); }
+.total-combined { cursor: help; font-size: 0.86rem; }
+.known-cases { display: block; margin: 2px 0; }
+.known-cases a { text-decoration: none; }
+.map-edge-identity { stroke: var(--calc); stroke-dasharray: 6 5; stroke-width: 2; }
+.map-edge-label { font-size: 10.5px; fill: var(--calc); }
+.map-column-5 rect { fill: var(--calc-bg); stroke: var(--calc); }
+
 /* ---------- Teczka: ustalenie ---------- */
 
 .determination { border-top: 4px solid var(--inference); padding-top: var(--s3); }

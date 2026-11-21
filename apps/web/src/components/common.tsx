@@ -268,3 +268,17 @@ export function Crumbs({ items }: { items: { label: string; href?: string }[] })
     </nav>
   );
 }
+
+/** Znacznik: adres z publikacji jest już znany z innej sprawy. */
+export function KnownFromCases({ items }: { items?: { address: string; caseId: string; caseName: string }[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <span className="known-cases">
+      {items.map((item) => (
+        <a key={`${item.caseId}-${item.address}`} className="chip chip-fact" href={`#/sprawa/${encodeURIComponent(item.caseId)}`} title={item.address}>
+          adres znany ze sprawy „{item.caseName}”
+        </a>
+      ))}
+    </span>
+  );
+}

@@ -12,11 +12,16 @@ import { DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
 import { traceAccountFlows } from '../trace.ts';
 import type { TracedTrail } from '../trace.ts';
-import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, planHistory, traceBudgetLimit } from '../history.ts';
+import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, linkBudgetLimit, planHistory, traceBudgetLimit } from '../history.ts';
 import type { HistoryOptions } from '../history.ts';
+import { DEFAULT_LINK_BUDGET, findLinkedAddresses } from '../links.ts';
+import type { LinkOptions, LinkedAddress } from '../links.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
+import type { BalanceFlow } from '../balances.ts';
 import { getDefaultLabels, matchService, normalizeAddress } from '../labels.ts';
+import { chainLabelSet } from '../networks.ts';
+import type { EvmNetwork } from '../networks.ts';
 import type { LabelSet } from '../labels.ts';
 
 interface BlockscoutTag {
@@ -143,6 +148,11 @@ export interface BlockscoutProviderConfig extends ActivityOptions {
   requestBudget?: number;
   /** Czy badać dalszą drogę środków (prawdopodobne adresy wpłat na giełdy); domyślnie nie. */
   followDeposits?: boolean;
+  /** Czy szukać powiązanych adresów (inne adresy tej samej osoby); domyślnie nie. */
+  findLinks?: boolean;
+  /** Osobny budżet żądań na szukanie powiązań (domyślnie 12). */
+  linkBudget?: number;
+  links?: LinkOptions;
   /**
    * Adres usługi metadanych Blockscout (hurtowe znaczniki adresów, bez klucza), np.
    * `https://metadata.services.blockscout.com`. Bez niego używane są tylko znaczniki z transakcji.
@@ -150,6 +160,13 @@ export interface BlockscoutProviderConfig extends ActivityOptions {
   metadataUrl?: string;
   /** Identyfikator sieci dla usługi metadanych (Ethereum: 1). */
   chainId?: number;
+  /**
+   * Sieć EVM z rejestru (`data/evm-networks.json`). Dla sieci innej niż Ethereum dostawca używa jej eksploratora,
+   * waluty natywnej i kontraktów stablecoinów, a wynik dostaje pole `chain`.
+   */
+  chain?: EvmNetwork;
+  /** Czy pobrać salda tokenów (jedno żądanie) i wyliczyć stan posiadania; domyślnie nie. */
+  balances?: boolean;
   /**
    * Tryb głęboki: dwa dodatkowe żądania o najnowsze przelewy WYCHODZĄCE (ETH i ERC-20), gdy
    * historia adresu nie mieści się na pierwszej stronie.
@@ -165,18 +182,38 @@ export const BULK_TAG_LIMIT = 40;
 export class BlockscoutProvider implements ChainProvider {
   id = 'blockscout-ethereum';
   label = 'Blockscout (Ethereum)';
+  /** Symbol waluty natywnej sieci. */
+  nativeAsset = 'ETH';
   siteUrl: string;
   fetchImpl: FetchLike;
   options: ActivityOptions;
   requestBudget: number;
   followDeposits: boolean;
+  findLinks: boolean;
+  linkBudget: number;
+  linkOptions: LinkOptions | undefined;
   metadataUrl: string | undefined;
   chainId: number;
   extraOutgoing: boolean;
   history: HistoryOptions;
+  /** Adres eksploratora dla ludzi (odnośniki do transakcji). */
+  explorerUrl: string;
+  chain: EvmNetwork | undefined;
+  /** Identyfikator sieci dopisywany do wyniku; brak dla Ethereum mainnet. */
+  chainTag: string | undefined;
+  balances: boolean;
 
   constructor(config: BlockscoutProviderConfig = {}) {
-    this.siteUrl = (config.siteUrl ?? 'https://eth.blockscout.com').replace(/\/+$/, '');
+    this.chain = config.chain;
+    this.chainTag = config.chain && config.chain.id !== 'ethereum' ? config.chain.id : undefined;
+    this.siteUrl = (config.siteUrl ?? config.chain?.apiUrl ?? 'https://eth.blockscout.com').replace(/\/+$/, '');
+    this.explorerUrl = (config.chain?.explorerUrl ?? this.siteUrl).replace(/\/+$/, '');
+    this.balances = config.balances ?? false;
+    if (config.chain) {
+      this.id = `blockscout-${config.chain.id}`;
+      this.label = `Blockscout (${config.chain.name})`;
+      this.nativeAsset = config.chain.nativeAsset;
+    }
     this.fetchImpl = config.fetch ?? fetch;
     this.options = {
       labels: config.labels,
@@ -188,8 +225,13 @@ export class BlockscoutProvider implements ChainProvider {
     };
     this.requestBudget = config.requestBudget ?? DEFAULT_REQUEST_BUDGET;
     this.followDeposits = config.followDeposits ?? false;
+    this.findLinks = config.findLinks ?? false;
+    this.linkBudget = config.linkBudget ?? DEFAULT_LINK_BUDGET;
+    this.linkOptions = config.links;
     this.metadataUrl = config.metadataUrl?.replace(/\/+$/, '');
-    this.chainId = config.chainId ?? 1;
+    this.chainId = config.chainId ?? config.chain?.chainId ?? 1;
+    // Inna sieć: etykiety z Ethereum nie obowiązują; znane są tylko kontrakty stablecoinów tej sieci.
+    if (this.chainTag && config.chain) this.options.labels = chainLabelSet(config.chain);
     this.extraOutgoing = config.extraOutgoing ?? false;
     this.history = config.history ?? {};
   }
@@ -256,9 +298,9 @@ export class BlockscoutProvider implements ChainProvider {
         time: tx.timestamp,
         direction: outgoing ? 'out' : 'in',
         ...this.describe(outgoing ? (tx.to ?? tx.created_contract) : tx.from),
-        asset: 'ETH',
+        asset: this.nativeAsset,
         amount,
-        explorerUrl: `${this.siteUrl}/tx/${tx.hash}`,
+        explorerUrl: `${this.explorerUrl}/tx/${tx.hash}`,
       });
     }
     return transfers;
@@ -279,7 +321,7 @@ export class BlockscoutProvider implements ChainProvider {
         ...this.describe(outgoing ? item.to : item.from),
         asset: verifiedTokenSymbol(labels, network, item.token?.address_hash ?? item.token?.address, item.token?.symbol),
         amount: fromBaseUnits(item.total.value, Number.isFinite(decimals) ? decimals : 0),
-        explorerUrl: `${this.siteUrl}/tx/${txid}`,
+        explorerUrl: `${this.explorerUrl}/tx/${txid}`,
       });
     }
     return transfers;
@@ -437,7 +479,7 @@ export class BlockscoutProvider implements ChainProvider {
         signal: context.signal,
         expand: async (counterparty, asset) => {
           const hop = `${base}/${encodeURIComponent(counterparty)}`;
-          if (asset === 'ETH') {
+          if (asset === this.nativeAsset) {
             const page = await fetchJson<BlockscoutPage<BlockscoutTransaction>>(this.fetchImpl, `${hop}/transactions?filter=from`, request);
             return { outgoing: this.nativeTransfers(page.items ?? [], counterparty), more: Boolean(page.next_page_params) };
           }
@@ -471,17 +513,96 @@ export class BlockscoutProvider implements ChainProvider {
       limitations.push(...found.limitations);
     }
 
+    let linkedAddresses: LinkedAddress[] = [];
+    if (this.findLinks) {
+      const found = await findLinkedAddresses({
+        network,
+        address,
+        transfers,
+        deposits: inferredDeposits,
+        historyComplete: !truncated && !ranged,
+        labels,
+        sourceName: this.label,
+        budget: new RequestBudget(linkBudgetLimit(context, this.linkBudget)),
+        options: this.linkOptions,
+        signal: context.signal,
+        fetchIncoming: async (other, asset) => {
+          const hop = `${base}/${encodeURIComponent(other)}`;
+          if (asset === this.nativeAsset) {
+            const page = await fetchJson<BlockscoutPage<BlockscoutTransaction>>(this.fetchImpl, `${hop}/transactions?filter=to`, request);
+            return { incoming: this.nativeTransfers(page.items ?? [], other).filter((item) => item.direction === 'in'), more: Boolean(page.next_page_params) };
+          }
+          const page = await fetchJson<BlockscoutPage<BlockscoutTokenTransfer>>(this.fetchImpl, `${hop}/token-transfers?type=ERC-20&filter=to`, request);
+          return {
+            incoming: this.tokenTransfers(page.items ?? [], other, labels, network).filter((item) => item.direction === 'in' && item.asset === asset),
+            more: Boolean(page.next_page_params),
+          };
+        },
+        countTransactions: async (other) => {
+          const counters = await fetchJson<{ transactions_count?: string; token_transfers_count?: string }>(
+            this.fetchImpl,
+            `${base}/${encodeURIComponent(other)}/counters`,
+            request,
+          );
+          const total = Number(counters.transactions_count ?? 0) + Number(counters.token_transfers_count ?? 0);
+          return Number.isFinite(total) ? total : undefined;
+        },
+      });
+      linkedAddresses = found.links;
+      limitations.push(...found.limitations);
+    }
+
+    // Stan posiadania: salda bieżące (waluta natywna + zweryfikowane stablecoiny) i zmiany sald z pobranej historii.
+    let balanceInputs: { current: { asset: string; amount: number }[]; flows: BalanceFlow[]; complete: string[]; chain?: string; networkName?: string } | undefined;
+    if (this.balances) {
+      const current: { asset: string; amount: number }[] = [];
+      if (info.coin_balance != null) current.push({ asset: this.nativeAsset, amount: fromBaseUnits(info.coin_balance, 18) });
+      const tokensComplete = !tokenTransfers.next_page_params && !ranged;
+      if (budget.take()) {
+        try {
+          const held = await fetchJson<{ token?: { address_hash?: string; address?: string; symbol?: string | null; decimals?: string | null }; value?: string | null }[]>(
+            this.fetchImpl,
+            `${api}/token-balances`,
+            request,
+          );
+          for (const item of Array.isArray(held) ? held : []) {
+            const symbol = labels.lookup(network, item.token?.address_hash ?? item.token?.address ?? '')?.asset;
+            if (!symbol || !item.value) continue;
+            current.push({ asset: symbol, amount: fromBaseUnits(item.value, Number(item.token?.decimals ?? 0)) });
+          }
+        } catch (error) {
+          if (context.signal?.aborted) throw error;
+          limitations.push(`Stan posiadania: nie udało się pobrać sald tokenów (${error instanceof Error ? error.message : String(error)}) — podano tylko saldo waluty natywnej.`);
+        }
+      }
+      // Stablecoin, którego adres już nie posiada, ale którym obracał: saldo bieżące zero pozwala wyliczyć salda na koniec lat.
+      for (const asset of new Set(transfers.map((item) => item.asset))) {
+        if (!asset.includes('niezweryfikowany') && asset !== this.nativeAsset && !current.some((item) => item.asset === asset) && tokensComplete) current.push({ asset, amount: 0 });
+      }
+      balanceInputs = {
+        current,
+        flows: transfers.map((item) => ({ asset: item.asset, time: item.time, delta: item.direction === 'in' ? item.amount : -item.amount })),
+        complete: [...(!transactions.next_page_params && !ranged ? [this.nativeAsset] : []), ...(tokensComplete ? current.map((item) => item.asset).filter((asset) => asset !== this.nativeAsset) : [])],
+        ...(this.chainTag ? { chain: this.chainTag } : {}),
+        networkName: this.chain?.name ?? 'Ethereum',
+      };
+    }
+
     const party = parseBlockscoutParty(info);
     return buildChainActivity(
       {
         network,
         address,
+        linkedAddresses,
         sourceName: this.label,
         isContract: party.isContract,
         label: party.label,
         addressClass: party.addressClass,
         ...(party.label || party.addressClass ? { labelSource: BLOCKSCOUT_LABEL_SOURCE } : {}),
         ensName: party.ens,
+        nativeAsset: this.nativeAsset,
+        ...(this.chainTag ? { chain: this.chainTag } : {}),
+        ...(balanceInputs ? { balanceInputs } : {}),
         ...(info.coin_balance != null ? { balance: fromBaseUnits(info.coin_balance, 18) } : {}),
         historyComplete: !truncated && !ranged,
         transfers,

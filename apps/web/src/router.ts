@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 
 export const DOSSIER_TABS = [
   { id: 'dowod', label: 'Dowód spieniężenia' },
+  { id: 'tozsamosci', label: 'Powiązane tożsamości' },
   { id: 'uslugi', label: 'Giełdy i portfele' },
   { id: 'graf', label: 'Graf powiązań' },
   { id: 'profile', label: 'Profile' },

@@ -7,7 +7,7 @@ import { after, before, describe, test } from 'node:test';
 import { extractAddresses } from '@olcys/core';
 import type { DiscoveringConnector, IdentifierType, SourceConnector, SourceDocument } from '@olcys/core';
 import { buildApp } from '../../../apps/sandbox/src/app.ts';
-import { ADDR, MARKET_ADDR, accounts } from '../../../apps/sandbox/data/scenario.ts';
+import { ADDR, MARKET_ADDR, RELATED_ADDR, accounts } from '../../../apps/sandbox/data/scenario.ts';
 import { createConnectors } from '../src/index.ts';
 
 const app = buildApp();
@@ -32,7 +32,10 @@ const addressesOf = (document: SourceDocument) => extractAddresses(document.text
 
 async function explorer(address: string) {
   const response = await fetch(`${sandboxUrl}/explorer/api/address/${address}`);
-  return { status: response.status, body: (await response.json()) as { label?: string; addressClass?: string; transfers: { direction: string; counterparty: string }[] } };
+  return {
+    status: response.status,
+    body: (await response.json()) as { label?: string; addressClass?: string; transfers: { direction: string; counterparty: string; time: string; amount: number; counterpartyLabel?: string }[] },
+  };
 }
 
 describe('atrybuty profilu w dokumentach piaskownicy', () => {
@@ -132,10 +135,10 @@ describe('rozdzielanie osób po atrybutach profilu', () => {
 });
 
 describe('typowanie (discover) w piaskownicy', () => {
-  test('metodę discover mają targ, forum, społeczność i komunikator', () => {
+  test('metodę discover mają wszystkie serwisy piaskownicy poza archiwum', () => {
     assert.deepEqual(
       connectors.filter(canDiscover).map((connector) => connector.id),
-      ['sandbox-targ', 'sandbox-forum', 'sandbox-spolecznosc', 'sandbox-komunikator'],
+      ['sandbox-gitpub', 'sandbox-www', 'sandbox-targ', 'sandbox-forum', 'sandbox-spolecznosc', 'sandbox-komunikator'],
     );
   });
 
@@ -163,9 +166,9 @@ describe('typowanie (discover) w piaskownicy', () => {
 
   test('pełna lista targu obejmuje kilkanaście osób; pozostałe serwisy zwracają swoje rodzaje publikacji', async () => {
     const all = await (byId('sandbox-targ') as DiscoveringConnector).discover(context, 50);
-    assert.equal(all.length, 19);
-    assert.equal(new Set(all.map((document) => document.author)).size, 19);
-    assert.equal(all.filter((document) => addressesOf(document).length > 0).length, 17);
+    assert.equal(all.length, 26);
+    assert.equal(new Set(all.map((document) => document.author)).size, 26);
+    assert.equal(all.filter((document) => addressesOf(document).length > 0).length, 24);
 
     const forum = await (byId('sandbox-forum') as DiscoveringConnector).discover(context, 3);
     assert.deepEqual(forum.map((document) => document.author), ['marek88', 'nocny_gornik', 'mz_mineraly']);
@@ -191,7 +194,8 @@ describe('powiązania w danych blockchain piaskownicy', () => {
     for (const [first, second, connectorId, handle] of pairs) {
       const { body } = await explorer(first);
       const directions = body.transfers.filter((transfer) => transfer.counterparty === second).map((transfer) => transfer.direction);
-      assert.deepEqual(directions.sort(), ['in', 'out'], `${first} ↔ ${second}`);
+      // Przelewy w obie strony (para Igor ↔ Dariusz: wielokrotnie, w latach 2024–2026).
+      assert.deepEqual([...new Set(directions)].sort(), ['in', 'out'], `${first} ↔ ${second}`);
       const documents = await search(connectorId, 'nick', handle);
       assert.ok(documents.some((document) => document.category === 'own_profile' && addressesOf(document).includes(second)), handle);
     }
@@ -224,5 +228,92 @@ describe('powiązania w danych blockchain piaskownicy', () => {
     // Żaden nick z części rynkowej nie powtarza nicka osób a–h.
     const base = ['kwrzosek_dev', 'bkruk_trader', 'wrzosek_ryby', 'oli_stepniak', 'dsroka', 'marta.zielonka', 'zielonka_codes', 'zielonka-labs', 'hubi_serwis', 'zosia_mielcarz'];
     for (const handle of base) assert.equal(accounts.filter((account) => account.handle === handle).length <= 3, true);
+  });
+});
+
+describe('powiązane tożsamości', () => {
+  test('ta sama osoba pod innym nazwiskiem: dwa konta publikują ten sam adres jako własny', async () => {
+    const publishers = new Map<string, SourceDocument[]>();
+    for (const connectorId of ['sandbox-gitpub', 'sandbox-targ', 'sandbox-spolecznosc']) {
+      for (const document of await search(connectorId, 'crypto_address', RELATED_ADDR.kowalBtc)) {
+        publishers.set(document.author!, [...(publishers.get(document.author!) ?? []), document]);
+      }
+    }
+    assert.deepEqual([...publishers.keys()].sort(), ['julka_k', 'rkowalski_btc']);
+    assert.equal(publishers.get('rkowalski_btc')!.length, 2);
+    assert.equal(publishers.get('julka_k')!.length, 2);
+    const [rafal] = await search('sandbox-gitpub', 'login', 'rkowalski_btc');
+    const [julia] = await search('sandbox-spolecznosc', 'nick', 'julka_k');
+    assert.equal(rafal!.profile!.displayName, 'Rafał Kowalski');
+    assert.equal(julia!.profile!.displayName, 'Julia Kowalska');
+    assert.equal(rafal!.profile!.location, julia!.profile!.location);
+    assert.equal(rafal!.category, 'own_profile');
+    assert.equal(julia!.category, 'own_profile');
+    assert.deepEqual(addressesOf(rafal!), addressesOf(julia!));
+    // Wypłaty na giełdę w dwóch latach.
+    const { body } = await explorer(RELATED_ADDR.kowalBtc);
+    const years = new Set(body.transfers.filter((transfer) => transfer.direction === 'out' && transfer.counterparty === ADDR.exchangeBtc).map((transfer) => transfer.time.slice(0, 4)));
+    assert.deepEqual([...years].sort(), ['2024', '2025']);
+  });
+
+  test('wspólny adres wpłat giełdy: dwa adresy różnych osób → adres pośredni bez etykiety → giełda w ciągu godziny', async () => {
+    const deposit = await explorer(RELATED_ADDR.depositEth);
+    assert.equal(deposit.body.label, undefined);
+    assert.equal(deposit.body.addressClass, undefined);
+    const incoming = deposit.body.transfers.filter((transfer) => transfer.direction === 'in');
+    const outgoing = deposit.body.transfers.filter((transfer) => transfer.direction === 'out');
+    assert.deepEqual([...new Set(incoming.map((transfer) => transfer.counterparty))].sort(), [RELATED_ADDR.nowakEth, RELATED_ADDR.wisniewskaEth].sort());
+    assert.ok(outgoing.every((transfer) => transfer.counterparty === ADDR.exchangeEth && /Giełda/.test(transfer.counterpartyLabel ?? '')));
+    assert.equal(incoming.length, outgoing.length);
+    assert.ok(deposit.body.transfers.length <= 6);
+    // Każda wpłata wychodzi w całości w ciągu godziny.
+    for (const received of incoming) {
+      const forwarded = outgoing.find((transfer) => transfer.amount === received.amount && Date.parse(transfer.time) > Date.parse(received.time));
+      assert.ok(forwarded && Date.parse(forwarded.time) - Date.parse(received.time) <= 60 * 60 * 1000, received.time);
+    }
+    for (const address of [RELATED_ADDR.nowakEth, RELATED_ADDR.wisniewskaEth]) {
+      const { body } = await explorer(address);
+      assert.ok(body.transfers.some((transfer) => transfer.direction === 'out' && transfer.counterparty === RELATED_ADDR.depositEth), address);
+    }
+    const [tomasz] = await search('sandbox-targ', 'nick', 't_nowak_foto');
+    const [ewa] = await search('sandbox-targ', 'nick', 'ewa_wisniewska');
+    assert.deepEqual(addressesOf(tomasz!), [RELATED_ADDR.nowakEth]);
+    assert.deepEqual(addressesOf(ewa!), [RELATED_ADDR.wisniewskaEth]);
+    assert.notEqual(tomasz!.profile!.displayName, ewa!.profile!.displayName);
+  });
+
+  test('wspólny telefon i wspólny e-mail u kont o różnych nazwiskach; discover zasila indeks ogłoszeniami i profilami', async () => {
+    const offers = await (byId('sandbox-targ') as DiscoveringConnector).discover(context, 50);
+    const of = (handle: string) => offers.find((document) => document.author === handle)!;
+    assert.deepEqual(of('auto_czesci_wwa').profile!.phones, ['500000840']);
+    assert.deepEqual(of('ania_handmade').profile!.phones, ['500000840']);
+    assert.deepEqual(of('ania_handmade').profile!.emails, ['pracownia@maj-studio.example']);
+    assert.deepEqual(of('maj_studio').profile!.emails, ['pracownia@maj-studio.example']);
+    assert.deepEqual(of('maj_studio').profile!.phones, ['500000841']);
+    assert.deepEqual(
+      ['auto_czesci_wwa', 'ania_handmade', 'maj_studio'].map((handle) => of(handle).profile!.displayName),
+      ['Piotr Zając', 'Anna Maj', 'Karolina Lis'],
+    );
+    assert.equal(new Set(['auto_czesci_wwa', 'ania_handmade', 'maj_studio'].flatMap((handle) => addressesOf(of(handle)))).size, 3);
+
+    // Profile też są na liście najnowszych — monitoring widzi je razem z danymi kontaktowymi.
+    const profiles = await (byId('sandbox-gitpub') as DiscoveringConnector).discover(context, 50);
+    const rafal = profiles.find((document) => document.author === 'rkowalski_btc')!;
+    assert.equal(rafal.category, 'own_profile');
+    assert.deepEqual(rafal.profile!.emails, ['rafal.kowalski@kodowanie.example']);
+    assert.deepEqual(addressesOf(rafal), [RELATED_ADDR.kowalBtc]);
+    const social = await (byId('sandbox-spolecznosc') as DiscoveringConnector).discover(context, 50);
+    assert.ok(social.some((document) => document.author === 'julka_k' && addressesOf(document).includes(RELATED_ADDR.kowalBtc)));
+    const pagesFound = await (byId('sandbox-www') as DiscoveringConnector).discover(context, 50);
+    assert.deepEqual(pagesFound.find((document) => document.author === 'dsroka')!.profile!.phones, ['500000412']);
+  });
+
+  test('przelewy w obie strony, wielokrotne i w dłuższym okresie: Igor Baran ↔ Dariusz Mróz', async () => {
+    const { body } = await explorer(MARKET_ADDR.igorBtc);
+    const between = body.transfers.filter((transfer) => transfer.counterparty === MARKET_ADDR.darekBtc);
+    assert.equal(between.filter((transfer) => transfer.direction === 'out').length, 4);
+    assert.equal(between.filter((transfer) => transfer.direction === 'in').length, 3);
+    const years = new Set(between.map((transfer) => transfer.time.slice(0, 4)));
+    assert.deepEqual([...years].sort(), ['2024', '2025', '2026']);
   });
 });

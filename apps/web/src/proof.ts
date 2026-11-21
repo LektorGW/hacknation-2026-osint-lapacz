@@ -1,4 +1,5 @@
 // Dowód spieniężenia i postęp analizy: lokalne rozszerzenia kontraktu oraz czysta logika widoków.
+import type { LinkedIdentity } from './identities.ts';
 import type { CashOutTrail, Dossier, Finding, Identifier, Network, StoredEvidence, TextInsight } from '@olcys/core';
 
 // ---------- Kształty zwracane przez usługę analizy poza typami `@olcys/core` ----------
@@ -45,6 +46,7 @@ export interface DossierExtras {
   summary?: { text: string; model: string; promptVersion: string } | null;
   explanations?: Explanation[];
   unconfirmedAddresses?: UnconfirmedAddress[];
+  linkedIdentities?: LinkedIdentity[];
 }
 
 export type FullDossier = Dossier & DossierExtras;

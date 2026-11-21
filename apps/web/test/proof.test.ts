@@ -175,3 +175,48 @@ test('stronicowanie długich list', async () => {
   assert.equal(paginate(items, 0, 50).page, 1);
   assert.deepEqual(paginate([], 3, 50), { items: [], page: 1, pages: 1 });
 });
+
+test('powiązane tożsamości: kolejność, skrót, identyfikatory nowej sprawy i druga suma', async () => {
+  const { basisText, explorerForTxid, identityHeadline, identityIdentifiers, isAddressLead, likelySameTotal, sortIdentities } = await import('../src/identities.ts');
+  type Identity = Parameters<typeof isAddressLead>[0];
+  const identity = (id: string, score: number, change: Partial<Identity> = {}): Identity => ({
+    id,
+    displayName: id,
+    handles: [id],
+    relation: 'possibly_same_or_close',
+    score,
+    reasons: [],
+    profiles: [{ id: `s|${id}`, service: 's.example', url: `https://s.example/u/${id}`, attributes: {}, identityMatch: 'linked_profile', identityReasons: [], identityScore: 0, addresses: [], evidenceIds: [] }],
+    addresses: [],
+    cashOutPlnByYear: {},
+    cashOutProof: [],
+    path: [],
+    note: '',
+    mergeWith: [],
+    ...change,
+  });
+  const list = [
+    identity('slaba', 40),
+    identity('odrzucona', 95, { decision: 'rejected' }),
+    identity('julia', 85, { relation: 'same_person_likely', fullName: 'Julia Kowalska' }),
+    identity('trop', 90, { profiles: [], handles: [], addresses: [{ address: 'bc1qtrop', network: 'bitcoin', basis: 'linked:transfer' }] }),
+  ];
+  assert.deepEqual(sortIdentities(list).map((item) => item.id), ['trop', 'julia', 'slaba', 'odrzucona']);
+  assert.deepEqual(identityHeadline(list), ['julia — prawdopodobnie ta sama osoba (85)', 'slaba — możliwe, że ta sama osoba albo ktoś bliski (40)']);
+  assert.equal(isAddressLead(list[3]!), true);
+  assert.deepEqual(identityIdentifiers(list[2]!), [
+    { type: 'full_name', value: 'Julia Kowalska' },
+    { type: 'nick', value: 'julia' },
+    { type: 'profile_url', value: 'https://s.example/u/julia' },
+  ]);
+  assert.deepEqual(identityIdentifiers(list[3]!), [{ type: 'crypto_address', value: 'bc1qtrop' }]);
+
+  assert.equal(likelySameTotal({ cashOutPlnByYear: { '2025': 100 }, cashOutPlnTotalWithLikelySame: 150 }), 150);
+  assert.equal(likelySameTotal({ cashOutPlnByYear: { '2025': 100 }, cashOutPlnTotal: 100, cashOutPlnTotalWithLikelySame: 100.2 }), undefined);
+  assert.equal(likelySameTotal({ cashOutPlnByYear: { '2025': 100 } }), undefined);
+
+  assert.equal(basisText('published'), 'opublikowany jako własny');
+  assert.equal(basisText('linked:shared_deposit'), 'wskazany przez dane blockchain: wspólny adres wpłat giełdy');
+  assert.equal(basisText('linked:nowy_rodzaj'), 'wskazany przez dane blockchain: nowy_rodzaj');
+  assert.equal(explorerForTxid([], 'abc'), undefined);
+});

@@ -12,8 +12,10 @@ import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
 import { traceAccountFlows } from '../trace.ts';
 import type { ExpandedNode, TracedTrail } from '../trace.ts';
-import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, planHistory, traceBudgetLimit } from '../history.ts';
+import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, linkBudgetLimit, planHistory, traceBudgetLimit } from '../history.ts';
 import type { HistoryOptions } from '../history.ts';
+import { DEFAULT_LINK_BUDGET, findLinkedAddresses } from '../links.ts';
+import type { LinkOptions, LinkedAddress } from '../links.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -30,6 +32,8 @@ interface TronGridPage<T> {
 interface TronAccount {
   balance?: number;
   type?: string;
+  /** Salda tokenów TRC-20: lista obiektów `{ adres_kontraktu: saldo }`. */
+  trc20?: Record<string, string>[];
 }
 
 interface TronTransaction {
@@ -110,6 +114,11 @@ export interface TronGridProviderConfig extends ActivityOptions {
   requestBudget?: number;
   /** Czy badać dalszą drogę środków (prawdopodobne adresy wpłat na giełdy); domyślnie nie. */
   followDeposits?: boolean;
+  /** Czy szukać powiązanych adresów (inne adresy tej samej osoby); domyślnie nie. */
+  findLinks?: boolean;
+  /** Osobny budżet żądań na szukanie powiązań (domyślnie 12). */
+  linkBudget?: number;
+  links?: LinkOptions;
   /**
    * Adres API TronScan, np. `https://apilist.tronscanapi.com`. Gdy podany, transfery TRC-20
    * pochodzą z TronScan — razem z publicznymi znacznikami kontrahentów (bez dodatkowych żądań);
@@ -135,6 +144,9 @@ export class TronGridProvider implements ChainProvider {
   labelLookup: LabelLookup | undefined;
   requestBudget: number;
   followDeposits: boolean;
+  findLinks: boolean;
+  linkBudget: number;
+  linkOptions: LinkOptions | undefined;
   tronScanUrl: string | undefined;
   extraOutgoing: boolean;
   history: HistoryOptions;
@@ -156,6 +168,9 @@ export class TronGridProvider implements ChainProvider {
     this.labelLookup = config.labelLookup;
     this.requestBudget = config.requestBudget ?? DEFAULT_REQUEST_BUDGET;
     this.followDeposits = config.followDeposits ?? false;
+    this.findLinks = config.findLinks ?? false;
+    this.linkBudget = config.linkBudget ?? DEFAULT_LINK_BUDGET;
+    this.linkOptions = config.links;
     this.tronScanUrl = config.tronScanUrl?.replace(/\/+$/, '');
     this.extraOutgoing = config.extraOutgoing ?? false;
     this.history = config.history ?? {};
@@ -474,11 +489,59 @@ export class TronGridProvider implements ChainProvider {
       limitations.push(...found.limitations);
     }
 
+    let linkedAddresses: LinkedAddress[] = [];
+    if (this.findLinks) {
+      const found = await findLinkedAddresses({
+        network,
+        address,
+        transfers,
+        deposits: inferredDeposits,
+        historyComplete: !truncated && !ranged,
+        labels,
+        sourceName: this.label,
+        budget: new RequestBudget(linkBudgetLimit(context, this.linkBudget)),
+        options: this.linkOptions,
+        signal: context.signal,
+        fetchIncoming: async (other, asset) => {
+          if (asset !== 'TRX' && this.tronScanUrl) {
+            const scan = await this.tronScanTransfers(other, labels, network, context.signal, this.tokenContracts.get(asset));
+            return { incoming: scan.transfers.filter((item) => item.direction === 'in' && item.asset === asset), more: scan.full };
+          }
+          const hop = `${this.apiUrl}/v1/accounts/${encodeURIComponent(other)}/transactions`;
+          const query = `limit=${TRANSACTION_LIMIT}&only_confirmed=true&only_to=true`;
+          if (asset === 'TRX') {
+            const page = await fetchJson<TronGridPage<TronTransaction>>(this.fetchImpl, `${hop}?${query}`, request);
+            return { incoming: this.nativeTransfers(page.data ?? [], other).filter((item) => item.direction === 'in'), more: Boolean(page.meta?.fingerprint) };
+          }
+          const page = await fetchJson<TronGridPage<Trc20Transfer>>(this.fetchImpl, `${hop}/trc20?${query}`, request);
+          return {
+            incoming: this.tokenTransfers(page.data ?? [], other, labels, network).filter((item) => item.direction === 'in' && item.asset === asset),
+            more: Boolean(page.meta?.fingerprint),
+          };
+        },
+        ...(this.tronScanUrl
+          ? {
+              countTransactions: async (other: string) => {
+                const info = await fetchJson<{ totalTransactionCount?: number }>(
+                  this.fetchImpl,
+                  `${this.tronScanUrl}/api/account?address=${encodeURIComponent(other)}`,
+                  { source: TRONSCAN_LABEL_SOURCE, signal: context.signal },
+                );
+                return typeof info.totalTransactionCount === 'number' ? info.totalTransactionCount : undefined;
+              },
+            }
+          : {}),
+      });
+      linkedAddresses = found.links;
+      limitations.push(...found.limitations);
+    }
+
     const info = account.data[0];
     return buildChainActivity(
       {
         network,
         address,
+        linkedAddresses,
         sourceName: this.label,
         isContract: info?.type === 'Contract',
         label: subjectLabel,
@@ -487,6 +550,21 @@ export class TronGridProvider implements ChainProvider {
         trails,
         openQuestions,
         cluster: accountCluster(network, address),
+        balanceInputs: {
+          current: [
+            { asset: 'TRX', amount: fromBaseUnits(info?.balance ?? 0, 6) },
+            // Tylko tokeny z kontraktów wpisanych do zbioru etykiet (prawdziwy USDT/USDC); przyjęto 6 miejsc po przecinku.
+            ...(info?.trc20 ?? []).flatMap((entry) =>
+              Object.entries(entry).flatMap(([contract, value]) => {
+                const symbol = labels.lookup(network, contract)?.asset;
+                return symbol ? [{ asset: symbol, amount: fromBaseUnits(value, 6) }] : [];
+              }),
+            ),
+          ],
+          flows: transfers.map((item) => ({ asset: item.asset, time: item.time, delta: item.direction === 'in' ? item.amount : -item.amount })),
+          complete: !truncated && !ranged ? ['TRX', 'USDT', 'USDC'] : [],
+          networkName: 'Tron',
+        },
         balance: fromBaseUnits(info?.balance ?? 0, 6),
         historyComplete: !truncated && !ranged,
         transfers,

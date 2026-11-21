@@ -93,8 +93,8 @@ function profileOf(service: Service, handle: string) {
   };
 }
 
-/** Rodzaje dokumentów, które są „publikacjami" — trafiają na listę najnowszych. */
-const RECENT_KINDS: DocKind[] = ['offer', 'post', 'mail', 'comment', 'message'];
+/** Lista najnowszych obejmuje wszystkie rodzaje dokumentów — także profile i strony osobiste (z danymi kontaktowymi autora). */
+const RECENT_KINDS: DocKind[] = ['offer', 'post', 'mail', 'comment', 'message', 'profile', 'page'];
 
 /**
  * Wyszukiwarka dopasowuje wyłącznie publiczne dane autora (login/nick, e-mail,
