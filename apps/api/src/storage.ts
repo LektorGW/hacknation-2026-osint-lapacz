@@ -3,7 +3,8 @@
 // oraz `pg` (zewnętrzny serwer wskazany przez DATABASE_URL).
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AnalysisRun, AnalystDecision, ProfileAttributes, SourceCategory, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
 import type { CapturedDocument } from './analysis.ts';
 import type { RunIntel } from './intel.ts';
@@ -142,32 +143,31 @@ export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
     };
   }
 
-  // Katalog danych PGlite bywa uszkadzany przez nagłe zatrzymanie procesu. Dlatego obok
-  // trzymamy migawkę całej bazy: zapisywaną co kilka minut i przy zamknięciu, a przy
-  // nieudanym otwarciu odtwarzaną w miejsce uszkodzonego katalogu.
+  // Katalog roboczy PGlite w systemie Windows nie otwiera się ponownie po zamknięciu procesu,
+  // dlatego trwałym zapisem jest MIGAWKA całej bazy (plik obok katalogu danych): zapisywana
+  // co minutę i przy zamknięciu. Każde uruchomienie dostaje świeży katalog roboczy wczytany
+  // z migawki; stare katalogi robocze są sprzątane, o ile system na to pozwala.
   const snapshotFile = `${dataDir}.migawka.tar.gz`;
   mkdirSync(dataDir, { recursive: true });
+  for (const entry of readdirSync(dataDir)) {
+    try {
+      rmSync(join(dataDir, entry), { recursive: true, force: true });
+    } catch {
+      // Zablokowany przez inny proces — zostaje do następnego uruchomienia.
+    }
+  }
+  const workDir = join(dataDir, `sesja-${Date.now()}`);
   const open = async (options?: { loadDataDir: Blob }) => {
-    const instance = new PGlite(dataDir, options);
+    const instance = new PGlite(workDir, options);
     await instance.waitReady;
     return instance;
   };
 
   let db: Awaited<ReturnType<typeof open>>;
-  try {
+  if (existsSync(snapshotFile)) {
+    db = await open({ loadDataDir: new Blob([readFileSync(snapshotFile)]) });
+  } else {
     db = await open();
-  } catch (error) {
-    const aside = `${dataDir}.uszkodzona-${Date.now()}`;
-    renameSync(dataDir, aside);
-    mkdirSync(dataDir, { recursive: true });
-    const reason = error instanceof Error ? error.message : String(error);
-    if (existsSync(snapshotFile)) {
-      console.warn(`Baza w ${dataDir} nie otwiera się (${reason}). Odtwarzam ostatnią migawkę; uszkodzony katalog: ${aside}.`);
-      db = await open({ loadDataDir: new Blob([readFileSync(snapshotFile)]) });
-    } else {
-      console.warn(`Baza w ${dataDir} nie otwiera się (${reason}) i nie ma migawki. Startuję z pustą; uszkodzony katalog: ${aside}.`);
-      db = await open();
-    }
   }
 
   let writing: Promise<void> = Promise.resolve();
@@ -183,7 +183,7 @@ export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
       .catch((error) => console.warn(`Migawka bazy nie powiodła się: ${error instanceof Error ? error.message : error}`));
     return writing;
   };
-  const timer = setInterval(snapshot, 3 * 60_000);
+  const timer = setInterval(snapshot, 60_000);
   timer.unref();
 
   return {
