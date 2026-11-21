@@ -1131,8 +1131,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
     const nodes = buildProfileNodes({ findings } as unknown as AnalysisRun, [...sightings.values()]);
     const comparisons: AuthorComparison[] = [];
+    // Poza parami profili podmiotu porównujemy też profile podmiotu z profilami powiązanych tożsamości
+    // (z pętli rozszerzania, współpublikujących, kontrahentów) — do oceny „ta sama osoba albo bliska”.
+    const outside = (['linked_identity', 'co_publisher', 'counterparty_publisher'] as const).flatMap((role) =>
+      buildProfileNodes({ findings } as unknown as AnalysisRun, [...sightings.values()], role),
+    );
+    const crossPairs = nodes.flatMap((a) => outside.map((b) => ({ a, b })));
     await Promise.all(
-      comparablePairs(nodes, findings, rules)
+      [...comparablePairs(nodes, findings, rules), ...crossPairs]
         .slice(0, MAX_AUTHOR_COMPARISONS)
         .map(({ a, b }) =>
           aiLimited(async () => {

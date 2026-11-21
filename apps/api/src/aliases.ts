@@ -26,6 +26,12 @@ export const ALIAS_RULES = {
   same_person_likely: { base: 85, perExtraStrong: 5, perMedium: 3, max: 97 },
   possibly_same_or_close: { base: 55, perExtraMedium: 5, max: 75, maxStyleBonus: 10 },
   associated: { base: 30, perExtra: 5, max: 45 },
+  /**
+   * Minimalny wynik, od którego tożsamość trafia do teczki. Słabsze tropy (sama podobna nazwa konta,
+   * sam odczyt stylu przez model, jednokierunkowy przelew) zostają w dzienniku analizy i są tylko policzone —
+   * inaczej teczka wciągałaby przypadkowe osoby.
+   */
+  minScore: 50,
   description:
     'Mocna przesłanka (ten sam e-mail, telefon, adres publikowany jako własny, wspólny adres wpłat giełdy z publikacją adresu) daje relację „prawdopodobnie ta sama osoba” (85–97). ' +
     'Średnia (wspólny adres wpłat bez publikacji, strona, awatar, przelewy w obie strony, to samo nazwisko i miejscowość) — „możliwe: ta sama osoba albo bliska” (55–75, podobny styl najwyżej +10). ' +
@@ -82,12 +88,15 @@ export interface AliasInput {
   rules: ScoreRules;
 }
 
-type Strength = 'strong' | 'medium' | 'weak';
+/** `style`: odczyt modelu o podobnym stylu — nie jest przesłanką samodzielną, tylko dodatkiem do wyniku. */
+type Strength = 'strong' | 'medium' | 'weak' | 'style';
 interface Reason {
   strength: Strength;
   text: string;
   evidence: IdentityEvidence[];
   path?: string[];
+  /** Tylko `style`: punkty doliczane do relacji „możliwe: ta sama osoba albo bliska”. */
+  bonus?: number;
 }
 
 const NOTE =
@@ -105,7 +114,7 @@ const ownedKeys = (node: ProfileNode): string[] => [
   ...new Set(node.sightings.filter((item) => OWNERSHIP_CATEGORIES.includes(item.category)).flatMap((item) => item.addresses)),
 ];
 
-export function buildLinkedIdentities(input: AliasInput): LinkedIdentity[] {
+export function buildLinkedIdentities(input: AliasInput): { identities: LinkedIdentity[]; hidden: number } {
   const groups = new Map<string, { nodes: ProfileNode[]; reasons: Reason[]; extraAddresses: { address: string; network: string; basis: string }[] }>();
   const groupFor = (key: string) => {
     let group = groups.get(key);
@@ -147,7 +156,8 @@ export function buildLinkedIdentities(input: AliasInput): LinkedIdentity[] {
         }
         const style = input.authorComparisons?.find((item) => [item.a, item.b].includes(main.card.id) && [item.a, item.b].includes(node.card.id));
         if (style && style.likelihood >= 50) {
-          add(group.reasons, { strength: 'weak', text: `Model ${style.model}: podobny styl wypowiedzi (${style.likelihood}%) — słaba przesłanka dodatkowa.`, evidence: pair });
+          const bonus = Math.min(ALIAS_RULES.possibly_same_or_close.maxStyleBonus, Math.round(style.likelihood / 10));
+          add(group.reasons, { strength: 'style', text: `Model ${style.model}: podobny styl wypowiedzi (${style.likelihood}%) — przesłanka dodatkowa (+${bonus}), sama nie tworzy powiązania.`, evidence: pair, bonus });
         }
       }
 
@@ -222,11 +232,16 @@ export function buildLinkedIdentities(input: AliasInput): LinkedIdentity[] {
   }
 
   const identities: LinkedIdentity[] = [];
+  let hidden = 0;
   for (const [key, group] of groups) {
-    if (group.reasons.length === 0) continue;
+    // Sam odczyt stylu przez model nie jest przesłanką — bez innej podstawy tożsamości nie ma.
+    if (!group.reasons.some((reason) => reason.strength !== 'style')) {
+      if (group.reasons.length > 0) hidden++;
+      continue;
+    }
     const count = (strength: Strength) => group.reasons.filter((reason) => reason.strength === strength).length;
     const [strong, medium, weak] = [count('strong'), count('medium'), count('weak')];
-    const styleBonus = group.reasons.some((reason) => reason.text.startsWith('Model ')) ? ALIAS_RULES.possibly_same_or_close.maxStyleBonus : 0;
+    const styleBonus = Math.max(0, ...group.reasons.filter((reason) => reason.strength === 'style').map((reason) => reason.bonus ?? 0));
     let relation: IdentityRelation;
     let score: number;
     if (strong > 0) {
@@ -243,6 +258,13 @@ export function buildLinkedIdentities(input: AliasInput): LinkedIdentity[] {
       score = Math.min(rule.max, rule.base + (weak - 1) * rule.perExtra);
     }
 
+    if (score < ALIAS_RULES.minScore) {
+      hidden++;
+      continue;
+    }
+    // Odczyt stylu pokazujemy tylko tam, gdzie wpłynął na wynik.
+    if (relation !== 'possibly_same_or_close') group.reasons = group.reasons.filter((reason) => reason.strength !== 'style');
+
     const handles = [...new Set(group.nodes.map((node) => node.card.handle).filter((value): value is string => Boolean(value)))];
     const fullName = group.nodes.map((node) => node.card.attributes.displayName?.trim()).find((name) => name !== undefined && looksLikePersonName(name));
     const addresses = [
@@ -258,7 +280,7 @@ export function buildLinkedIdentities(input: AliasInput): LinkedIdentity[] {
     ];
     // Aktywność własnych adresów tożsamości: znanych z jej publikacji, nieprzypisanych podmiotowi.
     const own = input.allFindings.filter((finding) => addresses.some((item) => item.basis === 'published' && item.address === finding.address));
-    const order: Strength[] = ['strong', 'medium', 'weak'];
+    const order: Strength[] = ['strong', 'medium', 'weak', 'style'];
     const reasons = [...group.reasons].sort((a, b) => order.indexOf(a.strength) - order.indexOf(b.strength));
     const decision = group.nodes.map((node) => input.decisionOf(node)).find((value) => value !== undefined);
     identities.push({
@@ -297,7 +319,7 @@ export function buildLinkedIdentities(input: AliasInput): LinkedIdentity[] {
       mergeWith: group.nodes.map((node) => ({ target: 'profile' as const, key: node.card.id })),
     });
   }
-  return identities.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName, 'pl'));
+  return { identities: identities.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName, 'pl')), hidden };
 }
 
 const RELATION_LABEL: Record<IdentityRelation, string> = {

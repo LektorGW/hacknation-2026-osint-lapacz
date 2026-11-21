@@ -64,7 +64,7 @@ for (const value of values) {
   const timing = (await app.inject(`/api/runs/${dossier.runId}/progress`)).json();
   console.log(`  czasy faz: ${(timing.timings ?? []).map((item: { stage: string; ms: number }) => `${item.stage} ${(item.ms / 1000).toFixed(1)} s`).join(', ')}`);
   for (const query of timing.slowestQueries ?? []) console.log(`  wolne zapytanie: ${query.connectorId} ${query.identifier.type} „${query.identifier.value}” ${(query.ms / 1000).toFixed(1)} s, dokumentów ${query.documents}`);
-  if (process.env.LOG) for (const entry of run.log.filter((item: { message: string }) => /limit|wzmianki|Krok|Odkryty|Czas faz|pominięto|Start analizy/.test(item.message) && !/403/.test(item.message)).slice(0, 60)) console.log(`  dziennik: ${entry.message.slice(0, 220)}`);
+  if (process.env.LOG) for (const entry of run.log.filter((item: { message: string }) => /limit|wzmianki|Krok|Odkryty|Czas faz|pominięto|Start analizy|Rozszerz|Trop|0x5E0361/.test(item.message) && !/403/.test(item.message)).slice(0, 60)) console.log(`  dziennik: ${entry.message.slice(0, 220)}`);
 }
 
 if (process.env.SWEEP) {

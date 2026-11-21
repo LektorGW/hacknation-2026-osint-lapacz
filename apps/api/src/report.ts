@@ -619,7 +619,7 @@ ${
 <h2>Powiązane tożsamości i ścieżki dojścia</h2>
 ${
   dossier.linkedIdentities.length === 0
-    ? '<p>Rozszerzanie analizy (wspólne cechy profili, ten sam adres, adresy powiązane w blockchainie) nie wskazało innych tożsamości.</p>'
+    ? `<p>Rozszerzanie analizy (wspólne cechy profili, ten sam adres, adresy powiązane w blockchainie) nie wskazało innych tożsamości. Słabe tropy niewykazane: ${dossier.weakLeadsHidden}.</p>`
     : inference(`<p>Inne nazwy, pod którymi może występować ta sama osoba, oraz osoby bliskie lub podstawione. Żadna z tych tożsamości nie jest scalona z osobą główną —
         rozstrzyga analityk. Łączne szacunkowe wypłaty osoby głównej i tożsamości „prawdopodobnie ta sama osoba”: <strong>${esc(pln(dossier.totals.cashOutPlnTotalWithLikelySame))}</strong>
         (sama osoba główna: ${esc(pln(dossier.totals.cashOutPlnTotal))}).</p>

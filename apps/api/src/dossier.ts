@@ -85,6 +85,8 @@ export interface DossierView extends Dossier {
   };
   /** Inne tożsamości tej samej osoby oraz osoby bliskie lub podstawione — karty „Powiązana tożsamość”. */
   linkedIdentities: LinkedIdentity[];
+  /** Słabe tropy niewykazane jako tożsamości (wynik poniżej progu): sama podobna nazwa konta, sam odczyt stylu, jednokierunkowy przelew. */
+  weakLeadsHidden: number;
   /** Dowód spieniężenia: ustalenia „osoba → adres → ścieżka → usługa”, od najpewniejszego. Puste, gdy brak ścieżek. */
   cashOutProof: CashOutProof[];
   /** Streszczenie wygenerowane przez model z kluczowych ustaleń; `null` bez modelu. */
@@ -349,8 +351,8 @@ export function buildDossier(input: DossierInput): DossierView {
   ];
   const replacements = detectReplacements({ ...run, findings });
   const relatedPersons = buildRelatedPersons({ run: { ...run, findings }, linked, sightings, subjectProfiles: mainNodes, otherCases: input.otherCases, rules, addressOnly });
-  const linkedIdentities = ownerUnknown
-    ? []
+  const { identities: linkedIdentities, hidden: weakLeadsHidden } = ownerUnknown
+    ? { identities: [], hidden: 0 }
     : buildLinkedIdentities({
         main,
         mainNodes,
@@ -415,6 +417,7 @@ export function buildDossier(input: DossierInput): DossierView {
     unconfirmedAddresses,
     explanations,
     linkedIdentities,
+    weakLeadsHidden,
     graph: buildGraph({
       subjectLabel: main?.fullName ?? caseSummary.name,
       caseName: caseSummary.name,

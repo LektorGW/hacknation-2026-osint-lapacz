@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { CashOutTrail, ChainProvider, Identifier } from '@olcys/core';
 import { runAnalysis } from '../src/analysis.ts';
 import { handleStem, linkedAddressesOf } from '../src/pivot.ts';
-import { BTC_A, BTC_B, BTC_C, BTC_D, cashOut, chainWith, decision, dossierOf, fakeActivity, fakeConnector, fakeProvider, transfer } from './helpers.ts';
+import { BTC_A, BTC_B, BTC_C, BTC_D, cashOut, chainWith, decision, dossierOf, fakeActivity, fakeAi, fakeConnector, fakeProvider, transfer } from './helpers.ts';
 
 const email: Identifier = { type: 'email', value: 'rafal.kowalski@poczta.example' };
 const query = { identifiers: [email] };
@@ -158,7 +158,8 @@ test('rozszerzanie z adresu: adresy powiązane w blockchainie i ich publikacje',
   // Powiązanie poniżej progu siły (20) i nieznany rodzaj nie są sprawdzane.
   assert.deepEqual(targ.calls.map((call) => call.value).sort(), [BTC_A, BTC_B, BTC_C, BTC_D].sort());
 
-  const byName = new Map(dossierOf(result, query).linkedIdentities.map((identity) => [identity.displayName, identity]));
+  const dossier = dossierOf(result, query);
+  const byName = new Map(dossier.linkedIdentities.map((identity) => [identity.displayName, identity]));
   // Współwpłacający na ten sam adres wpłat giełdy, który publikuje swój adres: prawdopodobnie ta sama osoba.
   const published = byName.get('Julia Kowalska')!;
   assert.deepEqual([published.relation, published.score], ['same_person_likely', 85]);
@@ -175,9 +176,10 @@ test('rozszerzanie z adresu: adresy powiązane w blockchainie i ich publikacje',
   const unpublished = byName.get(`Nieznany właściciel adresu ${BTC_C.slice(0, 10)}…${BTC_C.slice(-8)}`)!;
   assert.deepEqual([unpublished.relation, unpublished.score, unpublished.profiles.length], ['possibly_same_or_close', 55, 0]);
   assert.deepEqual(unpublished.addresses, [{ address: BTC_C, network: 'bitcoin', basis: 'linked:co_depositor' }]);
-  // Jednokierunkowe finansowanie: tylko „powiązana”.
-  const funder = byName.get(`Nieznany właściciel adresu ${BTC_D.slice(0, 10)}…${BTC_D.slice(-8)}`)!;
-  assert.deepEqual([funder.relation, funder.score], ['associated', 30]);
+  // Jednokierunkowe finansowanie to słaby trop (30 < 50): nie tworzy karty, jest tylko policzone.
+  assert.equal(byName.has(`Nieznany właściciel adresu ${BTC_D.slice(0, 10)}…${BTC_D.slice(-8)}`), false);
+  assert.equal(dossier.weakLeadsHidden, 1);
+  assert.ok(result.intel.pivot!.some((lead) => lead.value === BTC_D && lead.link?.kind === 'funded_by'));
 });
 
 test('różne imiona i nazwiska nie są scalane automatycznie, nawet przy wspólnym e-mailu', async () => {
@@ -211,7 +213,58 @@ test('rdzeń nazwy konta jest słabym tropem', async () => {
     identifier.value === 'rkowalski' ? [{ url: 'https://social.example/rkowalski', author: 'rkowalski', text: 'Cześć.', profile: { handle: 'rkowalski' } }] : [],
   );
   const result = await runAnalysis({ query, connectors: [subjectProfile({ phones: [] }), profiles], chainProviders: [fakeProvider()] });
-  const [identity] = dossierOf(result, query).linkedIdentities;
-  assert.deepEqual([identity!.displayName, identity!.relation, identity!.score], ['rkowalski', 'associated', 30]);
-  assert.match(identity!.reasons[0]!.text, /^Podobna nazwa konta \(rdzeń „rkowalski”\) — słaby trop/);
+  // Trop zostaje w materiale analizy i w dzienniku…
+  assert.deepEqual(result.intel.pivot!.map((lead) => [lead.kind, lead.value, lead.author]), [['handle_pattern', 'rkowalski', 'rkowalski']]);
+  assert.ok(result.log.some((entry) => entry.message.startsWith('Trop (handle_pattern)')));
+  // …ale sam w sobie nie tworzy powiązanej tożsamości ani węzła grafu — to mogłaby być przypadkowa osoba.
+  const dossier = dossierOf(result, query);
+  assert.deepEqual(dossier.linkedIdentities, []);
+  assert.equal(dossier.weakLeadsHidden, 1);
+  assert.ok(!dossier.graph.nodes.some((node) => node.label === 'rkowalski'));
+  assert.ok(!dossier.keyFindings.some((item) => item.text.includes('rkowalski”')));
+
+  // Niezależne potwierdzenie (ta sama strona WWW w obu profilach) czyni z tropu tożsamość.
+  const site = 'https://kowalski-foto.example';
+  const confirmedProfiles = fakeConnector('profile', 'social.example', ['nick'], (identifier) =>
+    identifier.value === 'rkowalski' ? [{ url: 'https://social.example/rkowalski', author: 'rkowalski', text: 'Cześć.', profile: { handle: 'rkowalski', urls: [site] } }] : [],
+  );
+  const confirmed = await runAnalysis({ query, connectors: [subjectProfile({ phones: [], urls: [site] }), confirmedProfiles], chainProviders: [fakeProvider()] });
+  const [identity] = dossierOf(confirmed, query).linkedIdentities;
+  assert.deepEqual([identity!.displayName, identity!.relation, identity!.score], ['rkowalski', 'possibly_same_or_close', 55]);
+});
+
+test('zgodność stylu według modelu: najwyżej +10 do relacji „możliwe”, sama nie tworzy tożsamości', async () => {
+  const site = 'https://kowalski-foto.example';
+  const style = (likelihood: number) => {
+    const ai = fakeAi();
+    ai.compareAuthors = async () => {
+      ai.calls.comparisons++;
+      return { likelihood, reasons: ['te same zwroty'], model: 'atrapa-1' };
+    };
+    return ai;
+  };
+  // Druga tożsamość publikuje własny adres (jest więc treść do porównania) i ma tę samą stronę WWW.
+  const other = (urls: string[]) =>
+    fakeConnector('profile', 'social.example', ['nick'], (identifier) =>
+      identifier.value === 'rkowalski' ? [{ url: 'https://social.example/rkowalski', author: 'rkowalski', text: `Mój adres ${BTC_C}`, profile: { handle: 'rkowalski', urls } }] : [],
+    );
+  const run = (ai: ReturnType<typeof fakeAi> | undefined, urls: string[]) =>
+    runAnalysis({ query, connectors: [subjectProfile({ phones: [], urls: [site] }), other(urls)], chainProviders: [fakeProvider()], ai });
+
+  const plain = dossierOf(await run(undefined, [site]), query).linkedIdentities[0]!;
+  assert.equal(plain.score, 55);
+
+  const ai = style(80);
+  const result = await run(ai, [site]);
+  assert.equal(ai.calls.comparisons, 1);
+  const boosted = dossierOf(result, query).linkedIdentities[0]!;
+  // 55 (wspólna strona WWW) + 8 (styl 80% → +8, najwyżej +10).
+  assert.deepEqual([boosted.relation, boosted.score], ['possibly_same_or_close', 63]);
+  assert.ok(boosted.reasons.some((reason) => reason.text.startsWith('Model atrapa-1: podobny styl wypowiedzi (80%) — przesłanka dodatkowa (+8)')));
+  assert.equal(dossierOf(await run(style(100), [site]), query).linkedIdentities[0]!.score, 65);
+
+  // Bez innej podstawy sam odczyt stylu (i sama podobna nazwa konta) nie tworzy tożsamości.
+  const alone = dossierOf(await run(style(95), []), query);
+  assert.deepEqual(alone.linkedIdentities, []);
+  assert.equal(alone.weakLeadsHidden, 1);
 });
