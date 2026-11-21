@@ -39,7 +39,11 @@ export interface CashOutProof {
   address: string;
   network: string;
   /** Skąd wiadomo, że adres jest adresem podmiotu. */
-  addressBasis: 'published' | 'analyst' | 'cluster';
+  addressBasis: 'published' | 'analyst' | 'confirmed' | 'cluster';
+  /** Adres nie jest potwierdzony jako należący do podmiotu — ustalenie warunkowe, do decyzji analityka. */
+  ownerUnconfirmed?: boolean;
+  /** Dla adresu niepotwierdzonego: łączna pewność, jeśli analityk potwierdzi własność adresu. */
+  confidenceIfConfirmed?: number;
   /** Dla adresu z klastra: adres opublikowany przez podmiot i powód zaliczenia do tego samego portfela. */
   cluster?: { seed: string; reason: string };
   /** P(osoba–adres), 0–100 (po obniżce dla klastra). */
@@ -68,6 +72,10 @@ export interface ProofInput {
   linkedKeys: Set<string>;
   /** Adresy podane przez analityka (`network:address`). */
   analystAddresses: Set<string>;
+  /** Adresy potwierdzone decyzją analityka — liczone jak podane w sprawie. */
+  confirmedAddresses?: Set<string>;
+  /** Adresy niepotwierdzone: `network:address` → prawdopodobieństwo osoba–adres i skąd adres pochodzi. */
+  unconfirmed?: Map<string, { probability: number; origin: string }>;
   main?: PersonCandidate;
 }
 
@@ -79,9 +87,11 @@ export function buildCashOutProof(input: ProofInput): CashOutProof[] {
   const seen = new Set<string>();
   for (const finding of input.findings) {
     const key = `${finding.network}:${finding.address}`;
-    if (!input.linkedKeys.has(key)) continue;
-    const analyst = input.analystAddresses.has(key);
-    const base = analyst ? 100 : (finding.subjectProbability ?? 0);
+    const pending = input.unconfirmed?.get(key);
+    if (!input.linkedKeys.has(key) && !pending) continue;
+    const confirmed = input.confirmedAddresses?.has(key) === true;
+    const analyst = input.analystAddresses.has(key) || confirmed;
+    const base = analyst ? 100 : pending ? pending.probability : (finding.subjectProbability ?? 0);
     for (const trail of finding.chain?.trails ?? []) {
       if (seen.has(trail.id)) continue;
       seen.add(trail.id);
@@ -98,7 +108,8 @@ export function buildCashOutProof(input: ProofInput): CashOutProof[] {
         person: input.main && input.main.probability > 0 ? { id: input.main.id, ...(input.main.fullName ? { fullName: input.main.fullName } : {}), probability: input.main.probability } : null,
         address: trail.sourceAddress,
         network: trail.network,
-        addressBasis: fromCluster ? 'cluster' : analyst ? 'analyst' : 'published',
+        addressBasis: fromCluster ? 'cluster' : confirmed ? 'confirmed' : analyst ? 'analyst' : 'published',
+        ...(pending ? { ownerUnconfirmed: true, confidenceIfConfirmed: Math.round(trail.confidence * (fromCluster ? PROOF_RULES.clusterFactor : 1)) } : {}),
         ...(fromCluster ? { cluster: { seed: finding.address, reason: member?.reason ?? 'adres zaliczony do tego samego portfela heurystyką' } } : {}),
         personAddressProbability,
         trailConfidence: trail.confidence,
@@ -106,7 +117,9 @@ export function buildCashOutProof(input: ProofInput): CashOutProof[] {
         tier: tierOf(combinedConfidence),
         components: [
           analyst
-            ? 'P(osoba–adres) = 100%: adres podany przez analityka jako adres podmiotu.'
+            ? `P(osoba–adres) = 100%: adres ${confirmed ? 'potwierdzony decyzją analityka' : 'podany przez analityka'} jako adres podmiotu.`
+            : pending
+            ? `P(osoba–adres) = ${base}%: adres ${shortAddress(finding.address)} NIE jest potwierdzony jako należący do podmiotu (${pending.origin}).`
             : `P(osoba–adres) = ${base}%: łączne prawdopodobieństwo, że adres ${shortAddress(finding.address)} należy do osoby ze sprawy.`,
           ...(fromCluster
             ? [`Adres ${shortAddress(trail.sourceAddress)} zaliczono do tego samego portfela heurystyką (${member?.reason ?? 'klaster adresów'}) — obniżka × ${PROOF_RULES.clusterFactor.toLocaleString('pl-PL')} → ${personAddressProbability}%.`]
@@ -116,12 +129,20 @@ export function buildCashOutProof(input: ProofInput): CashOutProof[] {
         ],
         layer: inferred ? 'inference' : 'calculation',
         serviceName,
-        statement:
-          `Udokumentowano przekazanie ${formatAmount(trail.amount)} ${trail.asset}${value} z adresu ${shortAddress(trail.sourceAddress)} do usługi ${serviceName} ` +
-          `w ${steps} — pewność ścieżki ${trail.confidence}%, łączna pewność ustalenia ${combinedConfidence}%.`,
+        statement: pending
+          ? `Adres ${shortAddress(trail.sourceAddress)} (${pending.origin}) nie jest potwierdzony jako należący do podmiotu (prawdopodobieństwo ${base}%). ` +
+            `Z adresu przekazano ${formatAmount(trail.amount)} ${trail.asset}${value} do usługi ${serviceName} w ${steps} — łączna pewność ${combinedConfidence}%; ` +
+            `jeśli analityk potwierdzi własność adresu, ustalenie zyska pewność ${Math.round(trail.confidence * (fromCluster ? PROOF_RULES.clusterFactor : 1))}%.`
+          : analyst
+          ? // Adres jest przedmiotem sprawy — ustalenie mówi o środkach z adresu, nie o osobie.
+            `Środki z badanego adresu ${shortAddress(trail.sourceAddress)}: udokumentowano przekazanie ${formatAmount(trail.amount)} ${trail.asset}${value} do usługi ${serviceName} ` +
+            `w ${steps} — pewność ścieżki ${trail.confidence}%${fromCluster ? `, po obniżce za adres z klastra portfela ${combinedConfidence}%` : ''}.`
+          : `Udokumentowano przekazanie ${formatAmount(trail.amount)} ${trail.asset}${value} z adresu ${shortAddress(trail.sourceAddress)} do usługi ${serviceName} ` +
+            `w ${steps} — pewność ścieżki ${trail.confidence}%, łączna pewność ustalenia ${combinedConfidence}%.`,
         trail,
       });
     }
   }
-  return proofs.sort((a, b) => b.combinedConfidence - a.combinedConfidence || (b.trail.valuePln ?? 0) - (a.trail.valuePln ?? 0) || a.id.localeCompare(b.id));
+  // Najpierw ustalenia dla adresów potwierdzonych; warunkowe („do potwierdzenia”) na końcu.
+  return proofs.sort((a, b) => Number(a.ownerUnconfirmed === true) - Number(b.ownerUnconfirmed === true) || b.combinedConfidence - a.combinedConfidence || (b.trail.valuePln ?? 0) - (a.trail.valuePln ?? 0) || a.id.localeCompare(b.id));
 }

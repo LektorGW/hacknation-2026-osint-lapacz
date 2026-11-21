@@ -26,6 +26,7 @@ import type {
   IdentityMatch,
   Network,
   ScoreRules,
+  SourceCategory,
   SourceConnector,
   SourceDocument,
   StoredEvidence,
@@ -102,6 +103,8 @@ export interface AnalysisParams {
   maxMentionAuthors?: number;
   /** Po ilu niepowiązanych autorach przestajemy zbierać wzmianki o identyfikatorze w kolejnych źródłach wyszukiwawczych. */
   mentionStopAuthors?: number;
+  /** Okres, którego ma dotyczyć historia blockchain (daty ISO); przekazywany dostawcom danych. */
+  period?: { from?: string; to?: string };
   /** Model językowy (opcjonalny): odczyt publikacji i porównanie autorów. */
   ai?: AiAssistant;
   maxAiPublications?: number;
@@ -136,6 +139,24 @@ export const defaultIsSearchSource = (connectorId: string): boolean =>
 
 /** Domyślnie: wyszukiwarka forów, źródła monitoringu i wszystko z „search” w nazwie (bez indeksu własnego — jest lokalny). */
 export const defaultIsBroadSearch = (connectorId: string): boolean => connectorId !== 'corpus' && defaultIsSearchSource(connectorId);
+
+/**
+ * Kontekst zapytania do dostawcy danych blockchain (lokalne rozszerzenie `ConnectorContext`):
+ * adres będący przedmiotem sprawy dostaje pełną historię, pozostałe — najnowszą.
+ */
+export interface ChainContext extends ConnectorContext {
+  history: 'recent' | 'full';
+  since?: string;
+  until?: string;
+}
+
+/**
+ * Publikacje, które same w sobie wskazują właściciela adresu: własny profil, dowód kryptograficzny,
+ * oferta lub wiadomość z adresem do wpłaty. Wypowiedź na forum czy komentarz to tylko wzmianka.
+ */
+export const OWNERSHIP_CATEGORIES: SourceCategory[] = ['own_profile', 'cryptographic_proof', 'sale_offer', 'settlement_message'];
+/** Najwyżej tyle wzmianek o adresie czyta model, szukając autora podającego adres jako własny. */
+const MAX_OWNERSHIP_READS = 10;
 
 /** Adres publikacji do porównań: bez `www.`, fragmentu, parametrów śledzących i końcowego ukośnika. */
 export function canonicalUrl(raw: string): string {
@@ -399,6 +420,17 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const chainLimit = params.maxChainAddresses ?? DEFAULT_MAX_CHAIN_ADDRESSES;
   const chainJobs = new Map<AddressGroup, Promise<void>>();
   /** Uruchamia analizę blockchain adresu (raz); zwraca `undefined`, gdy limit adresów jest wyczerpany. */
+  const subjectAddresses = new Set(
+    params.query.identifiers.filter((item) => item.type === 'crypto_address').map((item) => item.value.trim().toLowerCase()),
+  );
+  /** Adres podany przez analityka jest przedmiotem sprawy: dostawca ma sięgnąć po pełną historię. */
+  const chainContext = (group: AddressGroup, signal: AbortSignal): ChainContext => ({
+    signal,
+    log,
+    history: subjectAddresses.has(group.address.toLowerCase()) ? 'full' : 'recent',
+    ...(params.period?.from ? { since: params.period.from } : {}),
+    ...(params.period?.to ? { until: params.period.to } : {}),
+  });
   const startChain = (group: AddressGroup): Promise<void> | undefined => {
     const running = chainJobs.get(group);
     if (running || chainJobs.size >= chainLimit) return running;
@@ -406,7 +438,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       if (expired('analizę blockchain części adresów')) return;
       try {
         group.chain = await withTimeout(
-          (signal) => resolveActivity(params.chainProviders, group.network, group.address, { signal, log }),
+          (signal) => resolveActivity(params.chainProviders, group.network, group.address, chainContext(group, signal)),
           // Limit obejmuje kolejne próby u wszystkich dostawców.
           timeoutMs * Math.max(1, params.chainProviders.length),
           params.signal,
@@ -743,6 +775,33 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const key = `${group.network}:${group.address}`;
     const occurrences = await search({ type: 'crypto_address', value: group.address }, { timeShare: OCCURRENCE_TIME_SHARE, directOnly: index >= MAX_BROAD_ADDRESSES });
     const candidateAuthors = new Set<string>();
+    const containsAddress = (doc: SourceDocument) => extract(doc.text).some((item) => `${item.network}:${item.address}` === key);
+
+    // Analiza samego adresu: kandydatem na właściciela jest tylko autor z mocną podstawą własności.
+    // Komentujący i cytujący adres to wzmianki — nie wolno wskazywać ich jako osób.
+    const owners = new Set<string>();
+    const citing = { documents: 0, authors: new Set<string>(), services: new Set<string>() };
+    if (addressOnly) {
+      const relevant = occurrences.filter((doc) => doc.author && containsAddress(doc));
+      for (const doc of relevant) if (OWNERSHIP_CATEGORIES.includes(doc.category)) owners.add(normalizeName(doc.author!));
+      if (params.ai) {
+        // Wyjątek: model czyta wypowiedź i stwierdza (z cytatem), że autor podaje adres jako własny.
+        const unclear = relevant.filter((doc) => !owners.has(normalizeName(doc.author!))).slice(0, MAX_OWNERSHIP_READS);
+        await Promise.all(
+          unclear.map(async (doc) => {
+            try {
+              const insight = await params.ai!.analyzePublication({ text: doc.text, address: group.address, author: doc.author, title: doc.title });
+              if (insight?.ownership === 'own_address' && insight.quote.trim()) {
+                owners.add(normalizeName(doc.author!));
+                log(`[model ${insight.model}] ${doc.url}: autor „${doc.author}” podaje adres jako własny („${insight.quote.trim()}”) — możliwy właściciel.`);
+              }
+            } catch (error) {
+              log(`[model ${params.ai!.model}] BŁĄD odczytu ${doc.url}: ${errorText(error)}.`);
+            }
+          }),
+        );
+      }
+    }
     for (const doc of occurrences) {
       const hit = extract(doc.text).find((item) => `${item.network}:${item.address}` === key);
       if (!hit) continue;
@@ -750,7 +809,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       const contentHash = sha256Hex(doc.text);
       const author = doc.author ? normalizeName(doc.author) : '';
       const relation = author ? knownNames.get(author) : undefined;
-      if (addressOnly && author) {
+      if (addressOnly && author && !owners.has(author)) {
+        group.unrelatedAuthors.add(author);
+        citing.documents++;
+        citing.authors.add(`${doc.service.toLowerCase()}|${author}`);
+        citing.services.add(doc.service.toLowerCase());
+        capture(doc, contentHash);
+        noteSighting(doc, { match: 'same_handle', reasons: [] }, 'co_publisher', 0, [key]);
+      } else if (addressOnly && author) {
         const identity: IdentityAssessment = {
           match: 'exact_identifier',
           reasons: [`Autor „${doc.author}” sam opublikował ten adres.`],
@@ -781,6 +847,20 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         if (!group.notes.includes(note)) group.notes.push(note);
         log(`Adres ${group.address} występuje w ${doc.url} bez wskazanego autora — odnotowano jako wiedzę o adresie, nie wliczono do publikujących.`);
       }
+    }
+    if (citing.documents > 0) {
+      const identifier: Identifier = { type: 'crypto_address', value: group.address };
+      mentions.push({
+        identifier,
+        documents: citing.documents,
+        authors: citing.authors.size,
+        services: citing.services.size,
+        ...(mentionStopped.has(identifierKey(identifier)) ? { atLeast: true } : {}),
+      });
+      log(
+        `Adres ${group.address} wymienia ${citing.authors.size} autorów w ${citing.services.size} serwisach (${citing.documents} publikacji) bez mocnej podstawy własności — ` +
+          'to wzmianki, nie kandydaci na właściciela.',
+      );
     }
     if (candidateAuthors.size > 1) {
       // Kilku różnych autorów przy jednym adresie osłabia przypisanie do któregokolwiek z nich.
@@ -839,6 +919,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           log(`Kontrahent ${candidate.address} jest publikowany przez sam podmiot („${doc.author}”, ${doc.url}) — warto dodać ten adres do sprawy.`);
           continue;
         }
+        // Kontrahenta wskazuje tylko publikacja z podstawą własności (profil, oferta); komentarz o adresie
+        // to wzmianka i nie może nikogo wskazywać jako osoby powiązanej.
+        if (!OWNERSHIP_CATEGORIES.includes(doc.category)) {
+          log(`Kontrahenta ${candidate.address} wymienia „${doc.author}” w ${doc.url} (wypowiedź, nie własna publikacja adresu) — odnotowano bez wskazywania osoby.`);
+          continue;
+        }
         capture(doc, sha256Hex(doc.text));
         noteSighting(doc, { match: 'same_handle', reasons: [] }, 'counterparty_publisher', 0, [key]);
         log(`Kontrahent ${candidate.address} opublikowany przez „${doc.author}”: ${doc.url} — możliwa osoba powiązana.`);
@@ -866,7 +952,22 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       );
     }
     const widelyCited = counted >= widelyCitedFrom;
-    if (widelyCited && !confidence.excluded) {
+    const subjectOfCase = subjectAddresses.has(group.address.toLowerCase());
+    if (subjectOfCase) {
+      notes.push(
+        `Zakres historii blockchain: pełna historia adresu (adres podany przez analityka jest przedmiotem sprawy)` +
+          `${params.period?.from || params.period?.to ? `; okres wskazany przez analityka: od ${params.period.from ?? 'początku'} do ${params.period.to ?? 'dziś'}` : ''}.`,
+      );
+    } else if (params.period?.from || params.period?.to) {
+      notes.push(`Zakres historii blockchain: okres wskazany przez analityka, od ${params.period.from ?? 'początku'} do ${params.period.to ?? 'dziś'}.`);
+    }
+    if (widelyCited && subjectOfCase) {
+      // Adres jest przedmiotem sprawy: liczba cytujących nie zatrzymuje analizy łańcucha ani nie zeruje sum.
+      notes.push(
+        `Adres powszechnie cytowany: wymienia go ${unrelatedPublishers} niepowiązanych autorów (próg ${widelyCitedFrom}) — na podstawie publikacji nie da się wskazać właściciela. ` +
+          'Adres podany przez analityka pozostaje przedmiotem sprawy: analiza łańcucha, sumy i priorytet dotyczą adresu, nie osoby.',
+      );
+    } else if (widelyCited && !confidence.excluded) {
       // Adres darowizn projektu albo adres z FAQ giełdy: publikuje go wielu autorów, więc nie wskazuje osoby.
       const explanation =
         `Adres powszechnie cytowany: publikuje go ${unrelatedPublishers} niepowiązanych autorów (próg ${widelyCitedFrom}). ` +

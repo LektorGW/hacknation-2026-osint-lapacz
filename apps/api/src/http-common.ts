@@ -7,8 +7,9 @@ import type { AiAssistant, AnalysisRun, ChainProvider, Identifier, ScoreRules, S
 import type { AiUsage } from './ai-rules.ts';
 import type { ActivityResolver } from './analysis.ts';
 import type { CorpusSettings } from './corpus.ts';
-import type { DEPTH_LIMITS, RunDepth, RunEngine } from './runs.ts';
+import type { DEPTH_LIMITS, RunDepth, RunEngine, RunPeriod } from './runs.ts';
 import type { DossierView } from './dossier.ts';
+import type { ServiceLabel } from './explain.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { Monitor, MonitorTimers } from './monitor.ts';
 import type { ExternalServiceMatcher } from './services.ts';
@@ -31,6 +32,8 @@ export interface AppDeps {
   summaryAi?: AiAssistant | null;
   /** Model działa na tej samej maszynie — fakty do streszczenia nie muszą być anonimizowane. */
   aiLocal?: boolean;
+  /** Publicznie oznaczone adresy usług (zbiór etykiet modułu danych blockchain) — do wyjaśnienia „to nazwa serwisu”. */
+  serviceLabels?: ServiceLabel[];
   /** Normalizacja nietypowych zapisów adresów w treści przed ich wykrywaniem. */
   normalizeText?: (text: string) => string;
   /** Przechowywanie indeksu publikacji: liczba dni i limit wierszy. */
@@ -80,7 +83,7 @@ export interface RouteContext {
   connectorInfo(): ConnectorInfo[];
   /** Łączniki wskazane w żądaniu albo domyślnie włączone; nieznany identyfikator to błąd 400. */
   selectConnectors(ids?: string[], depth?: RunDepth): SourceConnector[];
-  executeRun(caseSummary: CaseSummary, connectorIds?: string[], depth?: RunDepth): Promise<AnalysisRun>;
+  executeRun(caseSummary: CaseSummary, connectorIds?: string[], depth?: RunDepth, period?: RunPeriod): Promise<AnalysisRun>;
   runs: RunEngine;
   /** Model językowy z licznikiem wywołań; `undefined`, gdy nie jest skonfigurowany. */
   ai?: { assistant: AiAssistant; usage: AiUsage };

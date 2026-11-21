@@ -34,7 +34,11 @@ const scenario = async (cashOutPln = 132_000) => {
       ];
     }
     if (identifier.value === TRADER) {
-      return [{ url: 'https://forum.example/u/bartek_p2p', author: 'bartek_p2p', text: `Skup BTC, mój adres: ${TRADER}` }];
+      return [
+        { url: 'https://forum.example/u/bartek_p2p', author: 'bartek_p2p', text: `Skup BTC, mój adres: ${TRADER}` },
+        // Cudza wypowiedź o adresie kontrahenta nie czyni z autora osoby powiązanej.
+        { url: 'https://forum.example/p/plotkarz', author: 'plotkarz', category: 'forum_post' as const, text: `Ktoś widział ${TRADER}?` },
+      ];
     }
     return [];
   });

@@ -240,7 +240,7 @@ export function chainWith(
 export function dossierOf(
   result: AnalysisResult,
   query: SubjectQuery,
-  options: { decisions?: DecisionRecord[]; otherCases?: OtherCase[]; now?: Date } = {},
+  options: { decisions?: DecisionRecord[]; otherCases?: OtherCase[]; now?: Date; serviceLabels?: { address: string; network: string; label: string }[]; deep?: boolean } = {},
 ): DossierView {
   const analysisRun: AnalysisRun = { ...run('run-test', result.findings), query, log: result.log };
   return buildDossier({
@@ -251,6 +251,8 @@ export function dossierOf(
     otherCases: options.otherCases ?? [],
     rules: DEFAULT_RULES,
     now: options.now ?? FIXED_NOW(),
+    serviceLabels: options.serviceLabels,
+    deep: options.deep,
   });
 }
 

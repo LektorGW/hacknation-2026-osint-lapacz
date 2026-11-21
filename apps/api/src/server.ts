@@ -1,6 +1,7 @@
 // Punkt startowy API: jedyne miejsce, w którym podłączane są prawdziwe łączniki
 // źródeł i dostawcy danych blockchain. Konfiguracja wyłącznie ze zmiennych środowiskowych.
 
+import { fileURLToPath } from 'node:url';
 import * as ai from '@olcys/ai';
 import * as chain from '@olcys/chain';
 import type { AiAssistant, ChainProvider } from '@olcys/core';
@@ -46,6 +47,18 @@ const aiBaseUrl = String((aiConfig as { baseUrl?: string } | null)?.baseUrl ?? '
 const aiLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(aiBaseUrl);
 const normalizeText = (sources as { normalizeAddressText?: (text: string) => string }).normalizeAddressText;
 
+// Publiczne etykiety adresów usług — do wyjaśnienia, gdy analityk wpisze nazwę giełdy zamiast osoby.
+const loadLabelFile = (chain as { loadLabelFile?: (path: string) => { entries: { address: string; network: string; label: string }[] } }).loadLabelFile;
+let serviceLabels: { address: string; network: string; label: string }[] = [];
+try {
+  if (typeof loadLabelFile === 'function') {
+    const labelsPath = fileURLToPath(new URL('../data/labels.json', import.meta.resolve('@olcys/chain')));
+    serviceLabels = loadLabelFile(labelsPath).entries.map(({ address, network, label }) => ({ address, network, label }));
+  }
+} catch {
+  // Brak zbioru etykiet nie blokuje startu — wyjaśnienie pokaże pustą listę adresów.
+}
+
 const app = await buildApp({
   storage,
   connectors,
@@ -55,6 +68,7 @@ const app = await buildApp({
   resolveActivity: chain.getActivityFromProviders,
   matchService: chain.matchService,
   ai: assistant,
+  serviceLabels,
   summaryAi: summaryAssistant,
   aiLocal,
   normalizeText: typeof normalizeText === 'function' ? normalizeText : undefined,

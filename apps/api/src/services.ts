@@ -168,6 +168,25 @@ export function resolveService(
   return { name: normalizeServiceLabel(label), kind: externalKind ?? fallbackKind };
 }
 
+const NAME_SUFFIX = /^(?:crypto|krypto|exchange|global|official|pl|com|io|app|wallet|support|team|pay|p2p|gielda|kantor)*$/;
+
+/**
+ * Czy podana nazwa (np. nick wpisany przez analityka) jest nazwą usługi z listy: sama nazwa
+ * albo nazwa z typowym dopiskiem („ZondaCrypto”, „binance_official”).
+ */
+export function serviceFromName(value: string, matcher?: ExternalServiceMatcher): { name: string; kind: ServiceKind } | undefined {
+  const compact = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (compact.length < 3) return undefined;
+  for (const entry of getCatalog()) {
+    for (const keyword of entry.keywords) {
+      const key = keyword.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (key.length >= 3 && compact.startsWith(key) && NAME_SUFFIX.test(compact.slice(key.length))) return { name: entry.name, kind: entry.kind };
+    }
+  }
+  const external = matcher?.(value);
+  return external && !external.name.includes('(ogólnie)') ? { name: external.name, kind: EXTERNAL_KINDS.find((kind) => kind === external.category) ?? 'other' } : undefined;
+}
+
 /** Identyfikator usługi w teczce (`ServiceLink.id`) dla nazwy lub etykiety z danych blockchain. */
 export const serviceIdOf = (label: string, matcher?: ExternalServiceMatcher): string => serviceId(resolveService(label, 'other', matcher).name);
 

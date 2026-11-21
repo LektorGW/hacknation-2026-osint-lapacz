@@ -228,7 +228,7 @@ test('analiza samego adresu: autor publikacji staje się kandydatem na właścic
   assert.ok(finding!.evidence.every((item) => item.author === 'krypto_janek'));
 });
 
-test('analiza samego adresu: kilku autorów osłabia przypisanie', async () => {
+test('analiza samego adresu: komentujący to wzmianki, nie kandydaci na właściciela', async () => {
   const authors = ['ala', 'ola', 'ela', 'ula'];
   const social = fakeConnector('social', 'social.example', ['crypto_address'], () =>
     authors.map((author) => ({
@@ -247,6 +247,10 @@ test('analiza samego adresu: kilku autorów osłabia przypisanie', async () => {
   });
 
   const [finding] = result.findings;
-  assert.equal(finding!.unrelatedPublishers, 3);
-  assert.ok(finding!.confidence.ledger.some((entry) => entry.rule === 'penalty.shared_address'));
+  // Masowy komentarz nie jest podstawą własności: żaden z autorów nie staje się śladem ani profilem.
+  assert.equal(finding!.unrelatedPublishers, 4);
+  assert.equal(finding!.evidence.length, 0);
+  assert.equal(finding!.confidence.score, 0);
+  assert.deepEqual(result.intel.mentions, [{ identifier: { type: 'crypto_address', value: BTC_A }, documents: 4, authors: 4, services: 1 }]);
+  assert.ok(result.intel.sightings.every((item) => item.role === 'co_publisher'));
 });

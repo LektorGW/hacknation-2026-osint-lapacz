@@ -20,7 +20,7 @@ import { registerMonitorRoutes } from './monitor-routes.ts';
 import { looksLikePersonName } from './persons.ts';
 import { renderReportHtml } from './report.ts';
 import { createRunEngine } from './runs.ts';
-import type { RunDepth } from './runs.ts';
+import type { RunDepth, RunPeriod } from './runs.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 import { registerSweepRoutes } from './sweep-routes.ts';
@@ -160,6 +160,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       rules,
       now: now(),
       matchService: deps.matchService,
+      serviceLabels: deps.serviceLabels,
+      deep: (run as AnalysisRun & { depth?: RunDepth }).depth === 'deep',
     });
     if (ai && dossier.keyFindings.length > 0) {
       // Streszczenie powstaje wyłącznie z gotowych ustaleń; błąd modelu zostawia teczkę bez streszczenia.
@@ -196,8 +198,23 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook('preClose', () => runs.stop());
 
   /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
-  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard'): Promise<AnalysisRun> =>
-    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth), depth });
+  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard', period?: RunPeriod): Promise<AnalysisRun> =>
+    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth), depth, period });
+
+  const periodSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: { from: { type: 'string', minLength: 4, maxLength: 40 }, to: { type: 'string', minLength: 4, maxLength: 40 } },
+  } as const;
+  /** Okres z żądania: daty muszą dać się odczytać, a początek nie może być po końcu. */
+  const cleanPeriod = (period?: RunPeriod): RunPeriod | undefined => {
+    if (!period?.from && !period?.to) return undefined;
+    for (const value of [period.from, period.to]) {
+      if (value !== undefined && Number.isNaN(new Date(value).getTime())) throw new HttpError(400, `„${value}” nie jest poprawną datą (ISO 8601).`);
+    }
+    if (period.from && period.to && new Date(period.from) > new Date(period.to)) throw new HttpError(400, 'Początek okresu jest późniejszy niż koniec.');
+    return period;
+  };
 
   // ---------- Harmonogram cyklicznych analiz (w pamięci procesu) ----------
 
@@ -263,7 +280,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     withSchedule(await requireCase(request.params.id)),
   );
 
-  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean } }>(
+  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean; period?: RunPeriod } }>(
     '/api/cases/:id/runs',
     {
       schema: {
@@ -275,6 +292,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             connectors: { type: 'array', maxItems: 50, items: { type: 'string', minLength: 1, maxLength: 100 } },
             depth: { type: 'string', enum: ['standard', 'deep'] },
             async: { type: 'boolean' },
+            period: periodSchema,
           },
         },
       },
@@ -282,12 +300,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     async (request, reply) => {
       const caseSummary = await requireCase(request.params.id);
       const depth = request.body?.depth ?? 'standard';
+      const period = cleanPeriod(request.body?.period);
       if (request.body?.async) {
         // Analiza liczy się w tle; postęp pod /api/runs/:id/progress, wynik pod /api/runs/:id.
-        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth), depth });
+        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth), depth, period });
         return reply.code(202).send({ id: run.id, status: run.status });
       }
-      const run = await executeRun(caseSummary, request.body?.connectors, depth);
+      const run = await executeRun(caseSummary, request.body?.connectors, depth, period);
       return reply.code(201).send(run);
     },
   );
@@ -431,7 +450,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // ---------- Jedno wywołanie: identyfikator → sprawa → analiza → teczka ----------
 
-  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean } }>(
+  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean; period?: RunPeriod } }>(
     '/api/quick',
     {
       schema: {
@@ -444,6 +463,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             type: { type: 'string', enum: IDENTIFIER_TYPES },
             depth: { type: 'string', enum: ['standard', 'deep'] },
             async: { type: 'boolean' },
+            period: periodSchema,
           },
         },
       },
@@ -452,13 +472,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const value = request.body.value.trim();
       if (!value) throw new HttpError(400, 'Identyfikator nie może być pusty.');
       const identifiers = cleanIdentifiers([{ type: request.body.type ?? detectIdentifierType(value), value }]);
+      const period = cleanPeriod(request.body.period);
       const created = await storage.createCase(value, { identifiers }, now().toISOString());
       const depth = request.body.depth ?? 'standard';
       if (request.body.async) {
-        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth), depth });
+        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth), depth, period });
         return reply.code(202).send({ case: created, run: { id: run.id, status: run.status } });
       }
-      const run = await executeRun(created, undefined, depth);
+      const run = await executeRun(created, undefined, depth, period);
       return reply.code(201).send({ case: withSchedule(await requireCase(created.id)), dossier: await loadDossier(run) });
     },
   );

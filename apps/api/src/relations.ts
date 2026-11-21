@@ -47,6 +47,8 @@ export interface RelationsInput {
   subjectProfiles: ProfileNode[];
   otherCases: OtherCase[];
   rules: ScoreRules;
+  /** Sprawa dotyczy samego adresu: cytujący go autorzy to wzmianki, nie osoby powiązane. */
+  addressOnly?: boolean;
 }
 
 interface Draft {
@@ -97,7 +99,8 @@ export function buildRelatedPersons(input: RelationsInput): RelatedPersonView[] 
         if (sighting.role === 'co_publisher') {
           // (a) Ten sam adres publikuje inna osoba.
           const finding = findingByKey.get(key);
-          if (!finding || finding.confidence.excluded) continue;
+          // Adres cytowany przez wielu (albo sprawa samego adresu): autorzy to wzmianki, nie wskazujemy ich jako osób.
+          if (!finding || finding.confidence.excluded || input.addressOnly || (finding as { widelyCited?: boolean }).widelyCited) continue;
           const many = finding.unrelatedPublishers >= input.rules.sharedAddressThreshold;
           relate(
             draft,

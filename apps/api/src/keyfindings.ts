@@ -5,6 +5,7 @@
 import type { Dossier, Finding, PersonCandidate, ProfileCard, RelatedPerson, ServiceLink, SourceCategory } from '@olcys/core';
 import type { AddressReplacement } from './diff.ts';
 import { formatAmount, formatDate, plural, roundPln, shortAddress } from './format.ts';
+import type { Explanation, UnconfirmedAddress } from './explain.ts';
 import type { MentionSummary } from './intel.ts';
 import type { CashOutProof } from './proof.ts';
 import { describeServiceLink, isCashOutService } from './services.ts';
@@ -12,6 +13,14 @@ import { describeServiceLink, isCashOutService } from './services.ts';
 type KeyFinding = Dossier['keyFindings'][number];
 
 export interface KeyFindingsInput {
+  /** Sprawa dotyczy samego adresu (bez identyfikatorów osoby). */
+  addressOnly?: boolean;
+  /** Badany adres jest powszechnie cytowany. */
+  widelyCited?: boolean;
+  /** Wyjaśnienia braku wyniku — najważniejsze otwiera listę ustaleń. */
+  explanations?: Explanation[];
+  /** Adresy do potwierdzenia przez analityka. */
+  unconfirmed?: UnconfirmedAddress[];
   /** Wzmianki o identyfikatorach podmiotu u innych autorów. */
   mentions: MentionSummary[];
   /** Dowód spieniężenia — gdy jest, jego zdania idą zaraz po ustaleniu osoby. */
@@ -130,8 +139,49 @@ function addressSentence(best: (Finding & { subjectProbability?: number }) | und
 export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
   const active = input.findings.filter((finding) => !finding.confidence.excluded);
   const best = [...active].sort((a, b) => b.confidence.score - a.confidence.score)[0];
-  const proofSentences = proofFindings(input.proofs);
-  const result: KeyFinding[] = [...personSentences(input), ...proofSentences, ...serviceSentences(input.serviceLinks), ...addressSentence(best)];
+  const proofSentences = proofFindings(input.proofs.filter((proof) => !proof.ownerUnconfirmed));
+  // Brak adresu podmiotu albo zapytanie o nazwę serwisu: to analityk musi przeczytać najpierw.
+  const opening = (input.explanations ?? []).filter((item) => item.kind === 'service_name' || item.kind === 'no_addresses' || item.kind === 'only_unconfirmed');
+  const leadExplanations: KeyFinding[] = opening.slice(0, 2).map((item) => ({
+    text: `${item.text} Co można zrobić: ${item.suggestions[0]}`,
+    layer: item.kind === 'service_name' ? ('inference' as const) : ('fact' as const),
+  }));
+  // Najbliższy adres do potwierdzenia: co o nim wiadomo i co da potwierdzenie.
+  const pendingAddress = input.unconfirmed?.[0];
+  const pendingProof = pendingAddress ? input.proofs.find((proof) => proof.ownerUnconfirmed && proof.address === pendingAddress.address) : undefined;
+  const pendingSentences: KeyFinding[] = pendingProof
+    ? [{ text: pendingProof.statement, layer: 'inference' }]
+    : pendingAddress
+      ? [
+          {
+            text:
+              `Znaleziono adres ${shortAddress(pendingAddress.address)}, którego nie potwierdzono jako należącego do podmiotu (prawdopodobieństwo ${pendingAddress.personAddressProbability}%)` +
+              `${pendingAddress.chain ? `; w blockchainie ma ${pendingAddress.chain.transfers} ${plural(pendingAddress.chain.transfers, 'przelew', 'przelewy', 'przelewów')}` : ''}. ` +
+              'Decyzja analityka „potwierdzony” dla profilu lub adresu przeliczy teczkę z tym adresem.',
+            layer: 'inference',
+          },
+        ]
+      : [];
+  // Sprawa samego adresu bez ustalonego właściciela: najpierw jasna informacja, że publikacje go nie wskazują.
+  const cites = input.addressOnly && input.persons.length === 0 ? input.mentions.filter((item) => item.identifier.type === 'crypto_address') : [];
+  const addressLead: KeyFinding[] =
+    cites.length > 0
+      ? [
+          {
+            text:
+              `Adres jest ${input.widelyCited ? 'powszechnie cytowany' : 'wymieniany w cudzych publikacjach'} ` +
+              `(co najmniej ${Math.max(...cites.map((item) => item.authors))} ${plural(Math.max(...cites.map((item) => item.authors)), 'autor', 'autorów', 'autorów')} w ` +
+              `${Math.max(...cites.map((item) => item.services))} ${plural(Math.max(...cites.map((item) => item.services)), 'serwisie', 'serwisach', 'serwisach')}) — ` +
+              'nie da się wskazać właściciela na podstawie publikacji. Poniżej ustalenia z samego blockchaina.',
+            layer: 'fact',
+          },
+        ]
+      : [];
+  // W sprawie samego adresu zdania o usługach mówią o adresie, nie o osobie.
+  const services = serviceSentences(input.serviceLinks).map((item) =>
+    input.addressOnly ? { ...item, text: item.text.replace(/^Podmiot jest powiązany/, 'Badany adres jest powiązany') } : item,
+  );
+  const result: KeyFinding[] = [...leadExplanations, ...addressLead, ...personSentences(input), ...pendingSentences, ...proofSentences, ...services, ...addressSentence(best)];
 
   const years = Object.entries(input.cashOutPlnByYear).sort(([a], [b]) => a.localeCompare(b));
   const total = years.reduce((sum, [, value]) => sum + value, 0);
@@ -168,7 +218,7 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
     });
   }
 
-  const cited = [...input.mentions].sort((a, b) => b.authors - a.authors)[0];
+  const cited = [...input.mentions].filter((item) => cites.length === 0 || item.identifier.type !== 'crypto_address').sort((a, b) => b.authors - a.authors)[0];
   if (cited) {
     result.push({
       text: `Identyfikator „${cited.identifier.value}” wymienia ${cited.atLeast ? 'co najmniej ' : ''}${cited.authors} innych autorów w ${cited.services} ${plural(cited.services, 'serwisie', 'serwisach', 'serwisach')} (${cited.documents} publikacji) — to wzmianki o podmiocie, a nie jego profile; nie przypisano ich podmiotowi.`,

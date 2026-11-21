@@ -237,10 +237,18 @@ test('indeks publikacji: monitoring zapisuje, analiza osoby i adresu z niego kor
   const [found] = byAuthor.dossier.findings[0].evidence;
   assert.deepEqual([found.connectorId, found.service, found.url], ['corpus', 'forum.example', 'https://forum.example/t/1']);
 
-  // Analiza samego adresu znajduje autora publikacji.
-  const byAddress = (await send('POST', '/api/quick', { value: BTC_C })).json();
+  // Analiza samego adresu znajduje publikację w indeksie, ale wypowiedź na forum to wzmianka —
+  // jej autor nie jest wskazywany jako właściciel.
+  const byAddress = (await send('POST', '/api/quick', { value: BTC_C, period: { from: '2024-01-01', to: '2025-12-31' } })).json();
   assert.equal(byAddress.case.query.identifiers[0].type, 'crypto_address');
-  assert.equal(byAddress.dossier.findings[0].evidence[0].author, 'marek_krk');
+  assert.deepEqual(byAddress.dossier.persons, []);
+  assert.deepEqual(byAddress.dossier.mentions, [{ identifier: { type: 'crypto_address', value: BTC_C }, documents: 1, authors: 1, services: 1 }]);
+  assert.match(byAddress.dossier.keyFindings[0].text, /^Adres jest wymieniany w cudzych publikacjach \(co najmniej 1 autor w 1 serwisie\) — nie da się wskazać właściciela/);
+  // Okres wskazany przez analityka jest zapisany przy analizie i opisany w adnotacji adresu.
+  assert.deepEqual((await app.inject(`/api/runs/${byAddress.dossier.runId}`)).json().period, { from: '2024-01-01', to: '2025-12-31' });
+  assert.ok(byAddress.dossier.findings[0].annotations.some((note: string) => note.includes('pełna historia adresu') && note.includes('od 2024-01-01 do 2025-12-31')));
+  assert.equal((await send('POST', '/api/quick', { value: BTC_C, period: { from: 'wczoraj' } })).statusCode, 400);
+  assert.equal((await send('POST', '/api/quick', { value: BTC_C, period: { from: '2025-01-01', to: '2024-01-01' } })).statusCode, 400);
   // Fraza w treści: e-mail podany w poście.
   const byEmail = (await send('POST', '/api/quick', { value: 'marek@krakow-btc.example' })).json();
   assert.equal(byEmail.dossier.findings[0].address, BTC_C);

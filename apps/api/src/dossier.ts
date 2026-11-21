@@ -20,6 +20,8 @@ import type { AnalysisFinding } from './analysis.ts';
 import { detectReplacements } from './diff.ts';
 import { buildProfileNodes, decisionMatchesProfile, sightingsOf } from './entity.ts';
 import { formatDate } from './format.ts';
+import { buildExplanations, buildUnconfirmedAddresses } from './explain.ts';
+import type { Explanation, ServiceLabel, UnconfirmedAddress } from './explain.ts';
 import { buildGraph } from './graph.ts';
 import { addressKey, sightingKey } from './intel.ts';
 import type { MentionSummary, RunIntel } from './intel.ts';
@@ -82,6 +84,10 @@ export interface DossierView extends Dossier {
   partial: boolean;
   /** Identyfikatory podmiotu wymieniane w publikacjach innych autorów — wzmianki, nie profile. */
   mentions: MentionSummary[];
+  /** Adresy znalezione, ale nieprzypisane podmiotowi — sekcja „Adresy do potwierdzenia”. */
+  unconfirmedAddresses: UnconfirmedAddress[];
+  /** Dlaczego nie ma adresów albo dowodu spieniężenia i co można zrobić. */
+  explanations: Explanation[];
 }
 
 export interface DossierInput {
@@ -94,6 +100,10 @@ export interface DossierInput {
   rules: ScoreRules;
   now: Date;
   matchService?: ExternalServiceMatcher;
+  /** Publicznie oznaczone adresy usług (zbiór etykiet modułu danych blockchain). */
+  serviceLabels?: ServiceLabel[];
+  /** Analiza wykonana w trybie głębokim. */
+  deep?: boolean;
 }
 
 /** Obowiązuje najnowsza decyzja dla danego celu; wcześniejsze zostają tylko w rejestrze. */
@@ -113,6 +123,14 @@ export function buildDossier(input: DossierInput): DossierView {
   const sightings = sightingsOf(run, input.intel);
   const nodes = buildProfileNodes(run, sightings);
 
+  const analystAddresses = new Set(
+    run.query.identifiers
+      .filter((identifier) => identifier.type === 'crypto_address')
+      .map((identifier) => validateAddress(identifier.value.trim()))
+      .filter((valid) => valid !== null)
+      .map((valid) => addressKey(valid)),
+  );
+
   // ---------- Osoby ----------
   const profileDecisions = new Map<string, Decision>();
   for (const decision of latestDecisions(input.decisions, 'profile')) {
@@ -128,6 +146,12 @@ export function buildDossier(input: DossierInput): DossierView {
     rules,
     authorComparisons: input.intel?.authorComparisons,
   });
+  // Analiza samego adresu, który jest powszechnie cytowany: publikacje nie wskazują właściciela,
+  // więc teczka nie podaje żadnego kandydata na osobę (autorzy są policzeni we wzmiankach).
+  const addressOnly = run.query.identifiers.length > 0 && run.query.identifiers.every((item) => item.type === 'crypto_address');
+  const subjectFindings = (run.findings as AnalysisFinding[]).filter((finding) => analystAddresses.has(addressKey(finding)));
+  const ownerUnknown = addressOnly && subjectFindings.length > 0 && subjectFindings.every((finding) => finding.widelyCited);
+  if (ownerUnknown) persons.length = 0;
   const main = persons[0];
   const mainProfileIds = new Set(main && main.probability > 0 ? main.profileIds : []);
   const mainNodes = nodes.filter((node) => mainProfileIds.has(node.card.id));
@@ -166,6 +190,8 @@ export function buildDossier(input: DossierInput): DossierView {
         const note =
           node.card.decision === 'rejected'
             ? `Pominięto ślad z profilu ${node.card.id} odrzuconego decyzją analityka.`
+            : ownerUnknown
+            ? `Pominięto ślad z profilu ${node.card.id}: adres jest powszechnie cytowany, więc autor publikacji nie jest wskazywany jako właściciel.`
             : `Pominięto ślad z profilu ${node.card.id}, zaliczonego do innego kandydata (${personOfProfile.get(node.card.id)}) — nie podnosi wyniku osoby głównej.`;
         if (!annotations.includes(note)) annotations.push(note);
       } else {
@@ -198,7 +224,7 @@ export function buildDossier(input: DossierInput): DossierView {
       };
     }
     const widelyCited = finding.confidence.ledger.find((entry) => entry.rule === 'exclusion.widely_cited');
-    if (widelyCited && !confidence.excluded && unrelatedPublishers > 0) {
+    if (widelyCited && !confidence.excluded && unrelatedPublishers > 0 && !analystAddresses.has(addressKey(finding))) {
       confidence = {
         score: 0,
         tier: [...rules.tiers].sort((a, b) => a.min - b.min)[0]!.label,
@@ -220,7 +246,7 @@ export function buildDossier(input: DossierInput): DossierView {
         nextSteps: [],
       };
     } else if (decision) {
-      annotations.push(`Adres potwierdzony przez analityka — ${decisionNote(decision)}. Decyzja odnotowana; wynik liczony bez zmian.`);
+      annotations.push(`Adres potwierdzony przez analityka — ${decisionNote(decision)}. Adres jest liczony jak podany w sprawie: wchodzi do sum, usług i dowodu spieniężenia.`);
     }
     const personAddress = main?.addresses.find((item) => item.key === addressKey(finding))?.probability ?? 0;
     return {
@@ -236,14 +262,10 @@ export function buildDossier(input: DossierInput): DossierView {
   sortFindings(findings);
 
   // ---------- Usługi, sumy, priorytet ----------
-  const analystAddresses = new Set(
-    run.query.identifiers
-      .filter((identifier) => identifier.type === 'crypto_address')
-      .map((identifier) => validateAddress(identifier.value.trim()))
-      .filter((valid) => valid !== null)
-      .map((valid) => addressKey(valid)),
-  );
-  const { linked } = summarizeFindings(findings, analystAddresses, input.now);
+  // Adres potwierdzony decyzją analityka jest liczony tak samo jak adres podany w sprawie.
+  const confirmedAddresses = new Set(findings.filter((finding) => finding.decision === 'confirmed').map(addressKey));
+  const subjectAddresses = new Set([...analystAddresses, ...confirmedAddresses]);
+  const { linked } = summarizeFindings(findings, subjectAddresses, input.now);
 
   const evidenceIdOfDoc = new Map(findings.flatMap((finding) => finding.evidence.map((item) => [sightingKey(item), item.id] as const)));
   const mentionSources: MentionSource[] = mainNodes.flatMap((node) =>
@@ -264,7 +286,24 @@ export function buildDossier(input: DossierInput): DossierView {
     ]),
   ].slice(0, 10);
   const linkedKeys = new Set(linked.map(addressKey));
-  const cashOutProof = buildCashOutProof({ findings, linkedKeys, analystAddresses, main });
+  const unconfirmedAddresses = ownerUnknown ? [] : buildUnconfirmedAddresses({ findings, linkedKeys, persons, nodes, personOfProfile, matcher: input.matchService });
+  const cashOutProof = buildCashOutProof({
+    findings,
+    linkedKeys,
+    analystAddresses,
+    confirmedAddresses,
+    main,
+    unconfirmed: new Map(
+      unconfirmedAddresses.map((item) => [
+        addressKey(item),
+        {
+          probability: item.personAddressProbability,
+          origin: item.sources[0] ? `z profilu ${item.sources[0].service}${item.sources[0].author ? ` „${item.sources[0].author}”` : ''}` : 'o słabej podstawie',
+        },
+      ]),
+    ),
+  });
+  const confirmedProofs = cashOutProof.filter((proof) => !proof.ownerUnconfirmed);
   const serviceLinks = buildServiceLinks({
     subjectFindings: linked,
     publishedServiceFindings: findings.filter((finding) => finding.confidence.ledger[0]?.rule === 'exclusion.address_class'),
@@ -272,7 +311,7 @@ export function buildDossier(input: DossierInput): DossierView {
     accountNames,
     matcher: input.matchService,
   });
-  const summary = summarizeFindings(findings, analystAddresses, input.now, serviceLinks, cashOutProof[0]?.combinedConfidence);
+  const summary = summarizeFindings(findings, subjectAddresses, input.now, serviceLinks, confirmedProofs[0]?.combinedConfidence);
 
   // ---------- Reszta obrazu ----------
   const trail = input.intel?.trail ?? [];
@@ -288,10 +327,25 @@ export function buildDossier(input: DossierInput): DossierView {
     })),
   ];
   const replacements = detectReplacements({ ...run, findings });
-  const relatedPersons = buildRelatedPersons({ run: { ...run, findings }, linked, sightings, subjectProfiles: mainNodes, otherCases: input.otherCases, rules });
-  const profiles = nodes
+  const relatedPersons = buildRelatedPersons({ run: { ...run, findings }, linked, sightings, subjectProfiles: mainNodes, otherCases: input.otherCases, rules, addressOnly });
+  const profiles = (ownerUnknown ? [] : nodes)
     .map((node) => node.card)
     .sort((a, b) => Number(mainProfileIds.has(b.id)) - Number(mainProfileIds.has(a.id)) || b.identityScore - a.identityScore);
+
+  const explanations = buildExplanations({
+    identifiers: run.query.identifiers,
+    findings,
+    linked,
+    unconfirmed: unconfirmedAddresses,
+    confirmedProofs: confirmedProofs.length,
+    cashOutPlnTotal: summary.cashOutPlnTotal,
+    profiles,
+    connectorCount: run.connectors.length,
+    deep: input.deep === true,
+    partial: input.intel?.partial === true,
+    serviceLabels: input.serviceLabels,
+    matcher: input.matchService,
+  });
 
   return {
     caseId: caseSummary.id,
@@ -317,19 +371,21 @@ export function buildDossier(input: DossierInput): DossierView {
     summary: null,
     partial: input.intel?.partial === true,
     mentions: input.intel?.mentions ?? [],
+    unconfirmedAddresses,
+    explanations,
     graph: buildGraph({
       subjectLabel: main?.fullName ?? caseSummary.name,
       caseName: caseSummary.name,
       identifiers,
-      profiles: nodes,
+      profiles: ownerUnknown ? [] : nodes,
       mainProfileIds,
       findings,
       serviceLinks,
       relatedPersons,
       trail,
-      proofs: cashOutProof,
+      proofs: confirmedProofs,
     }),
-    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: cashOutProof }),
+    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: confirmedProofs }),
     totals: {
       linkedAddresses: summary.linkedAddresses,
       excludedAddresses: summary.excludedAddresses,
@@ -337,11 +393,17 @@ export function buildDossier(input: DossierInput): DossierView {
       cashOutPlnByYear: summary.cashOutPlnByYear,
       cashOutPlnTotal: summary.cashOutPlnTotal,
       priority: summary.priority,
-      priorityReasons: summary.priorityReasons,
+      priorityReasons: addressOnly
+        ? [...summary.priorityReasons, 'Sprawa dotyczy adresu: sumy i priorytet opisują badany adres, a nie osobę.']
+        : summary.priorityReasons,
     },
     decisions: input.decisions,
     keyFindings: buildKeyFindings({
+      addressOnly,
+      widelyCited: subjectFindings.some((finding) => finding.widelyCited),
       mentions: input.intel?.mentions ?? [],
+      explanations,
+      unconfirmed: unconfirmedAddresses,
       proofs: cashOutProof,
       persons,
       profiles,

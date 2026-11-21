@@ -22,7 +22,13 @@ export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAd
 const CONNECTOR_TIMEOUTS: Record<string, number> = { 'deep-search': 30_000 };
 
 /** Analiza zapisana w bazie: kontrakt `AnalysisRun` plus tryb, w którym ją wykonano. */
-export type StoredRun = AnalysisRun & { depth?: RunDepth };
+export type StoredRun = AnalysisRun & { depth?: RunDepth; period?: RunPeriod };
+
+/** Okres, którego ma dotyczyć historia blockchain (daty ISO 8601). */
+export interface RunPeriod {
+  from?: string;
+  to?: string;
+}
 
 export interface RunProgress {
   runId: string;
@@ -47,6 +53,7 @@ export interface RunProgress {
 export interface RunOptions {
   connectors: SourceConnector[];
   depth?: RunDepth;
+  period?: RunPeriod;
 }
 
 export interface RunEngineDeps {
@@ -105,6 +112,7 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
         maxChainAddresses: limits.maxChainAddresses,
         timeoutMs: limits.requestTimeoutMs,
         connectorTimeouts: CONNECTOR_TIMEOUTS,
+        period: options.period,
         normalizeText: deps.normalizeText,
         totalTimeoutMs: limits.totalTimeoutMs,
         concurrency: limits.concurrency,
@@ -147,6 +155,7 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
       log: [],
       // Tryb standardowy nie dopisuje pola — zapis pozostaje zgodny z wcześniejszymi analizami.
       ...(depth === 'deep' ? { depth } : {}),
+      ...(options.period?.from || options.period?.to ? { period: options.period } : {}),
     };
     await storage.saveRun(run);
     const state: RunProgress = {

@@ -372,3 +372,94 @@ test('limit czasu całej analizy: wynik częściowy zamiast błędu', async () =
   assert.ok(stages.includes('scoring'));
   assert.equal(dossierOf(result, query).partial, true);
 });
+
+// ---------- Analiza samego adresu: nie wolno wskazywać przypadkowych osób ----------
+
+const addressQuery = { identifiers: [{ type: 'crypto_address' as const, value: BTC_A }] };
+/** Głośny adres: komentują go dziesiątki osób na forach. */
+const commenters = (count: number, extra: { url: string; author: string; category: 'own_profile' | 'sale_offer' | 'forum_post'; text: string }[] = []) =>
+  fakeConnector('deep-search', 'news.example', ['crypto_address'], (identifier) => [
+    ...Array.from({ length: count }, (_, index) => ({
+      url: `https://news.example/item/${index}`,
+      author: `komentujacy_${index}`,
+      category: 'forum_post' as const,
+      identityMatch: 'name_only' as const,
+      text: `Hakerzy podali adres ${identifier.value} — nie wysyłajcie tam nic!`,
+    })),
+    ...extra,
+  ]);
+
+test('sam adres, powszechnie cytowany: żadnych kandydatów na osobę, a ustalenia z blockchaina zostają', async () => {
+  const contexts: { address: string; history?: string; since?: string; until?: string }[] = [];
+  const chain = chainWith({ [BTC_A]: { trails: [TWO_HOPS] } });
+  const provider = {
+    ...chain,
+    getActivity: async (network: 'bitcoin', address: string, context: { history?: string; since?: string; until?: string; log(message: string): void }) => {
+      contexts.push({ address, history: context.history, since: context.since, until: context.until });
+      return chain.getActivity(network, address, context);
+    },
+  };
+  const result = await runAnalysis({ query: addressQuery, connectors: [commenters(14)], chainProviders: [provider], period: { from: '2020-07-01', to: '2020-12-31' } });
+  const [finding] = result.findings;
+
+  // Komentujący nie są śladami ani profilami podmiotu — tylko policzonymi wzmiankami.
+  assert.equal(finding!.evidence.length, 0);
+  assert.equal(finding!.unrelatedPublishers, 14);
+  assert.equal(finding!.widelyCited, true);
+  assert.deepEqual(result.intel.mentions, [{ identifier: addressQuery.identifiers[0], documents: 14, authors: 14, services: 1 }]);
+  assert.ok(result.intel.sightings.every((item) => item.role !== 'subject'));
+  // Adres podany przez analityka nie jest wykluczany: łańcuch został przeanalizowany w pełnej historii.
+  assert.equal(finding!.confidence.excluded, false);
+  assert.deepEqual(contexts, [{ address: BTC_A, history: 'full', since: '2020-07-01', until: '2020-12-31' }]);
+  assert.ok(finding!.notes!.some((note) => note.startsWith('Zakres historii blockchain: pełna historia adresu') && note.includes('od 2020-07-01 do 2020-12-31')));
+  assert.ok(finding!.notes!.some((note) => note.includes('pozostaje przedmiotem sprawy')));
+
+  const dossier = dossierOf(result, addressQuery);
+  assert.deepEqual(dossier.persons, []);
+  assert.deepEqual(dossier.profiles, []);
+  assert.deepEqual(dossier.relatedPersons, []);
+  assert.equal(
+    dossier.keyFindings[0]!.text,
+    'Adres jest powszechnie cytowany (co najmniej 14 autorów w 1 serwisie) — nie da się wskazać właściciela na podstawie publikacji. Poniżej ustalenia z samego blockchaina.',
+  );
+  assert.ok(dossier.keyFindings.every((item) => !item.text.includes('Najbardziej prawdopodobna osoba') && !item.text.includes('komentujacy_')));
+  assert.ok(!dossier.graph.nodes.some((node) => node.kind === 'profile' || node.kind === 'person'));
+
+  // Dowód spieniężenia i usługi liczone dla adresu, bez osoby.
+  const [proof] = dossier.cashOutProof;
+  assert.deepEqual([proof!.person, proof!.addressBasis, proof!.personAddressProbability, proof!.combinedConfidence], [null, 'analyst', 100, 85]);
+  assert.match(proof!.statement, /^Środki z badanego adresu 1A1zP1eP5Q…v7DivfNa: udokumentowano przekazanie 0,4 BTC \(ok\. 130 tys\. zł\) do usługi Binance w 2 krokach — pewność ścieżki 85%\.$/);
+  assert.equal(dossier.keyFindings[1]!.text, proof!.statement);
+  assert.equal(dossier.totals.linkedAddresses, 1);
+  assert.ok(dossier.serviceLinks.some((link) => link.name === 'Binance'));
+  assert.equal(dossier.totals.priorityReasons.at(-1), 'Sprawa dotyczy adresu: sumy i priorytet opisują badany adres, a nie osobę.');
+});
+
+test('sam adres: kandydatem jest tylko autor z mocną podstawą własności albo wskazany przez model', async () => {
+  // Jeden autor z samą wypowiedzią na forum to wzmianka, nie kandydat.
+  const single = await runAnalysis({ query: addressQuery, connectors: [commenters(1)], chainProviders: [fakeProvider()] });
+  assert.deepEqual(dossierOf(single, addressQuery).persons, []);
+  assert.match(dossierOf(single, addressQuery).keyFindings[0]!.text, /^Adres jest wymieniany w cudzych publikacjach \(co najmniej 1 autor w 1 serwisie\)/);
+
+  // Oferta z adresem do wpłaty jest podstawą własności; komentujący obok pozostają wzmiankami.
+  const offer = { url: 'https://targ.example/oferta/1', author: 'sprzedawca', category: 'sale_offer' as const, text: `Sprzedam laptopa, wpłata na ${BTC_A}` };
+  const withOwner = await runAnalysis({ query: addressQuery, connectors: [commenters(2, [offer])], chainProviders: [fakeProvider()] });
+  assert.deepEqual(withOwner.findings[0]!.evidence.map((item) => item.author), ['sprzedawca']);
+  assert.equal(withOwner.findings[0]!.unrelatedPublishers, 2);
+  const dossier = dossierOf(withOwner, addressQuery);
+  assert.deepEqual(dossier.persons.map((person) => person.profileIds), [['news.example|sprzedawca']]);
+  assert.deepEqual(dossier.mentions.map((item) => item.authors), [2]);
+  assert.deepEqual(dossier.relatedPersons, []);
+
+  // Ten sam właściciel przy adresie powszechnie cytowanym: teczka nikogo nie wskazuje.
+  const famous = await runAnalysis({ query: addressQuery, connectors: [commenters(12, [offer])], chainProviders: [fakeProvider()] });
+  const famousDossier = dossierOf(famous, addressQuery);
+  assert.deepEqual([famousDossier.persons.length, famousDossier.profiles.length], [0, 0]);
+  assert.ok(famousDossier.findings[0]!.annotations!.some((note) => note.includes('autor publikacji nie jest wskazywany jako właściciel')));
+
+  // Model (gdy włączony) może wskazać autora wypowiedzi, który podaje adres jako własny — tylko z cytatem.
+  const ai = fakeAi((input) => (input.author === 'komentujacy_0' ? { ownership: 'own_address', quote: 'podali adres' } : { ownership: 'own_address', quote: '' }));
+  const byModel = await runAnalysis({ query: addressQuery, connectors: [commenters(3)], chainProviders: [fakeProvider()], ai });
+  assert.deepEqual(byModel.findings[0]!.evidence.map((item) => item.author), ['komentujacy_0']);
+  assert.equal(byModel.findings[0]!.unrelatedPublishers, 2);
+});

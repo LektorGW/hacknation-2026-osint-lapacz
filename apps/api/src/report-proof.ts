@@ -9,6 +9,7 @@ import { calc, dateTime, esc, fact, inference, link } from './report-html.ts';
 const BASIS_LABEL: Record<CashOutProof['addressBasis'], string> = {
   published: 'adres opublikowany przez podmiot',
   analyst: 'adres podany przez analityka',
+  confirmed: 'adres potwierdzony decyzją analityka',
   cluster: 'adres z klastra portfela (heurystyka)',
 };
 
@@ -46,7 +47,7 @@ function renderProof(proof: CashOutProof, number: number): string {
     }`);
 
   return `<section class="adres">
-    <h3>Ustalenie ${number}: ${esc(proof.person?.fullName ?? 'osoba ze sprawy')} → ${esc(trail.serviceName)}</h3>
+    <h3>${proof.ownerUnconfirmed ? 'Ustalenie warunkowe (adres do potwierdzenia)' : 'Ustalenie'} ${number}: ${esc(proof.person?.fullName ?? (proof.addressBasis === 'analyst' ? 'badany adres' : 'osoba ze sprawy'))} → ${esc(proof.serviceName)}</h3>
     <p>${esc(proof.statement)}</p>
     <p class="meta">Adres początkowy: <span class="mono">${esc(proof.address)}</span> — ${esc(BASIS_LABEL[proof.addressBasis])}${
       proof.cluster ? `; portfel ustalony od adresu <span class="mono">${esc(proof.cluster.seed)}</span> (${esc(proof.cluster.reason)})` : ''

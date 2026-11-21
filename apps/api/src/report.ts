@@ -330,6 +330,13 @@ function renderKeyFindings(dossier: DossierView): string {
         ? `<p><em>Streszczenie wygenerowane przez model językowy (${esc(dossier.summary.model)}, wersja polecenia ${esc(dossier.summary.promptVersion)}) z ustaleń poniżej — nie jest samodzielnym ustaleniem:</em><br>${esc(dossier.summary.text)}</p>`
         : ''
     }
+    ${
+      dossier.explanations.length > 0
+        ? `<p><strong>Czego brakuje i co można zrobić:</strong></p><ul>${dossier.explanations
+            .map((item) => `<li>${esc(item.text)}<ul>${item.suggestions.map((hint) => `<li>${esc(hint)}</li>`).join('')}</ul></li>`)
+            .join('')}</ul>`
+        : ''
+    }
     <ol>${dossier.keyFindings.map((item) => `<li>${layerTag(item.layer)} ${esc(item.text)}</li>`).join('')}</ol>
     <p><span class="priorytet">Priorytet sprawy: ${dossier.totals.priority}/100</span></p>
     <ul>${dossier.totals.priorityReasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>
@@ -510,6 +517,28 @@ ${renderPersons(dossier)}
 
 <h2>Dowód spieniężenia</h2>
 ${renderProofSection(dossier.cashOutProof)}
+
+${
+  dossier.unconfirmedAddresses.length > 0
+    ? `<h2>Adresy do potwierdzenia</h2>
+      ${inference(`<p>Adresy znalezione w analizie, których nie przypisano podmiotowi. Nie wchodzą do sum ani priorytetu; decyzja analityka „potwierdzony” dla profilu lub adresu przeliczy teczkę.</p>
+        <table>
+          <tr><th>Adres</th><th class="liczba">Prawdopodobieństwo osoba–adres</th><th>Dlaczego niepotwierdzony</th><th>Aktywność w blockchainie</th></tr>
+          ${dossier.unconfirmedAddresses
+            .map(
+              (item) => `<tr><td class="mono">${esc(item.address)}<br><span class="meta">${esc(NETWORK_LABEL[item.network] ?? item.network)}; źródła: ${item.sources.map((source) => link(source.url, source.service)).join(', ')}</span></td>
+                <td class="liczba">${item.personAddressProbability}%</td>
+                <td><ul>${item.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul></td>
+                <td>${
+                  item.chain
+                    ? `przelewów: ${item.chain.transfers}; otrzymano ${esc(amount(item.chain.totalReceived))}, wysłano ${esc(amount(item.chain.totalSent))} ${esc(item.chain.asset)}; usługi: ${esc(item.chain.services.join(', ') || 'brak')}; ścieżek do usług: ${item.chain.trails}`
+                    : 'nie analizowano'
+                }</td></tr>`,
+            )
+            .join('')}
+        </table>`)}`
+    : ''
+}
 
 <h2>Powiązania z giełdami, portfelami i usługami</h2>
 ${renderServiceSection(dossier.serviceLinks)}
