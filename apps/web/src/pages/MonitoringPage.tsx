@@ -1,18 +1,23 @@
-// Monitoring: cykliczny przegląd publicznych źródeł, lista źródeł i strumień trafień.
-import { useMemo, useState } from 'react';
+// Monitoring: monitorowane sprawy (automatyczne ponawianie analizy i zmiany od poprzedniej) oraz,
+// jako sekcja dodatkowa, cykliczny przegląd publicznych źródeł z listą źródeł i strumieniem trafień.
+import { useEffect, useMemo, useState } from 'react';
 import type { MonitorSourceStatus, MonitorStatus, ScoredSignal, WatchHit } from '@olcys/core';
-import { api } from '../api.ts';
-import type { MonitorSettings } from '../api.ts';
-import type { CorpusStats } from '../proof.ts';
+import { api, trackRun } from '../api.ts';
+import type { CashOutChange, MonitorSettings, WatchedCase } from '../api.ts';
+import type { CorpusStats, Depth, RunProgress } from '../proof.ts';
 import { paginate } from '../proof.ts';
+import { DiffView } from '../components/DiffView.tsx';
+import { AnalysisProgress } from '../components/Progress.tsx';
+import { Disclosure } from '../components/ui/Disclosure.tsx';
+import { DEFAULT_WATCH_MINUTES, changeSummary, intervalLabel } from '../stats.ts';
 import { DEFAULT_HIT_FILTER, LIMIT_RANGE, POLISH_NEXUS_THRESHOLD, countDismissed, filterHits, hitBasisLabel, lastRunRows, parseLimit, sortHits } from '../monitor.ts';
 import type { HitFilter, MonitorHit, MonitorStatusView } from '../monitor.ts';
 import type { TextInsight } from '@olcys/core';
 import { Bar, Crumbs, EmptyState, ErrorBox, ExternalLink, LayerTag, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { KnownFromCases } from '../components/common.tsx';
-import { fmtDateTime, fmtPln } from '../format.ts';
-import { NETWORK_LABEL, NETWORK_SHORT } from '../labels.ts';
+import { fmtAmount, fmtDate, fmtDateTime, fmtPln } from '../format.ts';
+import { NETWORK_LABEL, NETWORK_SHORT, STATUS_LABEL } from '../labels.ts';
 import { href, navigate } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
 
@@ -541,7 +546,238 @@ function Hits({ hits, onChanged }: { hits: MonitorHit[]; onChanged: () => void }
   );
 }
 
+/** Nowe przelewy do giełd i usług od poprzedniej analizy. */
+function NewCashOuts({ items }: { items: CashOutChange[] }) {
+  return (
+    <section className="diff-block">
+      <h4>Nowe przelewy do usług ({items.length})</h4>
+      {items.length === 0 ? (
+        <p className="muted">Brak nowych przelewów do giełd ani usług.</p>
+      ) : (
+        <ul className="plain-list">
+          {items.map((item) => (
+            <li key={`${item.address}-${item.txid}-${item.counterparty}`} className="cashout-change">
+              <strong>{item.counterpartyLabel ?? 'usługa bez nazwy'}</strong> · {fmtDateTime(item.time)} · {fmtAmount(item.amount, item.asset)}
+              {item.valuePln !== undefined && <> · ok. {fmtPln(item.valuePln)}</>}
+              <span className="muted small">
+                {' '}
+                z adresu <ShortAddress value={item.address} />
+                {item.explorerUrl && (
+                  <>
+                    {' · '}
+                    <ExternalLink url={item.explorerUrl}>transakcja</ExternalLink>
+                  </>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** Jedna monitorowana sprawa: harmonogram, ostatnia analiza, zmiany i „Odśwież teraz”. */
+function WatchedCaseCard({ item, intervals, onChanged }: { item: WatchedCase; intervals: number[]; onChanged: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<RunProgress>();
+  const [refreshing, setRefreshing] = useState(false);
+  const summary = item.changes ? changeSummary(item.changes) : [];
+  const running = refreshing || item.running;
+  const options = [...new Set([...intervals, item.everyMinutes])].sort((a, b) => a - b);
+
+  async function update(settings: { everyMinutes: number; depth?: Depth } | null, message: string) {
+    setBusy(true);
+    try {
+      await api.setWatch(item.caseId, settings);
+      toast.success(message);
+      onChanged();
+    } catch (error) {
+      toast.error(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refresh() {
+    setRefreshing(true);
+    setProgress(undefined);
+    try {
+      const handle = await api.refreshWatched(item.caseId);
+      onChanged();
+      if (handle.status === 'running') await trackRun(handle.id, setProgress);
+      toast.success(`Odświeżono sprawę „${item.name}”.`);
+    } catch (error) {
+      toast.error(error);
+    } finally {
+      setRefreshing(false);
+      onChanged();
+    }
+  }
+
+  return (
+    <article className="card watch-card">
+      <header className="watch-card-head">
+        <div>
+          <h3>
+            <a href={href.case(item.caseId)}>{item.name}</a>
+          </h3>
+          <p className="muted small">
+            monitorowana od {fmtDate(item.since)} · tryb {item.depth === 'deep' ? 'głęboki' : 'szybki'}
+          </p>
+        </div>
+        <div className="watch-card-actions">
+          <button type="button" className="button button-primary button-small" onClick={refresh} disabled={running || busy}>
+            {running ? 'Analiza w toku…' : 'Odśwież teraz'}
+          </button>
+          <button type="button" className="button button-small button-quiet" onClick={() => update(null, `Wyłączono monitorowanie sprawy „${item.name}”.`)} disabled={busy}>
+            Przestań monitorować
+          </button>
+        </div>
+      </header>
+      <dl className="watch-meta">
+        <div>
+          <dt>Ostatnia analiza</dt>
+          <dd>
+            {item.lastRun ? (
+              <>
+                {fmtDateTime(item.lastRun.startedAt)}
+                {item.lastRun.status !== 'completed' && <span className="muted"> · {STATUS_LABEL[item.lastRun.status] ?? item.lastRun.status}</span>}
+              </>
+            ) : (
+              'jeszcze nie było'
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Następna analiza</dt>
+          <dd>{fmtDateTime(item.nextRunAt)}</dd>
+        </div>
+        <div>
+          <dt>Najmocniejsze powiązanie</dt>
+          <dd>{item.lastRun?.status === 'completed' ? <ScoreBadge score={item.lastRun.topScore} title="Wskaźnik Pewności" /> : '—'}</dd>
+        </div>
+        <div>
+          <dt>
+            <label htmlFor={`co-${item.caseId}`}>Analiza</label>
+          </dt>
+          <dd>
+            <select
+              id={`co-${item.caseId}`}
+              value={item.everyMinutes}
+              disabled={busy}
+              onChange={(event) => {
+                const everyMinutes = Number(event.target.value);
+                update({ everyMinutes, depth: item.depth }, `Sprawa „${item.name}” będzie analizowana ${intervalLabel(everyMinutes)}.`);
+              }}
+            >
+              {options.map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {intervalLabel(minutes)}
+                </option>
+              ))}
+            </select>
+          </dd>
+        </div>
+      </dl>
+      {item.lastError && (
+        <p className="status-box status-box-warn" role="alert">
+          Ostatnia próba uruchomienia analizy nie powiodła się: {item.lastError}
+        </p>
+      )}
+      {running && progress && <AnalysisProgress title={`Szukam powiązań: „${item.name}”…`} progress={progress} depth={item.depth} />}
+      {item.changes && item.compared ? (
+        <Disclosure
+          title={summary.length > 0 ? `Co się zmieniło: ${summary.join(' · ')}` : 'Co się zmieniło: bez zmian'}
+          meta={`${fmtDateTime(item.compared.from.startedAt)} → ${fmtDateTime(item.compared.to.startedAt)}`}
+          className={summary.length > 0 ? 'watch-changes has-changes' : 'watch-changes'}
+        >
+          <DiffView diff={item.changes.diff} />
+          <NewCashOuts items={item.changes.newCashOuts} />
+          <p className="muted small">
+            Porównanie dwóch ostatnich zakończonych analiz. Pełna historia: <a href={href.case(item.caseId, 'analizy')}>Historia analiz w teczce</a>.
+          </p>
+        </Disclosure>
+      ) : (
+        <p className="muted small">Zmiany pojawią się po kolejnej analizie — porównujemy zawsze dwie ostatnie.</p>
+      )}
+    </article>
+  );
+}
+
+function WatchedCases() {
+  const loaded = useAsync(() => api.listWatched(), 'watch');
+  const data = loaded.data;
+  const anyRunning = data?.items.some((item) => item.running) ?? false;
+
+  // Gdy któraś analiza trwa, lista odświeża się sama.
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = setTimeout(loaded.reload, 5000);
+    return () => clearTimeout(timer);
+  }, [anyRunning, data, loaded.reload]);
+
+  return (
+    <section aria-labelledby="monitorowane-sprawy">
+      <header className="section-head">
+        <div>
+          <h2 id="monitorowane-sprawy">Monitorowane sprawy</h2>
+          <p className="muted small">
+            Zaznaczone polem „Monitoruj” w historii spraw na <a href={href.dashboard()}>pulpicie</a>. Program sam ponawia ich analizę i pokazuje, co się zmieniło.
+          </p>
+        </div>
+      </header>
+      {loaded.error && <ErrorBox message={loaded.error} onRetry={loaded.reload} />}
+      {!data && loaded.loading && !loaded.error && <Skeleton blocks={2} />}
+      {data === null && (
+        <p className="notice" role="note">
+          Monitorowanie spraw wymaga nowszej wersji usługi analizy — będzie dostępne po jej ponownym uruchomieniu.
+        </p>
+      )}
+      {data && data.items.length === 0 && (
+        <EmptyState title="Nie monitorujesz jeszcze żadnej sprawy" action={<a className="button" href={href.dashboard()}>Przejdź do historii spraw</a>}>
+          Zaznacz „Monitoruj” przy sprawie na pulpicie — analiza będzie ponawiana automatycznie (domyślnie {intervalLabel(DEFAULT_WATCH_MINUTES)}, w trybie głębokim).
+        </EmptyState>
+      )}
+      {data && data.items.length > 0 && (
+        <div className="watch-list">
+          {data.items.map((item) => (
+            <WatchedCaseCard key={item.caseId} item={item} intervals={data.intervals} onChanged={loaded.reload} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Przegląd źródeł: monitoring publikacji z adresami (dawny główny widok). Wczytywany dopiero po rozwinięciu. */
+function SourceSweepSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="disclosure source-sweep" onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+      <summary>
+        <span className="disclosure-chevron" aria-hidden="true" />
+        <span className="disclosure-title">Przegląd źródeł — nowe publikacje z adresami krypto</span>
+        <span className="disclosure-meta">cykliczny przegląd forów i serwisów, niezależny od spraw</span>
+      </summary>
+      <div className="disclosure-body">{open && <SourceSweep />}</div>
+    </details>
+  );
+}
+
 export function MonitoringPage() {
+  return (
+    <div className="page">
+      <Crumbs items={[{ label: 'Pulpit', href: href.dashboard() }, { label: 'Monitoring' }]} />
+      <h1>Monitoring</h1>
+      <WatchedCases />
+      <SourceSweepSection />
+    </div>
+  );
+}
+
+function SourceSweep() {
   const toast = useToast();
   const [running, setRunning] = useState(false);
   const [rechecking, setRechecking] = useState(false);
@@ -588,9 +824,7 @@ export function MonitoringPage() {
   }
 
   return (
-    <div className="page">
-      <Crumbs items={[{ label: 'Pulpit', href: href.dashboard() }, { label: 'Monitoring' }]} />
-      <h1>Monitoring źródeł</h1>
+    <div className="source-sweep-body">
       <p className="notice" role="note">
         <LayerTag layer="inference" /> Przeglądane są wyłącznie publiczne strony dostępne bez logowania. Trafienia to wskazania do weryfikacji, a nie
         zarzuty: „Sygnały do sprawdzenia” opisują cechy publikacji, nie ocenę osoby.

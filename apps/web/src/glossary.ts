@@ -90,6 +90,33 @@ const entries = {
     why: 'Warto ponowić analizę, najlepiej w trybie głębokim.',
     group: 'wynik',
   },
+  trafienie: {
+    term: 'Trafienie',
+    short: 'Adres powiązany ze sprawą, nieodrzucony przez analityka, z Wskaźnikiem Pewności co najmniej 60 — czyli co najmniej „prawdopodobne”.',
+    why: 'Próg jest jawny i stały, więc statystyki można porównywać między sprawami i w czasie.',
+    group: 'wynik',
+  },
+  'srednia-pewnosc': {
+    term: 'Średnia pewność',
+    short: 'Średnia z najwyższego Wskaźnika Pewności adresu w każdej sprawie, która ma co najmniej jedną zakończoną analizę.',
+    group: 'wynik',
+  },
+  'srednia-trafien': {
+    term: 'Średnia liczba trafień na sprawę',
+    short: 'Wszystkie trafienia podzielone przez liczbę spraw z zakończoną analizą.',
+    group: 'wynik',
+  },
+  skutecznosc: {
+    term: 'Skuteczność',
+    short: 'Jaki odsetek przeanalizowanych spraw ma co najmniej jedno trafienie.',
+    why: 'Sprawy jeszcze bez analizy nie obniżają skuteczności — liczy je osobno „odsetek spraw z trafieniami”.',
+    group: 'wynik',
+  },
+  'odsetek-spraw-z-trafieniami': {
+    term: 'Odsetek spraw z trafieniami',
+    short: 'Sprawy z co najmniej jednym trafieniem wśród wszystkich spraw — także tych, których jeszcze nie przeanalizowano.',
+    group: 'wynik',
+  },
   'szczebel-drabiny': {
     term: 'Szczebel drabiny dowodowej',
     short: 'Etap, do którego udało się udokumentować drogę pieniędzy: przelew w blockchainie → wpływ do usługi → sygnał wypłaty → udokumentowana wypłata na rachunek.',
@@ -247,7 +274,12 @@ const entries = {
   },
   'tryb-gleboki': {
     term: 'Tryb głęboki',
-    short: 'Dokładniejsza analiza: więcej źródeł i dalsze kroki w blockchainie. Trwa dłużej.',
+    short: 'Dokładniejsza analiza: szeroki przegląd forów i serwisów oraz dalsze kroki w blockchainie. Trwa zwykle 1–4 minuty. To tryb domyślny.',
+    group: 'tryb',
+  },
+  'tryb-szybki': {
+    term: 'Tryb szybki',
+    short: 'Krótsza analiza: podstawowe źródła i krótsze ścieżki w blockchainie. Wynik po kilku–kilkunastu sekundach, ale może być niepełny.',
     group: 'tryb',
   },
 
@@ -260,6 +292,17 @@ const entries = {
   identyfikator: {
     term: 'Identyfikator',
     short: 'Dowolna znana dana o osobie: nick, e-mail, imię i nazwisko, adres profilu albo adres krypto. Jeden wystarczy, by zacząć.',
+    group: 'praca',
+  },
+  wejscie: {
+    term: 'Wejście wyszukiwania',
+    short: 'Dana, od której zaczęło się sprawdzanie — wpisana przez analityka. Wszystko inne program odkrył sam na jej podstawie.',
+    group: 'praca',
+  },
+  'monitorowanie-sprawy': {
+    term: 'Monitorowanie sprawy',
+    short: 'Program sam ponawia analizę zaznaczonej sprawy w wybranym odstępie i pokazuje, co zmieniło się od poprzedniej analizy.',
+    why: 'Nowy adres albo nowy przelew do giełdy widać bez ręcznego sprawdzania.',
     group: 'praca',
   },
   'korekta-analityka': {

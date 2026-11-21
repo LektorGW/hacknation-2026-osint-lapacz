@@ -57,6 +57,7 @@ export type Route =
   | { page: 'case'; caseId: string; tab: DossierTab }
   | { page: 'run'; runId: string; tab: DossierTab }
   | { page: 'sweep'; sweepId?: string }
+  | { page: 'stats' }
   | { page: 'monitor' }
   | { page: 'rules' };
 
@@ -78,6 +79,7 @@ export function parseRoute(hash: string): Route {
   if (first === 'sprawa' && second) return { page: 'case', caseId: second, tab: toTab(third) };
   if (first === 'analiza' && second) return { page: 'run', runId: second, tab: toTab(third) };
   if (first === 'typowanie') return { page: 'sweep', sweepId: second };
+  if (first === 'statystyki') return { page: 'stats' };
   if (first === 'monitoring') return { page: 'monitor' };
   if (first === 'zasady') return { page: 'rules' };
   return { page: 'dashboard' };
@@ -90,6 +92,7 @@ export const href = {
   case: (caseId: string, tab?: DossierTab) => withTab(`#/sprawa/${encodeURIComponent(caseId)}`, tab),
   run: (runId: string, tab?: DossierTab) => withTab(`#/analiza/${encodeURIComponent(runId)}`, tab),
   sweep: (sweepId?: string) => (sweepId ? `#/typowanie/${encodeURIComponent(sweepId)}` : '#/typowanie'),
+  stats: () => '#/statystyki',
   monitor: () => '#/monitoring',
   rules: () => '#/zasady',
 };

@@ -1,6 +1,6 @@
 // „Powiązane tożsamości”: inne nazwiska i konta, do których prowadzą ślady podmiotu.
 import { useState } from 'react';
-import { api, quickCheck } from '../api.ts';
+import { DEFAULT_DEPTH, api, quickCheck } from '../api.ts';
 import { fmtAmount, fmtPln, sum } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
 import { RELATION_LEVEL, RELATION_TEXT, basisText, identityAccounts, identityIdentifiers, identityStatus, isAddressLead, parseIdentityId, sortIdentities } from '../identities.ts';
@@ -46,7 +46,7 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
     setBusy(true);
     try {
       const created = lead
-        ? await quickCheck(identity.addresses[0]!.address, 'crypto_address', { depth: 'standard' }, () => {})
+        ? await quickCheck(identity.addresses[0]!.address, 'crypto_address', { depth: DEFAULT_DEPTH }, () => {})
         : await api.createCase(identity.displayName, identityIdentifiers(identity));
       toast.success(`Założono sprawę „${created.name}”.`);
       navigate(href.case(created.id));

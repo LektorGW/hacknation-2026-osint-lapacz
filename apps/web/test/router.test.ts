@@ -54,3 +54,9 @@ test('pozostałe ekrany bez zmian', () => {
   assert.deepEqual(parseRoute('#/monitoring'), { page: 'monitor' });
   assert.deepEqual(parseRoute('#/zasady'), { page: 'rules' });
 });
+
+test('ekran „Statystyki” ma własny adres', () => {
+  assert.equal(href.stats(), '#/statystyki');
+  assert.deepEqual(parseRoute(href.stats()), { page: 'stats' });
+  assert.deepEqual(parseRoute('#/statystyki/cokolwiek'), { page: 'stats' });
+});

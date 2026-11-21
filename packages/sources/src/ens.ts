@@ -155,7 +155,8 @@ export function createEnsConnector(http: HttpClient): SourceConnector {
     description:
       'Ethereum Name Service przez publiczne API api.ensdata.net (zapasowo api.ensideas.com): nazwa ENS → adres i rekordy tekstowe ' +
       '(github, twitter, url, e-mail); nick lub login → próba nazwy <nick>.eth (słabe dopasowanie, chyba że rekordy tekstowe ' +
-      'wskazują ten sam nick lub e-mail); adres EVM → nazwa główna (rozwiązanie odwrotne). Najwyżej 2 żądania na identyfikator.',
+      'wskazują ten sam nick lub e-mail); adres EVM → nazwa główna (rozwiązanie odwrotne) przyjmowana tylko wtedy, gdy nazwa wskazuje z powrotem ' +
+      'ten sam adres. Najwyżej 2 żądania na identyfikator (4 dla adresu: w obie strony).',
     accepts: ['ens_name', 'nick', 'login', 'crypto_address'],
     enabledByDefault: true,
 
@@ -177,11 +178,26 @@ export function createEnsConnector(http: HttpClient): SourceConnector {
         guessed = true;
       }
 
-      const session = http.session(context, { label: LABEL, limit: 2 });
-      const record = await resolve(target, session);
+      // Adres: rozwiązanie odwrotne i sprawdzenie w przód (po 2 żądania: ensdata + zapas ensideas).
+      const session = http.session(context, { label: LABEL, limit: identifier.type === 'crypto_address' ? 4 : 2 });
+      let record = await resolve(target, session);
       if (!record || !record.address) {
         if (!session.refused) context.log(`${LABEL}: „${target}" — brak rekordu.`);
         return [];
+      }
+      if (identifier.type === 'crypto_address' && record.name) {
+        // Nazwa główna (rekord odwrotny) dowodzi czegokolwiek tylko wtedy, gdy nazwa wskazuje z powrotem ten sam adres:
+        // rekord odwrotny ustawia właściciel adresu, ale wpisać w nim można dowolną nazwę.
+        const forward = await resolve(record.name, session);
+        if (!forward?.address || forward.address.toLowerCase() !== target.toLowerCase()) {
+          context.log(
+            `${LABEL}: adres ${target} ma nazwę główną ${record.name}, ale ` +
+              (forward?.address ? `nazwa wskazuje inny adres (${forward.address})` : 'nie udało się sprawdzić, czy nazwa wskazuje ten adres') +
+              ' — nazwy nie przyjęto.',
+          );
+          return [];
+        }
+        record = { ...forward, name: record.name, address: forward.address };
       }
 
       let category: SourceCategory = 'cryptographic_proof';
@@ -196,7 +212,9 @@ export function createEnsConnector(http: HttpClient): SourceConnector {
         }
         // Dokument opisuje adres, nie podmiot — o powiązaniu z podmiotem decyduje analiza (autor = nazwa ENS).
         identityMatch = 'name_only';
-        heading = 'Rozwiązanie odwrotne ENS: właściciel adresu ustawił dla niego nazwę główną.';
+        heading =
+          'Rozwiązanie odwrotne ENS: właściciel adresu ustawił dla niego nazwę główną, a nazwa wskazuje z powrotem ten sam adres ' +
+          '(sprawdzenie w obie strony — zapis w blockchainie dokonany kluczem adresu).';
       } else if (guessed) {
         record.name = target;
         const confirmedBy = recordsPointTo(record, identifier);

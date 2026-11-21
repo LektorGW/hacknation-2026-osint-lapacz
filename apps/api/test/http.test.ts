@@ -62,6 +62,8 @@ test('zdrowie, łączniki i reguły', async () => {
     description: 'Opis łącznika github',
     accepts: ['nick'],
     enabledByDefault: true,
+    requiresKey: false,
+    keyConfigured: false,
   });
 });
 
@@ -183,9 +185,9 @@ test('stan usługi podaje tryb danych i rodzaj każdego źródła', async () => 
   assert.equal(health.mode, 'live');
   assert.equal(health.modeLabel, 'Źródła publiczne (live).');
   assert.deepEqual(health.sources, [
-    { id: 'github', label: 'Atrapa github', kind: 'public', demo: false, enabledByDefault: true },
-    { id: 'dodatkowy', label: 'Atrapa dodatkowy', kind: 'public', demo: false, enabledByDefault: false },
-    { id: 'corpus', label: health.sources[2].label, kind: 'internal', demo: false, enabledByDefault: true },
+    { id: 'github', label: 'Atrapa github', kind: 'public', demo: false, enabledByDefault: true, requiresKey: false, keyConfigured: false },
+    { id: 'dodatkowy', label: 'Atrapa dodatkowy', kind: 'public', demo: false, enabledByDefault: false, requiresKey: false, keyConfigured: false },
+    { id: 'corpus', label: health.sources[2].label, kind: 'internal', demo: false, enabledByDefault: true, requiresKey: false, keyConfigured: false },
   ]);
   assert.deepEqual(health.chainProviders, [{ id: 'atrapa-chain', label: 'Atrapa eksploratora', kind: 'public', demo: false }]);
 

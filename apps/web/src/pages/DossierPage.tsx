@@ -30,6 +30,7 @@ import { DOSSIER_SECTIONS, DOSSIER_TABS, href, navigate, sectionOf, tabLabel } f
 import type { DossierTab } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
 import { ExportPanel } from '../components/ExportPanel.tsx';
+import { SearchInputChip } from '../components/SearchInput.tsx';
 import { Floating } from '../components/ui/Floating.tsx';
 import { Hint } from '../components/ui/Hint.tsx';
 import { Term } from '../components/ui/Term.tsx';
@@ -382,6 +383,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
               <Term id="teczka">Teczka sprawy</Term>
             </p>
             <h1>{summary.name}</h1>
+            <SearchInputChip dossier={dossier} />
             <p className="muted dossier-meta">
               Stan na {fmtDateTime(dossier.generatedAt)}
               <RunPeriod runId={dossier.runId} />

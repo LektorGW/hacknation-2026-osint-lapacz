@@ -144,13 +144,13 @@ test('wyjaśnienia: brak wypływów do usług, pominięty łańcuch, wynik czę�
   const query = { identifiers: [{ type: 'crypto_address' as const, value: BTC_A }] };
   const quiet = chainWith({ [BTC_A]: { transfers: [transfer(1, { counterparty: BTC_D, time: '2025-01-01T00:00:00.000Z', amount: 1 })] } });
   const noCashOut = dossierOf(await runAnalysis({ query, connectors: [], chainProviders: [quiet] }), query);
-  assert.deepEqual(noCashOut.explanations.map((item) => item.kind), ['no_cash_out']);
-  assert.match(noCashOut.explanations[0]!.text, /^1 adres powiązany ma łącznie 1 pobrany przelew, ale żaden wypływ nie trafił do adresu oznaczonego jako giełda/);
+  assert.deepEqual(noCashOut.explanations.map((item) => item.kind), ['no_owner', 'no_cash_out']);
+  assert.match(noCashOut.explanations[1]!.text, /^1 adres powiązany ma łącznie 1 pobrany przelew, ale żaden wypływ nie trafił do adresu oznaczonego jako giełda/);
 
   const cut = dossierOf(await runAnalysis({ query, connectors: [], chainProviders: [fakeProvider()], totalTimeoutMs: 0 }), query);
-  assert.deepEqual(cut.explanations.map((item) => item.kind), ['chain_skipped', 'partial']);
+  assert.deepEqual(cut.explanations.map((item) => item.kind), ['no_owner', 'chain_skipped', 'partial']);
 
   // Gdy jest wskaźnik wypłaty albo dowód, wyjaśnienie o braku spieniężenia się nie pojawia.
   const withCashOut = dossierOf(await runAnalysis({ query, connectors: [], chainProviders: [fakeProvider()] }), query);
-  assert.deepEqual(withCashOut.explanations, []);
+  assert.deepEqual(withCashOut.explanations.map((item) => item.kind), ['no_owner']);
 });

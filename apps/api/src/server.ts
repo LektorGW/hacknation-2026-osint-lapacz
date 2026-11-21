@@ -22,6 +22,7 @@ const storage = createStorage(await createDriverFromEnv(env));
 await storage.migrate();
 
 // Token służy tylko do podniesienia limitu zapytań publicznego API; nie jest logowany ani zapisywany.
+const search = sources.searchConfigFromEnv(env);
 const connectors = sources.createConnectors({
   sandboxUrl,
   labUrl,
@@ -29,8 +30,16 @@ const connectors = sources.createConnectors({
   torProxyUrl,
   githubToken: env.GITHUB_TOKEN || undefined,
   ceidgToken: env.CEIDG_API_TOKEN || undefined,
-  search: sources.searchConfigFromEnv(env),
+  search,
 });
+// Do ekranu „Typowanie”: które klucze źródeł są ustawione — same wartości logiczne, nigdy treść klucza.
+const configuredKeys = {
+  GITHUB_TOKEN: Boolean(env.GITHUB_TOKEN?.trim()),
+  CEIDG_API_TOKEN: Boolean(env.CEIDG_API_TOKEN?.trim()),
+  MARGINALIA_API_KEY: Boolean(search.marginaliaApiKey),
+  // Mojeek działa tylko z potwierdzonym prawem przechowywania wyników (MOJEEK_STORAGE_RIGHTS=1).
+  MOJEEK_API_KEY: Boolean(search.mojeekApiKey && search.mojeekStorageRights),
+};
 // Rejestr źródeł monitoringu jest w module źródeł; starsza wersja modułu go nie ma —
 // wtedy monitoring obejmuje wszystkie łączniki z metodą `discover`.
 const listMonitorConnectors = (sources as { listMonitorConnectors?: (all: typeof connectors) => typeof connectors }).listMonitorConnectors;
@@ -84,6 +93,7 @@ const app = await buildApp({
   normalizeText: typeof normalizeText === 'function' ? normalizeText : undefined,
   // Przykładowa (syntetyczna) odpowiedź usługi do demonstracji pochodzi z piaskownicy.
   sandboxUrl,
+  configuredKeys,
   corpus: {
     ...(env.CORPUS_RETENTION_DAYS ? { retentionDays: Number(env.CORPUS_RETENTION_DAYS) } : {}),
     ...(env.CORPUS_MAX_ROWS ? { maxRows: Number(env.CORPUS_MAX_ROWS) } : {}),

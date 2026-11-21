@@ -2,7 +2,7 @@
 import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { IdentifierType } from '@olcys/core';
-import { api, quickCheck, runAnalysis } from '../api.ts';
+import { DEFAULT_DEPTH, api, quickCheck, runAnalysis } from '../api.ts';
 import { fmtAmount, fmtPln } from '../format.ts';
 import { detectIdentifierType, normalizeIdentifier } from '../identify.ts';
 import { IDENTIFIER_LABEL, IDENTIFIER_TYPES, NETWORK_LABEL, NETWORK_SHORT } from '../labels.ts';
@@ -27,6 +27,7 @@ const KIND_TITLE: Record<Explanation['kind'], string> = {
   chain_skipped: 'Nie przeanalizowano blockchainu',
   partial: 'Wynik częściowy — nie wszystko sprawdzono',
   source_errors: 'Część źródeł nie odpowiedziała — wynik częściowy',
+  no_owner: 'Nie wskazano właściciela adresu',
   no_cash_out: 'Brak udokumentowanego spieniężenia',
   seized: 'Środki zajęte przez organ państwa — to nie spieniężenie',
 };
@@ -116,7 +117,7 @@ export function Explanations() {
   async function analyseAddress(address: string) {
     setOpening(address);
     try {
-      const created = await quickCheck(address, 'crypto_address', { depth: 'standard' }, () => {});
+      const created = await quickCheck(address, 'crypto_address', { depth: DEFAULT_DEPTH }, () => {});
       navigate(href.case(created.id));
     } catch (error) {
       toast.error(error);
@@ -125,7 +126,7 @@ export function Explanations() {
   }
 
   const addAndRerun = (type: IdentifierType, value: string) =>
-    rerun('standard', () => api.addIdentifiers(summary.id, [normalizeIdentifier(type, value)]));
+    rerun(DEFAULT_DEPTH, () => api.addIdentifiers(summary.id, [normalizeIdentifier(type, value)]));
 
   return (
     <section className="card explanations" aria-labelledby="czego-brakuje">

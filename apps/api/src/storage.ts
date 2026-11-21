@@ -124,6 +124,9 @@ export interface Storage {
   /** Ustawienia i statystyki monitoringu (jeden dokument JSON); `null` przed pierwszym zapisem. */
   getMonitorState<T>(): Promise<T | null>;
   saveMonitorState(state: unknown): Promise<void>;
+  /** Inny dokument ustawień (JSON) pod kluczem, np. obserwowane sprawy; `null` przed pierwszym zapisem. */
+  getConfig<T>(id: string): Promise<T | null>;
+  saveConfig(id: string, data: unknown): Promise<void>;
   /** Z podanych adresów zwraca te, których monitoring jeszcze nie widział. */
   filterUnseenUrls(urls: string[]): Promise<string[]>;
   markUrlsSeen(urls: string[], seenAt: string): Promise<void>;
@@ -517,6 +520,20 @@ export function createStorage(driver: SqlDriver): Storage {
         `INSERT INTO monitor_config (id, data) VALUES ('monitor', $1::jsonb)
          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
         [JSON.stringify(state)],
+      );
+    },
+
+    // Ta sama tabela co ustawienia monitoringu: jeden wiersz JSON na rodzaj ustawień.
+    async getConfig<T>(id: string) {
+      const [row] = await driver.query('SELECT data FROM monitor_config WHERE id = $1', [`config:${id}`]);
+      return row ? (row.data as T) : null;
+    },
+
+    async saveConfig(id, data) {
+      await driver.query(
+        `INSERT INTO monitor_config (id, data) VALUES ($1, $2::jsonb)
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+        [`config:${id}`, JSON.stringify(data)],
       );
     },
 

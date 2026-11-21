@@ -150,16 +150,36 @@ export interface SummaryFacts {
   /** Nazwa osoby (kandydat główny); brak = osoby nie ustalono. */
   person?: string;
   addressCase?: boolean;
+  /**
+   * Wejściem wyszukiwania był adres krypto (postać skrócona): zdanie mówi o osobie powiązanej z adresem,
+   * a nie o adresach powiązanych z osobą.
+   */
+  inputAddress?: string;
+  /** Dlaczego nie ustalono osoby dla adresu z wejścia (dopowiedzenie po myślniku). */
+  noPersonReason?: string;
   linked: number;
   unconfirmed: number;
   services: string[];
   totalPln: number;
 }
 
+/** Powód braku osoby dla adresu z wejścia — z tego, co widać w teczce. */
+export function noPersonReason(facts: { widelyCited?: boolean; mentionDocuments: number }): string {
+  if (facts.widelyCited) return 'adres cytuje wielu niezwiązanych autorów, więc nie przypisujemy go nikomu';
+  if (facts.mentionDocuments > 0) return 'adres występuje w publikacjach, ale żadna nie wskazuje jego właściciela';
+  return 'w źródłach publicznych nie znaleziono publikacji z tym adresem';
+}
+
 /** Jedno–dwa zdania: co znaleziono i dokąd trafiły pieniądze. Język ostrożny — bez przesądzania. */
 export function summarySentence(facts: SummaryFacts): string {
   const parts: string[] = [];
-  if (facts.addressCase) {
+  if (facts.inputAddress) {
+    parts.push(
+      facts.person
+        ? `Znaleziono osobę powiązaną z adresem ${facts.inputAddress}: ${facts.person}.`
+        : `Nie znaleziono osoby powiązanej z adresem ${facts.inputAddress}${facts.noPersonReason ? ` — ${facts.noPersonReason}` : ''}.`,
+    );
+  } else if (facts.addressCase) {
     parts.push('Sprawa dotyczy jednego adresu — właściciela nie ustalano.');
   } else if (facts.linked > 0) {
     parts.push(`Znaleziono ${countText(facts.linked, 'adres powiązany', 'adresy powiązane', 'adresów powiązanych')} ${facts.person ? `z osobą ${facts.person}` : 'z podmiotem'}.`);
@@ -172,10 +192,26 @@ export function summarySentence(facts: SummaryFacts): string {
     const names = facts.services.slice(0, 2).join(', ');
     const more = facts.services.length > 2 ? ` i ${countText(facts.services.length - 2, 'inna usługa', 'inne usługi', 'innych usług')}` : '';
     parts.push(`Środki trafiły do: ${names}${more}${facts.totalPln > 0 ? ` — szacunkowo ${fmtPlnCompact(facts.totalPln)}` : ''}.`);
-  } else if (facts.linked > 0 || facts.addressCase) {
+  } else if (facts.linked > 0 || facts.addressCase || facts.inputAddress) {
     parts.push('Nie wykryto przelewów do giełd ani innych usług.');
   }
   return parts.join(' ');
+}
+
+// ---------- Wejście wyszukiwania ----------
+
+interface InputIdentifier {
+  identifier: { type: string; value: string };
+  origin: 'analyst' | 'discovered';
+}
+
+/**
+ * Co analityk wpisał: identyfikatory podane przez analityka (pierwszy — główny).
+ * `kind: 'address'`, gdy głównym wejściem jest adres krypto; inaczej `'person'` (nick, e-mail, imię i nazwisko…).
+ */
+export function searchInput(identifiers: InputIdentifier[]): { kind: 'address' | 'person'; items: InputIdentifier['identifier'][] } {
+  const items = identifiers.filter((item) => item.origin === 'analyst').map((item) => item.identifier);
+  return { kind: items[0]?.type === 'crypto_address' ? 'address' : 'person', items };
 }
 
 // ---------- Dowód spieniężenia: przekazania do tej samej usługi w jednej karcie ----------

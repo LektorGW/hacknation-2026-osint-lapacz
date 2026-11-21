@@ -16,12 +16,17 @@ export const TOUR: Record<TourChapter, TourStep[]> = {
     {
       target: 'search',
       title: 'Zacznij tutaj',
-      text: 'Wpisz jedną znaną daną o osobie: nick, e-mail, imię i nazwisko albo adres krypto. Program sam rozpozna, co to jest.',
+      text: 'Wpisz jedną znaną daną o osobie: nick, e-mail, imię i nazwisko albo adres krypto. Program poszuka adresów krypto w źródłach publicznych, oceni powiązanie, prześledzi pieniądze w blockchainie, a teczka pokaże, która giełda je przyjęła.',
+    },
+    {
+      target: 'mode',
+      title: 'Tryb analizy',
+      text: 'Domyślnie tryb głęboki: szeroki przegląd forów i serwisów, zwykle 1–4 minuty. Gdy liczy się czas, wybierz „Szybki” — wynik po kilkunastu sekundach.',
     },
     {
       target: 'cases',
-      title: 'Twoje sprawy',
-      text: 'Każde sprawdzenie zostaje zapisane jako sprawa. Najpilniejsze są na górze — otwórz dowolną, a przewodnik poprowadzi dalej.',
+      title: 'Historia spraw',
+      text: 'Każde sprawdzenie zostaje zapisane jako sprawa — najnowsze na górze. „Monitoruj” ponawia analizę automatycznie; zmiany pokaże zakładka Monitoring.',
     },
     {
       target: 'help',

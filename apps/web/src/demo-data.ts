@@ -118,6 +118,22 @@ export const demoConnectors: ConnectorInfo[] = [
     description: 'Zapytania do publicznej wyszukiwarki o strony zawierające identyfikator. Wymaga dostępu do internetu.',
     accepts: ['nick', 'login', 'email', 'full_name', 'messenger_id', 'crypto_address'],
     enabledByDefault: false,
+    discovers: true,
+    requiresKey: true,
+    keyConfigured: false,
+    keyEnv: ['MARGINALIA_API_KEY', 'MOJEEK_API_KEY'],
+  },
+  {
+    id: 'live-github-search',
+    service: 'github.com',
+    label: 'Wyszukiwarka kodu i zgłoszeń GitHub',
+    description: 'Szuka adresu kryptowalutowego i nicku w kodzie, zgłoszeniach i commitach. Działa tylko z tokenem API.',
+    accepts: ['nick', 'login', 'email', 'crypto_address'],
+    enabledByDefault: false,
+    discovers: true,
+    requiresKey: true,
+    keyConfigured: true,
+    keyEnv: ['GITHUB_TOKEN'],
   },
 ];
 

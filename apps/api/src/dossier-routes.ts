@@ -20,6 +20,7 @@ import { renderServiceRequestHtml } from './report-service.ts';
 import { SERVICE_STRENGTH_RULES } from './services.ts';
 import { SIGNAL_RULES } from './signals.ts';
 import { sumByYear } from './format.ts';
+import { caseStat, summarizeStats } from './stats.ts';
 import type { DecisionRecord } from './storage.ts';
 
 /** Narzędzie nie ma jeszcze kont użytkowników — autor decyzji jest stały. */
@@ -186,12 +187,16 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
       }))
       .sort((a, b) => b.priority - a.priority || b.cashOutPlnTotal - a.cashOutPlnTotal || a.name.localeCompare(b.name, 'pl'))
       .slice(0, TOP_CASES);
+    // Każda sprawa z zakończoną analizą (pulpit: „Historia spraw”; ekran „Statystyki”).
+    const caseStats = dossiers.map((dossier, index) => caseStat(dossier.caseId, latest[index]!.caseName, dossier));
     return {
       cases: cases.length,
       runs: cases.reduce((sum, item) => sum + item.runs.length, 0),
       linkedAddresses: dossiers.reduce((sum, dossier) => sum + dossier.totals.linkedAddresses, 0),
       cashOutPlnByYear: sumByYear(dossiers.map((dossier) => dossier.totals.cashOutPlnByYear)),
       topCases,
+      caseStats,
+      stats: summarizeStats(caseStats, cases.length),
       monitor: await context.monitor.status().then((status) => ({
         enabled: status.enabled,
         ...(status.lastRunAt ? { lastRunAt: status.lastRunAt } : {}),

@@ -430,6 +430,35 @@ describe('GitHub — wyszukiwanie w treści', () => {
     assert.equal(documents[5]!.publishedAt, '2025-06-06T00:00:00Z');
   });
 
+  test('adres: README zwykłego repozytorium (przykład użycia) to wypowiedź, nie profil właściciela', async () => {
+    const { run } = setup(
+      [],
+      {
+        [`${API}/search/code?q=${q}&per_page=30`]: {
+          body: {
+            items: [
+              codeItem('biblioteka-eth', 'sdk', 'README.md', `const balance = await getBalance("${address}")`),
+              codeItem('autor', 'narzedzie', 'docs/SUPPORT.md', `BTC: ${address}`),
+              codeItem('autor', 'narzedzie', 'DONATE.md', `BTC: ${address}`),
+            ],
+          },
+        },
+        [`${API}/search/issues?q=${q}&per_page=30`]: { body: { items: [] } },
+        [`${API}/search/commits?q=${q}&per_page=30`]: { body: { items: [] } },
+      },
+      { githubToken: 'ghp_tajny' },
+    );
+    const documents = await run('live-github-search', 'crypto_address', address);
+    assert.deepEqual(
+      documents.map((document) => [document.author, document.url.split('/').at(-1), document.category]),
+      [
+        ['biblioteka-eth', 'README.md', 'forum_post'],
+        ['autor', 'SUPPORT.md', 'own_profile'],
+        ['autor', 'DONATE.md', 'own_profile'],
+      ],
+    );
+  });
+
   test('e-mail: autor commitów i konto z publicznym adresem; nick: dokładny login', async () => {
     const email = 'kacper@poczta.example';
     const commit = (login: string | null, name: string, mail: string) => ({ html_url: 'https://github.com/a/b/commit/1', commit: { message: 'x', author: { name, email: mail, date: '2026-02-02T00:00:00Z' } }, author: login ? owner(login) : null, repository: { full_name: 'a/b' } });

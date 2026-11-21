@@ -3,7 +3,8 @@
 // danych blockchain przez parametry, więc da się ją testować atrapami.
 
 import { createHash } from 'node:crypto';
-import { computeConfidence, DEFAULT_RULES, extractAddresses, validateAddress } from '@olcys/core';
+import { computeConfidence, DEFAULT_RULES, detectOwnershipDeclaration, extractAddresses, TEXT_OWNERSHIP_RULE, validateAddress } from '@olcys/core';
+import type { OwnershipBasis, OwnershipDeclaration } from '@olcys/core';
 import { AI_RULES } from './ai-rules.ts';
 import type { InsightEvidence } from './ai-rules.ts';
 import { createLimiter } from './concurrency.ts';
@@ -174,6 +175,12 @@ export interface ChainContext extends ConnectorContext {
  */
 export const OWNERSHIP_CATEGORIES: SourceCategory[] = ['own_profile', 'cryptographic_proof', 'sale_offer', 'settlement_message'];
 /**
+ * Kategorie, w których deklarację „to mój adres” wolno odczytać regułą tekstową (`detectOwnershipDeclaration`):
+ * tylko wypowiedź na forum — nie masowy komentarz (rozdania, konkursy). Taka wypowiedź zachowuje swoją
+ * kategorię i wagę (50); reguła ma niższą moc niż kategorie z `OWNERSHIP_CATEGORIES` i niż odczyt modelu.
+ */
+export const TEXT_DECLARATION_CATEGORIES: SourceCategory[] = ['forum_post'];
+/**
  * Publikacja z tyloma różnymi adresami to lista lub zestawienie (np. „najbogatsze adresy”), a nie
  * czyjś własny adres: nie jest przesłanką własności ani powiązania między osobami.
  */
@@ -182,6 +189,9 @@ export const ADDRESS_LIST_MIN = 10;
 export const MANY_PUBLISHERS_MIN = 3;
 /** Najwyżej tyle wzmianek o adresie czyta model, szukając autora podającego adres jako własny. */
 const MAX_OWNERSHIP_READS = 10;
+
+/** Plik kodu w repozytorium (`…/blob/…`), ale nie tekst dla ludzi (README, *.md, *.txt, *.rst). */
+export const isCodeFile = (url: string): boolean => /\/blob\//.test(url) && !/(\.(md|markdown|txt|rst)|\/readme[^/]*)$/i.test(url.replace(/[?#].*$/, ''));
 
 /** Adres publikacji do porównań: bez `www.`, fragmentu, parametrów śledzących i końcowego ukośnika. */
 export function canonicalUrl(raw: string): string {
@@ -385,6 +395,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const normalizeText = params.normalizeText ?? ((text: string) => text);
   /** Adresy w treści — po sprowadzeniu nietypowych zapisów do postaci wykrywalnej. */
   const extract = (text: string) => extractAddresses(normalizeText(text));
+
+  /** Deklaracja własności adresu w treści wypowiedzi (reguła tekstowa); `undefined` dla kategorii, których reguła nie czyta. */
+  // Fragment pliku z kodu (np. wynik wyszukiwarki kodu GitHuba, adres `/blob/`) to nie wypowiedź: przykłady, wektory
+  // testowe i konfiguracje często zawierają cudze adresy z etykietą „donate:” albo komentarzem „my wallet”.
+  const declarationIn = (doc: SourceDocument, address: string): OwnershipDeclaration | undefined =>
+    TEXT_DECLARATION_CATEGORIES.includes(doc.category) && !isCodeFile(doc.url) ? detectOwnershipDeclaration(normalizeText(doc.text), address) : undefined;
 
   /** Czy publikacja jest listą adresów (zestawieniem), a nie publikacją czyjegoś adresu. */
   const isAddressList = (doc: SourceDocument): boolean => new Set(extract(doc.text).map((item) => item.address)).size >= ADDRESS_LIST_MIN;
@@ -624,6 +640,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     identity: IdentityAssessment,
     excerpt: string,
     contentHash: string,
+    ownershipBasis?: OwnershipBasis,
   ) => {
     // Ten sam dokument (URL + wersja) jest jednym śladem, nawet jeśli zwróciło go kilka zapytań.
     const id = `ev-${sha256Hex(`${doc.url}|${doc.archivedAt ?? ''}|${group.network}:${group.address}`).slice(0, 12)}`;
@@ -653,6 +670,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       contentHash,
       connectorId: doc.connectorId,
       matchedIdentifier: doc.matchedIdentifier,
+      ...(ownershipBasis ? { ownershipBasis } : {}),
     });
     capture(doc, contentHash);
     // Mocny ślad: analiza łańcucha biegnie równolegle z dalszym wyszukiwaniem.
@@ -1042,10 +1060,21 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     // Analiza samego adresu: kandydatem na właściciela jest tylko autor z mocną podstawą własności.
     // Komentujący i cytujący adres to wzmianki — nie wolno wskazywać ich jako osób.
     const owners = new Set<string>();
+    /** Wypowiedzi, w których reguła tekstowa odczytała deklarację własności: adres publikacji → podstawa. */
+    const declaredDocs = new Map<string, OwnershipBasis>();
     const citing = { documents: 0, authors: new Set<string>(), services: new Set<string>() };
     if (addressOnly) {
       const relevant = occurrences.filter((doc) => doc.author && containsAddress(doc) && !isAddressList(doc));
       for (const doc of relevant) if (OWNERSHIP_CATEGORIES.includes(doc.category)) owners.add(normalizeName(doc.author!));
+      // Reguła tekstowa (bez modelu): wypowiedź na forum z deklaracją w pierwszej osobie („mój adres”, „wpłaty na”).
+      // Najniższa moc: tylko dla autorów bez jawnej podstawy własności, a model językowy może ją uchylić.
+      const declared = new Map<SourceDocument, OwnershipDeclaration>();
+      for (const doc of relevant) {
+        if (owners.has(normalizeName(doc.author!))) continue;
+        const declaration = declarationIn(doc, group.address);
+        if (declaration?.verdict === 'declares') declared.set(doc, declaration);
+        else if (declaration?.verdict === 'excluded') log(`${doc.url}: ${TEXT_OWNERSHIP_RULE} — ${declaration.reason}; autor „${doc.author}” pozostaje wzmianką.`);
+      }
       if (params.ai) {
         // Wyjątek: model czyta wypowiedź i stwierdza (z cytatem), że autor podaje adres jako własny.
         const unclear = relevant.filter((doc) => !owners.has(normalizeName(doc.author!))).slice(0, MAX_OWNERSHIP_READS);
@@ -1055,13 +1084,28 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
               const insight = await params.ai!.analyzePublication({ text: doc.text, address: group.address, author: doc.author, title: doc.title });
               if (insight?.ownership === 'own_address' && insight.quote.trim()) {
                 owners.add(normalizeName(doc.author!));
+                // Podstawą jest odczyt modelu, nie reguła tekstowa.
+                declared.delete(doc);
                 log(`[model ${insight.model}] ${doc.url}: autor „${doc.author}” podaje adres jako własny („${insight.quote.trim()}”) — możliwy właściciel.`);
+              } else if (insight && AI_RULES.excludingOwnership.includes(insight.ownership) && insight.quote.trim() && declared.delete(doc)) {
+                // Odczyt modelu ma pierwszeństwo przed regułą tekstową.
+                log(`[model ${insight.model}] ${doc.url}: odczyt modelu („${insight.quote.trim()}”) uchyla regułę tekstową — autor „${doc.author}” pozostaje wzmianką.`);
               }
             } catch (error) {
               log(`[model ${params.ai!.model}] BŁĄD odczytu ${doc.url}: ${errorText(error)}.`);
             }
           }),
         );
+      }
+      for (const [doc, declaration] of declared) {
+        owners.add(normalizeName(doc.author!));
+        const quote = declaration.quote ?? '';
+        declaredDocs.set(doc.url, { rule: 'text_declaration', quote });
+        const note =
+          `${TEXT_OWNERSHIP_RULE[0]!.toUpperCase()}${TEXT_OWNERSHIP_RULE.slice(1)}: autor „${doc.author}” w ${doc.url} — „${quote}” (${declaration.reason}). ` +
+          'Wypowiedź liczona jako publikacja autora z wagą wypowiedzi na forum (50), nigdy wyższą; jawna kategoria źródła i odczyt modelu językowego mają pierwszeństwo.';
+        if (!group.notes.includes(note)) group.notes.push(note);
+        log(`${doc.url}: ${TEXT_OWNERSHIP_RULE} — autor „${doc.author}” podaje adres jako własny („${quote}”) — możliwy właściciel.`);
       }
     }
     let lists = 0;
@@ -1085,12 +1129,22 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         capture(doc, contentHash);
         noteSighting(doc, { match: 'same_handle', reasons: [] }, 'co_publisher', 0, [key]);
       } else if (addressOnly && author) {
+        const basis = declaredDocs.get(doc.url);
+        // Dowód kryptograficzny (rekord ENS sprawdzony w obie strony, zweryfikowany podpis wymieniający konto) wiąże
+        // profil z adresem mocniej niż samo opublikowanie adresu: przynależność profilu jest potwierdzona.
+        const proven = doc.category === 'cryptographic_proof';
         const identity: IdentityAssessment = {
-          match: 'exact_identifier',
-          reasons: [`Autor „${doc.author}” sam opublikował ten adres.`],
+          match: proven ? 'verified_link' : 'exact_identifier',
+          reasons: [
+            proven
+              ? `Dowód kryptograficzny: „${doc.author}” jest powiązany z tym adresem zapisem dokonanym kluczem adresu (${doc.service}).`
+              : basis
+                ? `Autor „${doc.author}” podaje ten adres jako własny w wypowiedzi (${TEXT_OWNERSHIP_RULE}): „${basis.quote}”.`
+                : `Autor „${doc.author}” sam opublikował ten adres.`,
+          ],
           distance: 0,
         };
-        addEvidence(group, doc, identity, hit.context, contentHash);
+        addEvidence(group, doc, identity, hit.context, contentHash, basis);
         noteSighting(doc, identity, 'subject', 0, [key]);
         candidateAuthors.add(author);
         log(`Adres ${group.address} publikuje „${doc.author}”: ${doc.url} — możliwy właściciel.`);
@@ -1254,8 +1308,13 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   let pivotLeads: PivotLead[] = [];
   if (pivotLimits.steps > 0) {
     const corpus = params.connectors.find((connector) => connector.id === 'corpus');
+    // Adresy publikowane jako własne: jawna kategoria źródła albo — w wypowiedzi na forum — deklaracja odczytana regułą tekstową.
     const ownedAddresses = (doc: SourceDocument) =>
-      OWNERSHIP_CATEGORIES.includes(doc.category) ? extract(doc.text).map((item) => ({ network: item.network, address: item.address })) : [];
+      OWNERSHIP_CATEGORIES.includes(doc.category)
+        ? extract(doc.text).map((item) => ({ network: item.network, address: item.address }))
+        : extract(doc.text)
+            .filter((item) => declarationIn(doc, item.address)?.verdict === 'declares')
+            .map((item) => ({ network: item.network, address: item.address }));
     const subjectProfiles: PivotSource[] = [...sightings.values()]
       .filter((item) => item.role === 'subject')
       .map((item) => ({
@@ -1315,7 +1374,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
             group.linkedOnly = true;
           }
           if (group.linkedOnly) {
-            addEvidence(group, doc, { match: 'exact_identifier', reasons: [`Autor „${doc.author}” (powiązana tożsamość) sam opublikował ten adres.`] }, item.context, contentHash);
+            const declaration = OWNERSHIP_CATEGORIES.includes(doc.category) ? undefined : declarationIn(doc, item.address);
+            const basis: OwnershipBasis | undefined = declaration?.verdict === 'declares' ? { rule: 'text_declaration', quote: declaration.quote ?? '' } : undefined;
+            addEvidence(group, doc, { match: 'exact_identifier', reasons: [`Autor „${doc.author}” (powiązana tożsamość) sam opublikował ten adres${basis ? ` (${TEXT_OWNERSHIP_RULE})` : ''}.`] }, item.context, contentHash, basis);
           }
         }
         return true;

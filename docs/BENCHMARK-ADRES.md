@@ -1,6 +1,6 @@
 # Od samego adresu do osoby — pomiar OŁCyŚ
 
-Wygenerowano 2026-11-21T20:40:05.513Z poleceniem `node scripts/benchmark-address.ts`. Plik powstaje automatycznie — wszystkie liczby i przykłady pochodzą z jednego przebiegu skryptu (342 analiz, 170 s).
+Wygenerowano 2026-11-21T21:16:38.718Z poleceniem `node scripts/benchmark-address.ts`. Plik powstaje automatycznie — wszystkie liczby i przykłady pochodzą z jednego przebiegu skryptu (342 analiz, 165 s).
 
 Pytanie: analityk ma **wyłącznie adres** kryptowalutowy. Czy narzędzie wskaże właściwą osobę, a przede wszystkim — czy nie wskaże **niewłaściwej**?
 
@@ -9,20 +9,22 @@ Pytanie: analityk ma **wyłącznie adres** kryptowalutowy. Czy narzędzie wskaż
 | Miara (tryb standardowy) | Laboratorium tożsamości (sieć LAB) | Piaskownica (BTC / ETH / TRON) |
 |---|---|---|
 | Adresów przeanalizowanych | 30 | 65 |
-| Trafienie / częściowe / błąd / wstrzymanie | 29 / 0 / 0 / 1 | 37 / 0 / 0 / 28 |
+| Trafienie / częściowe / błąd / wstrzymanie | 29 / 0 / 0 / 1 | 39 / 0 / 0 / 26 |
 | **Błędne przypisanie osoby** (kandydat główny to ktoś inny) | **0 z 30** (0,0%) | **0 z 65** (0,0%) |
-| Precision przypisania = trafienia / (trafienia + błędy) | 100,0% (29 / 29) | 100,0% (37 / 37) |
-| Pokrycie = trafienia / adresy opublikowane przez prywatnego właściciela | 100,0% (29 / 29) | 94,7% (36 / 38) |
+| Precision przypisania = trafienia / (trafienia + błędy) | 100,0% (29 / 29) | 100,0% (39 / 39) |
+| Pokrycie = trafienia / adresy opublikowane przez prywatnego właściciela | 100,0% (29 / 29) | 100,0% (38 / 38) |
 | Poprawne wstrzymanie dla adresów, które nie powinny wskazywać osoby | 100,0% (1 / 1) | 96,3% (26 / 27) |
-| Czas analizy: mediana / P95 | 0,57 s / 1,54 s | 0,07 s / 0,24 s |
+| Czas analizy: mediana / P95 | 0,50 s / 1,29 s | 0,06 s / 0,20 s |
 
-Najkrócej: na 95 adresach z obu zbiorów narzędzie **ani razu nie wskazało niewłaściwej osoby** (także częściowo). Dla 28 adresów, które nie powinny prowadzić do osoby (giełdy, kontrakty, zbiórka pośrednika, adresy cytowane i nieopublikowane), nie podało kandydata w 27 przypadkach, a w 1 wskazało konto, które samo podało adres jako swój (konto rozdania-oszustwa). Z 67 adresów prywatnych opublikowanych przez właściciela pominęło 2 (2× adres tylko we wpisach liczonych jako wzmianka (kategoria źródła spoza OWNERSHIP_CATEGORIES, bez modelu językowego) — autor nie jest kandydatem na właściciela). Ostrożność ma cenę: prawdopodobieństwo osoby wskazanej z samego adresu nie przekracza 75, więc przy progu 80 narzędzie nie wskazuje nikogo. Zbiory są syntetyczne — patrz „Czego ten pomiar nie mówi”.
+Najkrócej: na 95 adresach z obu zbiorów narzędzie **ani razu nie wskazało niewłaściwej osoby** (także częściowo). Dla 28 adresów, które nie powinny prowadzić do osoby (giełdy, kontrakty, zbiórka pośrednika, adresy cytowane i nieopublikowane), nie podało kandydata w 27 przypadkach, a w 1 wskazało konto, które samo podało adres jako swój (konto rozdania-oszustwa). Z 67 adresów prywatnych opublikowanych przez właściciela pominęło 0. Najwyższe prawdopodobieństwo wskazanej osoby: 90. Zbiory są syntetyczne — patrz „Czego ten pomiar nie mówi”.
+
+Deklaracja własności w treści (reguła tekstowa — wypowiedź na forum z „mój adres”, „wpłaty na”, „przyjmuję na adres” itp.; ostrzeżenia, pytania, rozdania, cytaty i przeczenia ją wykluczają): 2 wskazania oparte na tej regule (trafienia: 2, błędy: 0); wypowiedź liczy się z wagą wypowiedzi na forum (50), a reguła ma niższą moc niż jawna kategoria źródła i odczyt modelu. Teczek bez kandydata i bez żadnego wyjaśnienia: 0 (wyjaśnienie `no_owner` mówi, dlaczego nie ma osoby i co zrobić).
 
 ## Jak mierzono
 
 - **Zbiory.** (1) `apps/identity-lab`: seed 67, 180 syntetycznych osób, 992 kont w 27 portalach, łańcuch LAB z 30 portfelami — analizowano wszystkie adresy z `/api/blockchain` i z publicznych kont. (2) `apps/sandbox` (serwer na http://127.0.0.1:4100, tylko odczyt): 65 adresów — wszystkie adresy z plików `apps/sandbox/data` (publikacje, etykiety eksploratora, księga przelewów).
 - **Start:** sprawa z jednym identyfikatorem `crypto_address`; tryb standardowy oraz — osobno — głęboki. Narzędzie: `buildApp` + `app.inject`, baza PGlite w pamięci odnawiana co 40 analiz, łączniki i dostawca danych blockchain wyłącznie danego zbioru (laboratorium: `lab-*`; piaskownica: `sandbox-*`), bez internetu i bez modelu językowego. Reguł nie zmieniano.
-- **Kolejność.** Najpierw wszystkie analizy, potem prawda wzorcowa. Laboratorium: `/api/ground-truth` pobrane po analizach (strażnik na `fetch`); żądań w czasie pomiaru: laboratorium 36726, piaskownica 7160, zablokowanych (zakazane ścieżki, zapis, `/_demo`): 0, poza zbiorami: 0. Piaskownica: przed analizami skrypt wziął z plików danych tylko listę adresów i nicków autorów; właścicieli wyznaczył w fazie oceny.
+- **Kolejność.** Najpierw wszystkie analizy, potem prawda wzorcowa. Laboratorium: `/api/ground-truth` pobrane po analizach (strażnik na `fetch`); żądań w czasie pomiaru: laboratorium 36699, piaskownica 7220, zablokowanych (zakazane ścieżki, zapis, `/_demo`): 0, poza zbiorami: 0. Piaskownica: przed analizami skrypt wziął z plików danych tylko listę adresów i nicków autorów; właścicieli wyznaczył w fazie oceny.
 - **Prawda wzorcowa — laboratorium:** właściciel = osoba, której portfel ma ten adres (`people[].walletAddresses`); adres zbiórki pośrednika (scenariusz `shared-payment-address`, posty z `walletOwnerPersonId = null`) nie należy do nikogo. „Opublikowany przez właściciela” = adres jest w publicznym polu portfeli któregoś konta tej osoby albo w jej poście z `addressUse = own`.
 - **Prawda wzorcowa — piaskownica:** konta jednej osoby według plików danych i README (`SANDBOX_PERSONS` w skrypcie; skrypt sprawdza, że każde konto z `accounts` jest przypisane dokładnie raz — m.in. Rafał Kowalski i Julia Kowalska to jedna osoba, a dwa `marek88` i dwa `wilczek_x9` to różne osoby). Adres z etykietą klasy innej niż `private` = giełda / usługa / kontrakt; adres publikowany przez jedną osobę = jej adres; publikowany przez kilka osób = cytowany przez wielu (właściciel = autor wpisu otwierającego, np. konto rozdania); adres bez publikacji i bez etykiety = bez właściciela.
 - **Klasyfikacja wyniku** (kandydat główny = `dossier.persons[0]` z prawdopodobieństwem > 0, konta = jego profile): **trafienie** — zawiera konto właściciela i żadnego konta innej osoby; **częściowe** — konto właściciela i konta innych osób; **błąd** — brak konta właściciela (dla adresów bez właściciela: każdy wskazany kandydat); **wstrzymanie** — teczka nie podaje kandydata.
@@ -48,7 +50,7 @@ Najkrócej: na 95 adresach z obu zbiorów narzędzie **ani razu nie wskazało ni
 |---|---|---|
 | adres powszechnie cytowany (≥ 10 niepowiązanych autorów) | 1 | wspólny adres pośrednika (zbiórka): 1 |
 
-Rodzaje wyjaśnień w teczkach bez kandydata (`dossier.explanations[].kind`, jedna teczka może mieć kilka): `widely_cited` 1, `no_cash_out` 1.
+Rodzaje wyjaśnień w teczkach bez kandydata (`dossier.explanations[].kind`, jedna teczka może mieć kilka): `widely_cited` 1, `no_owner` 1, `no_cash_out` 1.
 
 ### Czy prawdopodobieństwo kandydata oddziela trafienia od błędów
 
@@ -81,20 +83,20 @@ W pomiarze nie ma łączników internetowych, więc tryb głęboki różni się 
 
 | Tryb | Trafienie | Częściowe | Błąd | Wstrzymanie | Precision | Pokrycie | Mediana / P95 czasu |
 |---|---|---|---|---|---|---|---|
-| standardowy | 29 | 0 | 0 | 1 | 100,0% | 100,0% | 0,57 s / 1,54 s |
-| głęboki | 29 | 0 | 0 | 1 | 100,0% | 100,0% | 0,62 s / 3,28 s |
+| standardowy | 29 | 0 | 0 | 1 | 100,0% | 100,0% | 0,50 s / 1,29 s |
+| głęboki | 29 | 0 | 0 | 1 | 100,0% | 100,0% | 0,54 s / 2,73 s |
 
 Żaden adres nie zmienił klasyfikacji między trybami.
 
 ### Czas analizy
 
-Tryb standardowy: mediana 0,57 s, P95 1,54 s, maks. 1,66 s (założenie sprawy + cała analiza; serwer zbioru działa na tej samej maszynie, więc bez opóźnień sieci). Analizy nieukończone lub częściowe: 0; z błędem łącznika lub dostawcy w dzienniku: 0.
+Tryb standardowy: mediana 0,50 s, P95 1,29 s, maks. 1,32 s (założenie sprawy + cała analiza; serwer zbioru działa na tej samej maszynie, więc bez opóźnień sieci). Analizy nieukończone lub częściowe: 0; z błędem łącznika lub dostawcy w dzienniku: 0.
 
 ### Przykłady
 
 1. **TRAFIENIE** — `lab16a79cfb6229fd50bc9dd4b0be29d76579b19dcd4` (prywatny, właściciel sam go opublikował; właściciel we wzorcu: Mira Kowal (person-0001); Portfel LAB 01). Wynik: kandydat główny (prawdopodobieństwo 65): Mira Kowal (person-0001) — konta acct-00001, acct-00002, acct-00003, acct-00005, acct-00007. Adres w teczce: wynik 100, śladów 11, niepowiązanych publikujących 2, klasa unknown („Portfel LAB 01”); reguły: base.own_profile → synergy.second_source → synergy.extra_sources. Uzasadnienie w teczce: „Podstawa 60: profil x.lab.test („szlak_ciszy”) — autor sam publikuje adres wskazany w sprawie. Mocne wiązania między profilami (10): +15. Połączono profile x.lab.test i facebook.lab.test: ten sam e-mail mira.kowal@poczta.test (waga 100); ten sam adres kryptowalutowy publikowany przez oba profile jako własny, niepublikowany przez wiele innych osób (waga 80).”
 2. **TRAFIENIE** — `lab13cb446f6cf73e4f425c66c0528fe8bde3a5fe2bb` (prywatny, właściciel sam go opublikował; właściciel we wzorcu: Artur Kowal (person-0024); Portfel LAB 24). Wynik: kandydat główny (prawdopodobieństwo 75): Artur Kowal (person-0024) — konta acct-00135, acct-00134, acct-00132, acct-00136. Adres w teczce: wynik 70, śladów 11, niepowiązanych publikujących 3, klasa unknown („Portfel LAB 24”); reguły: base.own_profile → independence.copies_merged → synergy.second_source → synergy.extra_sources → penalty.shared_address. Uzasadnienie w teczce: „Podstawa 60: profil forum-kulinarne.lab.test („a_kowal33”) — autor sam publikuje adres wskazany w sprawie. Mocne wiązania między profilami (4): +15. Połączono profile forum-kulinarne.lab.test i forum-muzyczne.lab.test: ten sam adres kryptowalutowy publikowany przez oba profile jako własny, niepublikowany przez wiele innych osób (waga 80); ta sama nazwa wyświetlana (możliwa zbieżność nazwisk) (waga 15).”
-3. **WSTRZYMANIE** — `lab146852904fbc14102d209c3f9f564f344a54deaf9` (wspólny adres pośrednika (zbiórka); Portfel pośrednika LAB). Wynik: brak kandydata. Adres w teczce: wynik 0, powszechnie cytowany, śladów 0, niepowiązanych publikujących 20, klasa unknown („Portfel pośrednika LAB”); reguły: —. Uzasadnienie w teczce: „[widely_cited] Adres lab1468529…a54deaf9 wymienia 20 niepowiązanych autorów — na podstawie publikacji nie da się wskazać właściciela. [no_cash_out] 1 adres powiązany ma łącznie 0 pobranych przelewów, ale żaden wypływ nie trafił do adresu oznaczonego jako giełda, serwis wymiany, bramka płatnicza lub karta — dlatego nie ma dowodu spieniężenia.” Powód według pomiaru: adres powszechnie cytowany (≥ 10 niepowiązanych autorów).
+3. **WSTRZYMANIE** — `lab146852904fbc14102d209c3f9f564f344a54deaf9` (wspólny adres pośrednika (zbiórka); Portfel pośrednika LAB). Wynik: brak kandydata. Adres w teczce: wynik 0, powszechnie cytowany, śladów 0, niepowiązanych publikujących 20, klasa unknown („Portfel pośrednika LAB”); reguły: —. Uzasadnienie w teczce: „[widely_cited] Adres lab1468529…a54deaf9 wymienia 20 niepowiązanych autorów — na podstawie publikacji nie da się wskazać właściciela. [no_owner] Nie wskazano osoby: adres lab1468529…a54deaf9 wymienia 20 autorów niezwiązanych ze sobą — to adres powszechnie cytowany, a ich wpisy są wzmiankami, nie podstawą własności. [no_cash_out] 1 adres powiązany ma łącznie 0 pobranych przelewów, ale żaden wypływ nie trafił do adresu oznaczonego jako giełda, serwis wymiany, bramka płatnicza lub karta — dlatego nie ma dowodu spieniężenia.” Powód według pomiaru: adres powszechnie cytowany (≥ 10 niepowiązanych autorów).
 
 ## Piaskownica (BTC / ETH / TRON)
 
@@ -103,13 +105,13 @@ Tryb standardowy: mediana 0,57 s, P95 1,54 s, maks. 1,66 s (założenie sprawy +
 | Rodzaj adresu (wzorzec) | Adresów | Trafienie | Częściowe | Błąd | Wstrzymanie |
 |---|---|---|---|---|---|
 | giełda / usługa / kontrakt | 10 | 0 | 0 | 0 | 10 |
-| prywatny, właściciel sam go opublikował | 38 | 36 | 0 | 0 | 2 |
+| prywatny, właściciel sam go opublikował | 38 | 38 | 0 | 0 | 0 |
 | bez właściciela we wzorcu i bez publikacji (kontrahent anonimowy, adres pośredni) | 16 | 0 | 0 | 0 | 16 |
 | cytowany przez wielu autorów | 1 | 1 | 0 | 0 | 0 |
-| **Razem** | 65 | 37 | 0 | 0 | 28 |
+| **Razem** | 65 | 39 | 0 | 0 | 26 |
 
-- **Precision przypisania:** 100,0% (trafienia: 37, błędy: 0; częściowe: 0).
-- **Pokrycie:** 94,7% — 36 z 38 adresów, które prywatny właściciel sam opublikował; licząc też częściowe: 94,7%.
+- **Precision przypisania:** 100,0% (trafienia: 39, błędy: 0; częściowe: 0).
+- **Pokrycie:** 100,0% — 38 z 38 adresów, które prywatny właściciel sam opublikował; licząc też częściowe: 100,0%.
 - **Adresy, które nie powinny wskazywać osoby** (giełda / usługa / kontrakt; cytowany przez wielu autorów; bez właściciela we wzorcu i bez publikacji (kontrahent anonimowy, adres pośredni)): poprawne wstrzymanie 26 z 27 (96,3%); wskazany właściciel konta, które podało adres jako swój (np. konto rozdania) 1; wskazana niewłaściwa osoba 0.
 
 ### Dlaczego narzędzie wstrzymało się ze wskazaniem osoby
@@ -120,15 +122,14 @@ Tryb standardowy: mediana 0,57 s, P95 1,54 s, maks. 1,66 s (założenie sprawy +
 | adres wykluczony: exclusion.address_class, klasa institutional | 4 | giełda / usługa / kontrakt: 4 |
 | adres wykluczony: exclusion.address_class, klasa exchange | 3 | giełda / usługa / kontrakt: 3 |
 | adres wykluczony: exclusion.address_class, klasa smart_contract | 3 | giełda / usługa / kontrakt: 3 |
-| adres tylko we wpisach liczonych jako wzmianka (kategoria źródła spoza OWNERSHIP_CATEGORIES, bez modelu językowego) — autor nie jest kandydatem na właściciela | 2 | prywatny, właściciel sam go opublikował: 2 |
 
-Rodzaje wyjaśnień w teczkach bez kandydata (`dossier.explanations[].kind`, jedna teczka może mieć kilka): `no_cash_out` 15, `no_addresses` 10.
+Rodzaje wyjaśnień w teczkach bez kandydata (`dossier.explanations[].kind`, jedna teczka może mieć kilka): `no_owner` 26, `no_cash_out` 15, `no_addresses` 10.
 
 ### Czy prawdopodobieństwo kandydata oddziela trafienia od błędów
 
 | Wynik | Prawdopodobieństwo kandydata głównego |
 |---|---|
-| Trafienia | 37 szt.; min 60, mediana 60, maks 65 |
+| Trafienia | 39 szt.; min 60, mediana 60, maks 90 |
 | Częściowe | — |
 | Błędy | — |
 
@@ -137,17 +138,17 @@ Rodzaje wyjaśnień w teczkach bez kandydata (`dossier.explanations[].kind`, jed
 | 0–39 | 0 | 0 | 0 |
 | 40–59 | 0 | 0 | 0 |
 | 60–79 | 37 | 0 | 0 |
-| 80–100 | 0 | 0 | 0 |
+| 80–100 | 2 | 0 | 0 |
 
 Liczymy tylko kandydatów z prawdopodobieństwem ≥ progu (pozostali = wstrzymanie):
 
 | Próg | Trafienia | Częściowe | Błędy | Precision | Pokrycie |
 |---|---|---|---|---|---|
-| ≥ 40 | 37 | 0 | 0 | 100,0% | 94,7% |
-| ≥ 60 | 37 | 0 | 0 | 100,0% | 94,7% |
-| ≥ 80 | 0 | 0 | 0 | — | 0,0% |
+| ≥ 40 | 39 | 0 | 0 | 100,0% | 100,0% |
+| ≥ 60 | 39 | 0 | 0 | 100,0% | 100,0% |
+| ≥ 80 | 2 | 0 | 0 | 100,0% | 5,3% |
 
-Błędów nie było, więc ten zbiór **nie pozwala sprawdzić**, czy prawdopodobieństwo kandydata odsiewa błędne wskazania — tabela pokazuje tylko, ile trafień traci się przy wyższym progu. Najwyższe prawdopodobieństwo kandydata w analizie samego adresu: 65. Podstawa prawdopodobieństwa osoby (pierwsza przesłanka kandydata): 60 — 37×; resztę daje premia za mocne wiązania między profilami tej osoby (w uzasadnieniu: „Mocne wiązania między profilami (n): +x”). Próg 80 odcina więc każde wskazanie: sam adres na profilu nie daje osobie wysokiej pewności, dopóki analityk jej nie potwierdzi.
+Błędów nie było, więc ten zbiór **nie pozwala sprawdzić**, czy prawdopodobieństwo kandydata odsiewa błędne wskazania — tabela pokazuje tylko, ile trafień traci się przy wyższym progu. Najwyższe prawdopodobieństwo kandydata w analizie samego adresu: 90. Podstawa prawdopodobieństwa osoby (pierwsza przesłanka kandydata): 60 — 37×, 90 — 2×; resztę daje premia za mocne wiązania między profilami tej osoby (w uzasadnieniu: „Mocne wiązania między profilami (n): +x”). 
 
 ### Pułapki piaskownicy — adres po adresie
 
@@ -168,10 +169,10 @@ Błędów nie było, więc ten zbiór **nie pozwala sprawdzić**, czy prawdopodo
 | `TYgA25gW…hXDmwB` (lenaTron) | prywatny, właściciel sam go opublikował — Lena Kurek | trafienie | targ:lena_kurek (60) | wynik 70; reguły: base.sale_offer |
 | `TAvHgdm1…rfRUMb` (kolekcjeTron) | prywatny, właściciel sam go opublikował — Lena Kurek | trafienie | spolecznosc:kurek_kolekcje (60) | wynik 85; reguły: base.own_profile |
 | `1AD4pc1b…L3fUca` (marekBtc) | prywatny, właściciel sam go opublikował — Marek Sikora (marek88 na Targu) | trafienie | targ:marek88 (60) | wynik 70; reguły: base.sale_offer |
-| `TB9EFt6m…2BfwwB` (marekTron) | prywatny, właściciel sam go opublikował — Marek Wrona (marek88 na Forum) | wstrzymanie | — | wynik 0; reguły: — |
+| `TB9EFt6m…2BfwwB` (marekTron) | prywatny, właściciel sam go opublikował — Marek Wrona (marek88 na Forum) | trafienie | forum:marek88 (60) | wynik 50; reguły: base.forum_post → basis.text_declaration |
 | `1HMMp2ZD…ve4d62` (wilczekBtc) | prywatny, właściciel sam go opublikował — Adam Wilczek (wilczek_x9 na Targu) | trafienie | targ:wilczek_x9 (60) | wynik 70; reguły: base.sale_offer |
-| `TBnxxbu5…RMYjXu` (wilczynskaTron) | prywatny, właściciel sam go opublikował — Beata Wilczyńska (wilczek_x9 na Forum) | wstrzymanie | — | wynik 0; reguły: — |
-| `bc1qyyrk…wzvfce` (szpakBtc) | prywatny, właściciel sam go opublikował — Norbert Szpak | trafienie | gitpub:szpak_nody (60) | wynik 95; reguły: base.cryptographic_proof |
+| `TBnxxbu5…RMYjXu` (wilczynskaTron) | prywatny, właściciel sam go opublikował — Beata Wilczyńska (wilczek_x9 na Forum) | trafienie | forum:wilczek_x9 (60) | wynik 50; reguły: base.forum_post → basis.text_declaration |
+| `bc1qyyrk…wzvfce` (szpakBtc) | prywatny, właściciel sam go opublikował — Norbert Szpak | trafienie | gitpub:szpak_nody (90) | wynik 95; reguły: base.cryptographic_proof |
 | `bc1q78n2…kjtpac` (baronBtc) | prywatny, właściciel sam go opublikował — Borys Kania (fałszywy „dowód”) | trafienie | spolecznosc:krypto_baron (60) | wynik 85; reguły: base.own_profile |
 | `TTfeafNd…UTeKtx` (jaskulaTron) | prywatny, właściciel sam go opublikował — Filip Jaskuła | trafienie | targ:fjaskula_usdt, forum:fjaskula_usdt, komunikator:fjaskula_usdt (60) | wynik 70; reguły: base.sale_offer → independence.copies_merged |
 
@@ -181,23 +182,21 @@ W pomiarze nie ma łączników internetowych, więc tryb głęboki różni się 
 
 | Tryb | Trafienie | Częściowe | Błąd | Wstrzymanie | Precision | Pokrycie | Mediana / P95 czasu |
 |---|---|---|---|---|---|---|---|
-| standardowy | 37 | 0 | 0 | 28 | 100,0% | 94,7% | 0,07 s / 0,24 s |
-| głęboki | 37 | 0 | 0 | 28 | 100,0% | 94,7% | 0,06 s / 0,21 s |
+| standardowy | 39 | 0 | 0 | 26 | 100,0% | 100,0% | 0,06 s / 0,20 s |
+| głęboki | 39 | 0 | 0 | 26 | 100,0% | 100,0% | 0,06 s / 0,21 s |
 
 Żaden adres nie zmienił klasyfikacji między trybami.
 
 ### Czas analizy
 
-Tryb standardowy: mediana 0,07 s, P95 0,24 s, maks. 0,41 s (założenie sprawy + cała analiza; serwer zbioru działa na tej samej maszynie, więc bez opóźnień sieci). Analizy nieukończone lub częściowe: 0; z błędem łącznika lub dostawcy w dzienniku: 0.
+Tryb standardowy: mediana 0,06 s, P95 0,20 s, maks. 0,39 s (założenie sprawy + cała analiza; serwer zbioru działa na tej samej maszynie, więc bez opóźnień sieci). Analizy nieukończone lub częściowe: 0; z błędem łącznika lub dostawcy w dzienniku: 0.
 
 ### Przykłady
 
 1. **TRAFIENIE** — `TTfeafNdtjeCTKcVo6SkGEaXwx3mUTeKtx` (`jaskulaTron`) (prywatny, właściciel sam go opublikował; właściciel we wzorcu: Filip Jaskuła). Wynik: kandydat główny (prawdopodobieństwo 60): Filip Jaskuła — konta targ:fjaskula_usdt, forum:fjaskula_usdt, komunikator:fjaskula_usdt. Adres w teczce: wynik 70, śladów 3, niepowiązanych publikujących 0, klasa private; reguły: base.sale_offer → independence.copies_merged. Uzasadnienie w teczce: „Podstawa 60: profil targ.sandbox („fjaskula_usdt”) — autor sam publikuje adres wskazany w sprawie. Połączono profile targ.sandbox i forum.sandbox: ten sam adres w skopiowanej publikacji / wzmiance — nie dowodzi wspólnego operatora (waga 30); ten sam nick (sam w sobie nie dowodzi tej samej osoby) (waga 20). Połączono profile targ.sandbox i komunikator.sandbox: ten sam adres w skopiowanej publikacji / wzmiance — nie dowodzi wspólnego operatora (waga 30); ten sam nick (sam w sobie nie dowodzi tej samej osoby) (waga 20).”
 2. **TRAFIENIE** — `bc1qxhvk23usdd66dddy8lvafvv47v5aa9jz6kl0ze` (`kacperBtc`) (prywatny, właściciel sam go opublikował; właściciel we wzorcu: Kacper Wrzosek (programista, Bydgoszcz)). Wynik: kandydat główny (prawdopodobieństwo 65): Kacper Wrzosek (programista, Bydgoszcz) — konta gitpub:kwrzosek_dev, targ:kwrzosek_dev. Adres w teczce: wynik 100, śladów 2, niepowiązanych publikujących 0, klasa private; reguły: base.own_profile → synergy.second_source. Uzasadnienie w teczce: „Podstawa 60: profil gitpub.sandbox („kwrzosek_dev”) — autor sam publikuje adres wskazany w sprawie. Mocne wiązania między profilami (1): +5. Połączono profile gitpub.sandbox i targ.sandbox: ten sam adres kryptowalutowy publikowany przez oba profile jako własny, niepublikowany przez wiele innych osób (waga 80); ten sam rzadki nick i zgodna lokalizacja (waga 50).”
 3. **TRAFIENIE** — `TGVGqNUk2kpU5kwNqaK3pdsh5ZDecVtUJj` (`giveawayTron`) (cytowany przez wielu autorów; właściciel we wzorcu: konto „MEGA Rozdanie Krypto” (oszustwo); 8 autorów). Wynik: kandydat główny (prawdopodobieństwo 60): konto „MEGA Rozdanie Krypto” (oszustwo) — konta spolecznosc:mega_rozdanie_krypto. Adres w teczce: wynik 55, śladów 1, niepowiązanych publikujących 7, klasa private; reguły: base.own_profile → penalty.shared_address. Uzasadnienie w teczce: „Podstawa 60: profil spolecznosc.sandbox („mega_rozdanie_krypto”) — autor sam publikuje adres wskazany w sprawie. Imię i nazwisko: nie ustalono — profile nie ujawniają nazwy wyświetlanej.”
-4. **WSTRZYMANIE** — `0xeDCABEaF7845fb6f8d42D634acF7faea4449b5bf` (`exchangeEth`) (giełda / usługa / kontrakt; Giełda Bursztyn: Hot Wallet). Wynik: brak kandydata. Adres w teczce: wynik 0 (wykluczony), śladów 0, niepowiązanych publikujących 0, klasa exchange („Giełda Bursztyn: Hot Wallet”); reguły: exclusion.address_class. Uzasadnienie w teczce: „[no_addresses] Przeszukano 8 źródeł; 1 znaleziony adres należy do pośredników (giełdy, kontrakty) albo został odrzucony — żaden nie jest adresem podmiotu.” Powód według pomiaru: adres wykluczony: exclusion.address_class, klasa exchange.
-5. **WSTRZYMANIE** — `TB9EFt6mvRQKihfPRiSQNCkBedqh2BfwwB` (`marekTron`) (prywatny, właściciel sam go opublikował; właściciel we wzorcu: Marek Wrona (marek88 na Forum)). Wynik: brak kandydata. Adres w teczce: wynik 0, śladów 0, niepowiązanych publikujących 1, klasa private; reguły: —. Teczka nie podaje żadnego wyjaśnienia (`explanations` puste). Powód według pomiaru: adres tylko we wpisach liczonych jako wzmianka (kategoria źródła spoza OWNERSHIP_CATEGORIES, bez modelu językowego) — autor nie jest kandydatem na właściciela.
-6. **WSTRZYMANIE** — `TBnxxbu53MBoD2kFqEE42RtYCjsbRMYjXu` (`wilczynskaTron`) (prywatny, właściciel sam go opublikował; właściciel we wzorcu: Beata Wilczyńska (wilczek_x9 na Forum)). Wynik: brak kandydata. Adres w teczce: wynik 0, śladów 0, niepowiązanych publikujących 1, klasa private; reguły: —. Teczka nie podaje żadnego wyjaśnienia (`explanations` puste). Powód według pomiaru: adres tylko we wpisach liczonych jako wzmianka (kategoria źródła spoza OWNERSHIP_CATEGORIES, bez modelu językowego) — autor nie jest kandydatem na właściciela.
+4. **WSTRZYMANIE** — `0xeDCABEaF7845fb6f8d42D634acF7faea4449b5bf` (`exchangeEth`) (giełda / usługa / kontrakt; Giełda Bursztyn: Hot Wallet). Wynik: brak kandydata. Adres w teczce: wynik 0 (wykluczony), śladów 0, niepowiązanych publikujących 0, klasa exchange („Giełda Bursztyn: Hot Wallet”); reguły: exclusion.address_class. Uzasadnienie w teczce: „[no_addresses] Przeszukano 8 źródeł; 1 znaleziony adres należy do pośredników (giełdy, kontrakty) albo został odrzucony — żaden nie jest adresem podmiotu. [no_owner] Nie wskazano osoby: adres 0xeDCABEaF…4449b5bf należy według publicznych etykiet do giełdy lub portfela powierniczego („Giełda Bursztyn: Hot Wallet”). Z adresu pośrednika korzysta wiele osób — jego publikacja ani przelewy nie wskazują, kto za nim stoi.” Powód według pomiaru: adres wykluczony: exclusion.address_class, klasa exchange.
 
 ## Kierunek odwrotny: od nicku właściciela do adresu
 
@@ -217,9 +216,10 @@ Dla porównania pełniejszy pomiar tego kierunku w laboratorium (start: nick + e
 - **Brak opóźnień i limitów.** Serwery zbiorów działają lokalnie; czasy nie zawierają opóźnień sieci ani limitów zapytań prawdziwych serwisów (w ustawieniach: do 20 s na zapytanie, 120 s na analizę).
 - **Dwa kierunki błędu nie są symetryczne.** Dla zespołu dochodzeniowego błędne wskazanie osoby jest kosztowniejsze niż brak wskazania; dlatego najważniejsza liczba to „błąd”, a nie pokrycie.
 - **Kontrole na prawdziwych danych (ręczne, poza tym pomiarem, 21.11.2026, tryb LIVE):**
-  - adres z kradzieży Bitfinex 2016 `1CGA4srJbPWhtJb7ezgY6GQf4PKhFuzD9w` → teczka bez kandydata na osobę; wykryte przekazanie środków na adres rządu USA (zajęcie środków);
-  - adres oszustwa z przejęcia kont Twittera 2020 `bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh` → adres powszechnie cytowany (60 niepowiązanych autorów), teczka bez kandydata;
-  - nazwa ENS `vitalik.eth` (start od nazwy, nie od adresu) → osoba wskazana i adres potwierdzony zapisem ENS.
-  To trzy pojedyncze próby, nie statystyka — pokazują tylko, że mechanizmy wstrzymania (zajęcie, powszechne cytowanie) i potwierdzenia (ENS) działają także na prawdziwych danych.
+  - adres z kradzieży Bitfinex 2016 `1CGA4srJbPWhtJb7ezgY6GQf4PKhFuzD9w` → teczka bez kandydata na osobę (7 autorów tylko wymienia adres; wyjaśnienie `no_owner`); wykryte przekazanie środków na adres rządu USA (zajęcie środków);
+  - adres oszustwa z przejęcia kont Twittera 2020 `bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh` → adres powszechnie cytowany (61 niepowiązanych autorów), teczka bez kandydata, z wyjaśnieniem `no_owner`;
+  - nazwa ENS `vitalik.eth` (start od nazwy, nie od adresu) → osoba wskazana i adres potwierdzony zapisem ENS;
+  - sam adres `0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045` → jedyny kandydat `vitalik.eth` (90%) z rozwiązania odwrotnego ENS sprawdzonego w obie strony; 54 autorów wymieniających adres (m.in. README bibliotek z adresem jako przykładem) to wzmianki. Przed zmianą z 21.11.2026 README zwykłych repozytoriów liczyły się jako „własny profil”, więc kandydatów było 11 po 60% i pierwszym był autor biblioteki, nie właściciel nazwy.
+  To cztery pojedyncze próby, nie statystyka — pokazują tylko, że mechanizmy wstrzymania (zajęcie, powszechne cytowanie) i potwierdzenia (ENS) działają także na prawdziwych danych.
 - **Jeden przebieg, jeden seed laboratorium, stan piaskownicy z chwili pomiaru** (m.in. faza scenariusza podmiany adresu na `/_demo`; skrypt jej nie zmienia).
 

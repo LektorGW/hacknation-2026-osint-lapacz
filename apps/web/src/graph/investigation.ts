@@ -164,6 +164,28 @@ export function searchNodes(nodes: GraphNode[], query: string, limit = 8): Graph
     .map((item) => item.node);
 }
 
+// ---------- Wejście wyszukiwania ----------
+
+/**
+ * Węzły odpowiadające temu, co wpisał analityk: identyfikatory o pochodzeniu `analyst`,
+ * a dla adresu krypto — także węzeł tego adresu w warstwie blockchain.
+ */
+export function inputNodeIds(
+  nodes: Pick<GraphNode, 'id' | 'kind'>[],
+  identifiers: { identifier: { type: string; value: string }; origin: 'analyst' | 'discovered' }[],
+): Set<string> {
+  const given = identifiers.filter((item) => item.origin === 'analyst').map(({ identifier }) => ({ type: identifier.type, value: identifier.value.trim().toLowerCase() }));
+  const result = new Set<string>();
+  for (const node of nodes) {
+    const id = node.id.toLowerCase();
+    const matches = given.some(({ type, value }) =>
+      node.kind === 'identifier' ? id === `id:${type}:${value}` : node.kind === 'address' && type === 'crypto_address' && id.startsWith('addr:') && id.endsWith(`:${value}`),
+    );
+    if (matches) result.add(node.id);
+  }
+  return result;
+}
+
 // ---------- Zwijanie gałęzi ----------
 
 /**

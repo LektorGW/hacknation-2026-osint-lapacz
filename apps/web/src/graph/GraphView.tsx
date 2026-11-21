@@ -38,6 +38,7 @@ import {
   edgeStatus,
   findEvidencePath,
   hypothesisForEdge,
+  inputNodeIds,
   linkKeyOf,
   nodeStatus,
   searchNodes,
@@ -511,6 +512,8 @@ export function GraphView() {
     return declutter(base.nodes, base.edges, { showWeak, showRejected });
   }, [all, statuses, hiddenKinds, minScore, layer, showWeak, showRejected]);
   const graph = useMemo(() => collapseGraph(viewed.nodes, viewed.edges, { collapsed, sourcesShown }), [viewed, collapsed, sourcesShown]);
+  // Węzły z danymi, które wpisał analityk — wyróżnione obwódką i podpisem „wejście”.
+  const inputs = useMemo(() => inputNodeIds(all.nodes, dossier.subject.identifiers), [all, dossier.subject.identifiers]);
   const flow = layer === 'chain';
   const layout = useMemo(
     () => (flow ? flowLayout(graph.nodes, graph.edges) : radial ? radialLayout(graph.nodes, graph.edges) : layeredLayout(graph.nodes, graph.edges)),
@@ -827,15 +830,17 @@ export function GraphView() {
               const isCollapsed = collapsed.has(node.id);
               const sourceCount = sources.get(node.id) ?? 0;
               const shown = sourcesShown.has(node.id);
-              const caption = status === 'hypothesis' ? 'hipoteza' : status === 'confirmed' ? '✓ potwierdzone' : status === 'rejected' ? 'odrzucone' : null;
-              const description = `${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}`;
+              const isInput = inputs.has(node.id);
+              const statusCaption = status === 'hypothesis' ? 'hipoteza' : status === 'confirmed' ? '✓ potwierdzone' : status === 'rejected' ? 'odrzucone' : null;
+              const caption = isInput ? (statusCaption ? `wejście · ${statusCaption}` : 'wejście') : statusCaption;
+              const description = `${isInput ? 'Wejście wyszukiwania — ' : ''}${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}`;
               const dim = (near && !focus && !near.has(node.id)) || (path && !pathNodes.has(node.id)) || (focus !== null && !focus.has(node.id));
               const serviceBox = flow && node.kind === 'service';
               return (
                 <g
                   key={node.id}
                   data-node
-                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''}`}
+                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''}`}
                   transform={`translate(${point.x},${point.y})`}
                   tabIndex={0}
                   role="button"
@@ -849,6 +854,7 @@ export function GraphView() {
                   onBlur={() => setActive(null)}
                 >
                   <title>{description}</title>
+                  {isInput && !serviceBox && <circle className="gnode-input-ring" r={21} />}
                   {serviceBox ? (
                     <>
                       <rect className="gnode-box" x={-16} y={-22} width={SERVICE_BOX} height={44} rx={10} />
@@ -868,7 +874,7 @@ export function GraphView() {
                         {truncate(node.label, 16)}
                       </text>
                       {caption && (
-                        <text className="gnode-caption" y={46} textAnchor="middle">
+                        <text className={isInput ? 'gnode-caption gnode-input-tag' : 'gnode-caption'} y={46} textAnchor="middle">
                           {caption}
                         </text>
                       )}
@@ -895,7 +901,7 @@ export function GraphView() {
                       </text>
                       {(caption || node.sublabel) && (
                         <text className="gnode-sub" x={22} y={14}>
-                          {caption && <tspan className="gnode-caption">{caption}</tspan>}
+                          {caption && <tspan className={isInput ? 'gnode-caption gnode-input-tag' : 'gnode-caption'}>{caption}</tspan>}
                           {caption && node.sublabel ? ' · ' : ''}
                           {node.sublabel ? truncate(node.sublabel, caption ? 18 : 28) : ''}
                         </text>
@@ -967,6 +973,13 @@ export function GraphView() {
               <Glyph kind="operator" />
             </svg>
             obrys przerywany i podpis „hipoteza”: nie ustalona tożsamość
+          </li>
+          <li>
+            <svg className="legend-glyph gnode gnode-identifier is-input" viewBox="-24 -24 48 48" aria-hidden="true">
+              <circle className="gnode-input-ring" r={21} />
+              <Glyph kind="identifier" />
+            </svg>
+            obwódka i podpis „wejście”: dana wpisana przez analityka
           </li>
         </ul>
         <ul className="legend-row">

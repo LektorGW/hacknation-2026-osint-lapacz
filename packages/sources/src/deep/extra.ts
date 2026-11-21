@@ -58,14 +58,19 @@ interface UserItem {
   avatar_url?: string;
 }
 
-/** Plik, w którym właściciel repozytorium sam się przedstawia: README, FUNDING, repozytorium profilu albo strona `<login>.github.io`. */
+/**
+ * Plik, w którym właściciel repozytorium sam się przedstawia: FUNDING, plik „donate / support”, README repozytorium
+ * profilu (`<login>/<login>`) albo strona `<login>.github.io`. README zwykłego repozytorium (biblioteki, narzędzia)
+ * NIE jest profilem: często podaje cudzy, znany adres jako przykład użycia — trafia jako wypowiedź (`forum_post`),
+ * a o własności decyduje analiza (reguła tekstowa „donate: / my wallet”).
+ */
 function isOwnProfileFile(item: CodeItem): boolean {
   const owner = item.repository?.owner?.login?.toLowerCase() ?? '';
   const repo = item.repository?.name?.toLowerCase() ?? '';
   const path = (item.path ?? '').toLowerCase();
   if (item.repository?.fork) return false;
   if (/(^|\/)funding\.yml$/.test(path)) return true;
-  if (/^readme(\.[a-z]+)?$/.test(path) || /^(docs\/)?(donate|donations|support|sponsors?)(\.[a-z]+)?$/.test(path)) return true;
+  if (/^(docs\/)?(donate|donations|support|sponsors?)(\.[a-z]+)?$/.test(path)) return true;
   return owner !== '' && (repo === owner || repo === `${owner}.github.io`) && !path.includes('/');
 }
 

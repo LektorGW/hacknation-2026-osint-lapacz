@@ -11,7 +11,7 @@ import { isExternalDocumentText } from '../../service-reply.ts';
 import type { ServiceReplyRef } from '../../service-reply.ts';
 import { identityStatus } from '../../identities.ts';
 import type { DossierTab } from '../../router.ts';
-import { FINDING_GROUPS, countText, groupKeyFindings, splitLead, summarySentence } from '../../ux.ts';
+import { FINDING_GROUPS, countText, groupKeyFindings, noPersonReason, searchInput, splitLead, summarySentence } from '../../ux.ts';
 import { isAddressCase } from '../../components/AddressSummary.tsx';
 import { useDossier } from '../../components/DossierContext.tsx';
 import { ServiceChips } from '../../components/ServiceCards.tsx';
@@ -91,14 +91,29 @@ export function CaseHero() {
     linked.map((item) => item.finding),
   );
   const name = person?.fullName ?? person?.nameVariants[0];
+  // Zdanie i wyróżniony kafel zależą od tego, co analityk wpisał: adres krypto czy daną o osobie.
+  const input = searchInput(dossier.subject.identifiers);
+  const addressInput = input.kind === 'address';
+  const reason = noPersonReason({
+    widelyCited: (dossier.explanations ?? []).some((item) => item.kind === 'widely_cited'),
+    mentionDocuments: sum((dossier.mentions ?? []).map((item) => item.documents)),
+  });
   const sentence = summarySentence({
     person: name,
     addressCase,
+    ...(addressInput ? { inputAddress: shorten(input.items[0]!.value, 6, 4), noPersonReason: reason } : {}),
     linked: linked.length,
     unconfirmed: unconfirmed.length,
     services: serviceNames,
     totalPln: money,
   });
+  // Kafel „Badany adres” zostaje tylko dla spraw z adresem dopisanym obok danej o osobie.
+  const addressTile = addressCase && !addressInput;
+  const inputTag = (
+    <span className="input-tag" title="To jest wejście wyszukiwania — dana wpisana przez analityka">
+      wejście
+    </span>
+  );
 
   return (
     <section className="case-hero" aria-labelledby="podsumowanie-tytul" data-tour="summary">
@@ -124,9 +139,12 @@ export function CaseHero() {
       )}
 
       <div className="answers">
-        <article className="answer">
-          <h3 className="answer-label">{addressCase ? 'Badany adres' : 'Kto to prawdopodobnie jest'}</h3>
-          {addressCase ? (
+        <article className={`answer ${!addressInput && input.items.length > 0 ? 'is-input' : ''}`}>
+          <h3 className="answer-label">
+            {addressTile ? 'Badany adres' : 'Kto to prawdopodobnie jest'}
+            {!addressInput && input.items.length > 0 && inputTag}
+          </h3>
+          {addressTile ? (
             <>
               <p className="answer-value mono-value">{shorten(dossier.findings[0]?.address ?? dossier.subject.name, 10, 8)}</p>
               <span className="status status-fact">sprawa dotyczy samego adresu — właściciela nie ustalano</span>
@@ -141,17 +159,20 @@ export function CaseHero() {
           ) : (
             <>
               <p className="answer-value answer-empty">Nie ustalono osoby</p>
-              <p className="muted small">W źródłach nie znaleziono profili, które dałoby się połączyć w osobę.</p>
+              <p className="muted small">
+                {addressInput ? `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.` : 'W źródłach nie znaleziono profili, które dałoby się połączyć w osobę.'}
+              </p>
             </>
           )}
           <a className="answer-link" href={tabHref('osoba')}>
-            {addressCase ? 'Szczegóły adresu' : 'Osoba i konta'} <span aria-hidden="true">→</span>
+            {addressTile || (addressInput && !person) ? 'Szczegóły adresu' : 'Osoba i konta'} <span aria-hidden="true">→</span>
           </a>
         </article>
 
-        <article className="answer">
+        <article className={`answer ${addressInput ? 'is-input' : ''}`}>
           <h3 className="answer-label">
             <Term id="adres-krypto">Adresy krypto</Term>
+            {addressInput && inputTag}
           </h3>
           <p className="answer-value">
             <span className="answer-number">{linked.length}</span> {linked.length === 1 ? 'powiązany' : 'powiązane'}

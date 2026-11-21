@@ -8,10 +8,14 @@ Liczby poniżej pochodzą z przebiegu na piaskownicy z 21.11.2026 przy domyślny
 
 ## 1. Od jednego identyfikatora do raportu (2 min)
 
-Wpisz login `rkowalski_btc`.
+Wpisz login `rkowalski_btc`. Pod polem widać **„Tryb: Szybki / Głęboki”** — domyślnie zaznaczony
+jest **Głęboki** (1–4 minuty, szeroki przegląd forów i serwisów). Gdy na pokazie liczy się czas,
+kliknij **„Szybki”** (kilka–kilkanaście sekund). Okres analizy (od – do) jest zawsze widoczny i
+nieobowiązkowy. Ekran postępu ma tytuł „Szukam powiązań: „rkowalski_btc”…”.
 
 | Co pokazać | Gdzie | Co widać |
 |---|---|---|
+| Wejście wyszukiwania | pod tytułem teczki | znaczek „Szukano: login rkowalski_btc”; kafel „Kto to prawdopodobnie jest” ma znacznik „wejście”, w grafie węzeł wejścia ma obwódkę i podpis „wejście” |
 | Wyszukiwanie i odkrywanie | góra teczki, lista identyfikatorów | e-mail odkryty w profilu w kroku 1, użyty do dalszego wyszukiwania |
 | Adres i jego weryfikacja | zakładka „Adresy” | `bc1q43zh…2g98`, suma kontrolna poprawna, Wskaźnik Pewności 90 z księgą kroków |
 | Niezależność dowodów | księga wyniku | „niezależnych pochodzeń: 2” — profil i ogłoszenie o różnej treści |
@@ -66,6 +70,24 @@ Ta sama sprawa `rkowalski_btc`, tryb **SANDBOX** (piaskownica i API uruchomione 
 
 Puenta: OSINT wskazuje adres i giełdę; tożsamość klienta i wypłatę potwierdza dopiero dokument od
 usługi — wprowadzony jawnie, oznaczony, odwracalny i nigdy nie mylony ze źródłami publicznymi.
+
+## 6. Statystyki i monitorowanie spraw (0,5 min)
+
+1. **Pulpit → „Historia spraw”**: najnowsze na górze, nagłówki „Priorytet”, „Najmocniejsze powiązanie”,
+   „Szacowane wypłaty”, „Utworzono” sortują listę. Zaznacz **„Monitoruj”** przy sprawie
+   `rkowalski_btc` — analiza będzie ponawiana automatycznie (domyślnie co 6 godzin, tryb głęboki).
+2. Menu **„Monitoring”**: karta sprawy z ostatnią i następną analizą, wyborem odstępu (co godzinę /
+   co 6 godzin / codziennie) i przyciskiem **„Odśwież teraz”**. Po drugiej analizie rozwiń „Co się
+   zmieniło” — nowe i usunięte adresy, zmiany wyniku, podmiany adresów i nowe przelewy do usług.
+   Dawny przegląd źródeł jest niżej, w sekcji „Przegląd źródeł”.
+3. Menu **„Statystyki”**: średnia pewność, średnia liczba trafień na sprawę, skuteczność i odsetek
+   spraw z trafieniami. **Trafienie** = adres nieodrzucony z Wskaźnikiem Pewności ≥ 60 (poziom
+   „prawdopodobne”) — definicje pod podkreślonymi słowami. Niżej dawne kafle z liczbami i wykres
+   wypłat na lata podatkowe.
+4. Menu **„Typowanie”**: źródła podzielone na „publicznie dostępne” i „wymagające klucza API”, przy
+   drugich znaczek „klucz aktywny” albo „brak klucza” (wartości kluczy nie są nigdzie pokazywane).
+
+„Zasady punktacji” są teraz w dolnej części paska bocznego, obok „Słownika pojęć” i „Pomocy”.
 
 ## Pytania, na które warto mieć odpowiedź
 

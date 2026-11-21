@@ -9,7 +9,7 @@ import { DEFAULT_RULES, validateAddress } from '@olcys/core';
 import type { AnalysisRun, Identifier, IdentifierType, SourceConnector } from '@olcys/core';
 import { anonymizeFacts, trackAi } from './ai-rules.ts';
 import { DEFAULT_CORPUS_MAX_ROWS, DEFAULT_CORPUS_RETENTION_DAYS, createCorpusConnector } from './corpus.ts';
-import { detectReplacements, diffRuns } from './diff.ts';
+import { detectReplacements, diffCashOuts, diffRuns } from './diff.ts';
 import { buildDossier } from './dossier.ts';
 import type { DossierView } from './dossier.ts';
 import { registerDossierRoutes } from './dossier-routes.ts';
@@ -25,6 +25,8 @@ import type { RunDepth, RunLimitOverrides, RunPeriod } from './runs.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 import { registerSweepRoutes } from './sweep-routes.ts';
+import { sourceKeyInfo } from './source-keys.ts';
+import { DEFAULT_WATCH_DEPTH, WATCH_INTERVALS, WatchBusyError, createCaseWatch } from './watch.ts';
 
 export type { AppDeps } from './http-common.ts';
 export { TOOL_VERSION } from './http-common.ts';
@@ -234,9 +236,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const sourceKind = (id: string): 'sandbox' | 'lab' | 'internal' | 'public' =>
     id.startsWith('sandbox-') ? 'sandbox' : id.startsWith('lab-') ? 'lab' : id === 'corpus' ? 'internal' : 'public';
   const dataMode = () => {
-    const sources = connectors.map(({ id, label, enabledByDefault }) => {
+    const sources = connectors.map((connector) => {
+      const { id, label, enabledByDefault } = connector;
       const kind = sourceKind(id);
-      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab', enabledByDefault };
+      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab', enabledByDefault, ...sourceKeyInfo(connector, deps.configuredKeys) };
     });
     const chain = [...new Map([...chainProviders, ...(deps.deepChainProviders ?? [])].map((provider) => [provider.id, provider])).values()].map(({ id, label }) => {
       const kind = sourceKind(id);
@@ -272,23 +275,29 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return period;
   };
 
-  // ---------- Harmonogram cyklicznych analiz (w pamięci procesu) ----------
+  // ---------- Obserwowane sprawy: cykliczne analizy zapisane w bazie ----------
 
-  const schedules = new Map<string, { timer: NodeJS.Timeout; everyMinutes: number; nextRunAt: string }>();
-  const withSchedule = (caseSummary: CaseSummary): CaseView => {
-    const schedule = schedules.get(caseSummary.id);
-    return schedule
-      ? { ...caseSummary, schedule: { everyMinutes: schedule.everyMinutes, nextRunAt: schedule.nextRunAt } }
-      : caseSummary;
-  };
-  const clearSchedule = (caseId: string) => {
-    const schedule = schedules.get(caseId);
-    if (schedule) clearInterval(schedule.timer);
-    schedules.delete(caseId);
-  };
-  app.addHook('onClose', async () => {
-    for (const caseId of [...schedules.keys()]) clearSchedule(caseId);
+  const watch = createCaseWatch({
+    storage,
+    now,
+    timers: deps.watchTimers,
+    // Za każdym razem bieżąca postać sprawy: analityk mógł w międzyczasie dopisać identyfikatory.
+    startRun: async (caseId, depth) => {
+      const caseSummary = await storage.getCase(caseId);
+      if (!caseSummary) return null;
+      const { run } = await runs.start(caseSummary, { connectors: selectConnectors(undefined, depth, needsNameSearch(caseSummary.query.identifiers)), depth });
+      return { id: run.id, status: run.status };
+    },
+    isRunning: (runId) => runs.progress(runId)?.status === 'running',
+    log: (message, error) => (error ? app.log.error({ err: error }, message) : app.log.info(message)),
   });
+  app.addHook('preClose', async () => watch.stop());
+  await watch.start();
+
+  const withSchedule = (caseSummary: CaseSummary): CaseView => {
+    const entry = watch.get(caseSummary.id);
+    return entry ? { ...caseSummary, schedule: { everyMinutes: entry.everyMinutes, nextRunAt: entry.nextRunAt } } : caseSummary;
+  };
 
   // ---------- Trasy ----------
 
@@ -297,7 +306,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return { status: database === 'ok' ? 'ok' : 'degraded', version: TOOL_VERSION, time: now().toISOString(), database, ...dataMode() };
   });
 
-  app.get('/api/connectors', async () => connectorInfo());
+  // Lista źródeł z informacją o kluczu API (wymagany / ustawiony) — bez wartości kluczy.
+  app.get('/api/connectors', async () =>
+    connectorInfo().map((info, index) => ({ ...info, ...sourceKeyInfo(connectors[index]!, deps.configuredKeys) })),
+  );
 
   app.get('/api/rules', async () => rules);
 
@@ -468,7 +480,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     };
   });
 
-  app.post<{ Params: { id: string }; Body: { everyMinutes: number } }>(
+  // Obserwacja sprawy („Monitoruj”): analiza ponawiana co `everyMinutes` minut w podanym trybie (domyślnie głębokim).
+  app.post<{ Params: { id: string }; Body: { everyMinutes: number; depth?: RunDepth } }>(
     '/api/cases/:id/schedule',
     {
       schema: {
@@ -477,35 +490,70 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           type: 'object',
           required: ['everyMinutes'],
           additionalProperties: false,
-          properties: { everyMinutes: { type: 'integer', minimum: 1, maximum: 10080 } },
+          properties: { everyMinutes: { type: 'integer', minimum: 1, maximum: 10080 }, depth: { type: 'string', enum: ['standard', 'deep'] } },
         },
       },
     },
     async (request) => {
       const caseSummary = await requireCase(request.params.id);
-      const { everyMinutes } = request.body;
-      const intervalMs = everyMinutes * 60_000;
-      clearSchedule(caseSummary.id);
-      const timer = setInterval(() => {
-        const schedule = schedules.get(caseSummary.id);
-        if (schedule) schedule.nextRunAt = new Date(now().getTime() + intervalMs).toISOString();
-        executeRun(caseSummary).catch((error) => app.log.error(error, 'Cykliczna analiza nie powiodła się.'));
-      }, intervalMs);
-      // Harmonogram nie może utrzymywać procesu przy życiu.
-      timer.unref();
-      schedules.set(caseSummary.id, {
-        timer,
-        everyMinutes,
-        nextRunAt: new Date(now().getTime() + intervalMs).toISOString(),
-      });
+      await watch.set(caseSummary.id, { everyMinutes: request.body.everyMinutes, depth: request.body.depth });
       return withSchedule(caseSummary);
     },
   );
 
   app.delete<{ Params: { id: string } }>('/api/cases/:id/schedule', { schema: { params: idParams } }, async (request) => {
     const caseSummary = await requireCase(request.params.id);
-    clearSchedule(caseSummary.id);
+    await watch.remove(caseSummary.id);
     return withSchedule(caseSummary);
+  });
+
+  // „Odśwież teraz”: analiza obserwowanej sprawy od razu (w tle); następna po pełnym odstępie.
+  app.post<{ Params: { id: string } }>('/api/cases/:id/schedule/run', { schema: { params: idParams } }, async (request, reply) => {
+    const caseSummary = await requireCase(request.params.id);
+    try {
+      const handle = await watch.refresh(caseSummary.id);
+      if (!handle) throw new HttpError(404, 'Ta sprawa nie jest obserwowana — zaznacz „Monitoruj” na pulpicie.');
+      return reply.code(202).send(handle);
+    } catch (error) {
+      if (error instanceof WatchBusyError) throw new HttpError(409, error.message);
+      throw error;
+    }
+  });
+
+  /** Krótki opis analizy dla listy obserwowanych spraw. */
+  const runBrief = (run: CaseSummary['runs'][number]) => ({ id: run.id, startedAt: run.startedAt, status: run.status, findingCount: run.findingCount, topScore: run.topScore });
+
+  // Obserwowane sprawy: harmonogram, ostatnia analiza i zmiany względem poprzedniej zakończonej analizy.
+  app.get('/api/watch', async () => {
+    const items: Record<string, unknown>[] = [];
+    for (const [caseId, entry] of watch.list()) {
+      const caseSummary = await storage.getCase(caseId);
+      if (!caseSummary) continue;
+      const completed = caseSummary.runs.filter((run) => run.status === 'completed');
+      const last = caseSummary.runs.at(-1);
+      const [previous, latest] = completed.length >= 2 ? completed.slice(-2) : [undefined, undefined];
+      let changes: { diff: ReturnType<typeof diffRuns>; newCashOuts: ReturnType<typeof diffCashOuts> } | undefined;
+      if (previous && latest) {
+        const [from, to] = await Promise.all([requireRun(previous.id), requireRun(latest.id)]);
+        changes = { diff: diffRuns(from, to), newCashOuts: diffCashOuts(from, to) };
+      }
+      // Trwa analiza uruchomiona przez obserwację albo ręcznie w tym procesie.
+      const running = watch.isRunning(caseId) || (last?.status === 'running' && runs.progress(last.id)?.status === 'running');
+      items.push({
+        caseId,
+        name: caseSummary.name,
+        everyMinutes: entry.everyMinutes,
+        depth: entry.depth,
+        since: entry.since,
+        nextRunAt: entry.nextRunAt,
+        running,
+        ...(running && last ? { runningRunId: watch.isRunning(caseId) ? entry.lastRunId : last.id } : {}),
+        ...(entry.lastError ? { lastError: entry.lastError } : {}),
+        ...(last ? { lastRun: runBrief(last) } : {}),
+        ...(previous && latest ? { compared: { from: runBrief(previous), to: runBrief(latest) }, changes } : {}),
+      });
+    }
+    return { intervals: WATCH_INTERVALS, defaultDepth: DEFAULT_WATCH_DEPTH, items };
   });
 
   // ---------- Jedno wywołanie: identyfikator → sprawa → analiza → teczka ----------

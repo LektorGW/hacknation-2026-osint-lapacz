@@ -237,13 +237,14 @@ test('indeks publikacji: monitoring zapisuje, analiza osoby i adresu z niego kor
   const [found] = byAuthor.dossier.findings[0].evidence;
   assert.deepEqual([found.connectorId, found.service, found.url], ['corpus', 'forum.example', 'https://forum.example/t/1']);
 
-  // Analiza samego adresu znajduje publikację w indeksie, ale wypowiedź na forum to wzmianka —
-  // jej autor nie jest wskazywany jako właściciel.
+  // Analiza samego adresu znajduje publikację w indeksie. Wypowiedź na forum to zwykle wzmianka, ale tu autor
+  // podaje adres do wpłaty w pierwszej osobie („Sprzedam…, wpłata na adres”) — reguła tekstowa czyni go kandydatem
+  // z wagą wypowiedzi na forum (50), z wpisem „deklaracja własności w treści (reguła tekstowa)” w księdze.
   const byAddress = (await send('POST', '/api/quick', { value: BTC_C, period: { from: '2024-01-01', to: '2025-12-31' } })).json();
   assert.equal(byAddress.case.query.identifiers[0].type, 'crypto_address');
-  assert.deepEqual(byAddress.dossier.persons, []);
-  assert.deepEqual(byAddress.dossier.mentions, [{ identifier: { type: 'crypto_address', value: BTC_C }, documents: 1, authors: 1, services: 1 }]);
-  assert.match(byAddress.dossier.keyFindings[0].text, /^Adres jest wymieniany w cudzych publikacjach \(co najmniej 1 autor w 1 serwisie\) — nie da się wskazać właściciela/);
+  assert.deepEqual(byAddress.dossier.persons.map((person: { attributes: { value: string }[] }) => person.attributes.map((item) => item.value)), [['marek_krk']]);
+  assert.deepEqual(byAddress.dossier.mentions, []);
+  assert.deepEqual(byAddress.dossier.findings[0].confidence.ledger.slice(0, 2).map((entry: { rule: string }) => entry.rule), ['base.forum_post', 'basis.text_declaration']);
   // Okres wskazany przez analityka jest zapisany przy analizie i opisany w adnotacji adresu.
   assert.deepEqual((await app.inject(`/api/runs/${byAddress.dossier.runId}`)).json().period, { from: '2024-01-01', to: '2025-12-31' });
   assert.ok(byAddress.dossier.findings[0].annotations.some((note: string) => note.includes('pełna historia adresu') && note.includes('od 2024-01-01 do 2025-12-31')));

@@ -7,6 +7,7 @@ import { DashboardPage } from './pages/DashboardPage.tsx';
 import { DossierPage } from './pages/DossierPage.tsx';
 import { MonitoringPage } from './pages/MonitoringPage.tsx';
 import { RulesPage } from './pages/RulesPage.tsx';
+import { StatsPage } from './pages/StatsPage.tsx';
 import { SweepPage } from './pages/SweepPage.tsx';
 import { href, navigate, parseRoute, useHash } from './router.ts';
 import type { Route } from './router.ts';
@@ -25,6 +26,8 @@ function Page({ route }: { route: Route }) {
       return <DossierPage key={route.runId} source={{ runId: route.runId }} tab={route.tab} />;
     case 'sweep':
       return <SweepPage sweepId={route.sweepId} />;
+    case 'stats':
+      return <StatsPage />;
     case 'monitor':
       return <MonitoringPage />;
     case 'rules':
@@ -38,6 +41,7 @@ const SHORTCUTS: [string, string][] = [
   ['?', 'ta pomoc'],
   ['/', 'pole „Kogo sprawdzić?” na pulpicie'],
   ['g, potem p', 'pulpit'],
+  ['g, potem s', 'statystyki'],
   ['g, potem t', 'typowanie'],
   ['g, potem m', 'monitoring'],
   ['g, potem z', 'zasady punktacji'],
@@ -56,9 +60,9 @@ function focusSearch() {
 
 const NAV: { label: string; target: string; pages: Route['page'][]; icon: string }[] = [
   { label: 'Pulpit', target: href.dashboard(), pages: ['dashboard', 'case', 'run'], icon: 'M3 11 12 3l9 8v9h-6v-6H9v6H3z' },
+  { label: 'Statystyki', target: href.stats(), pages: ['stats'], icon: 'M5 20V11M12 20V5M19 20v-7M3 20h18' },
   { label: 'Typowanie', target: href.sweep(), pages: ['sweep'], icon: 'M4 5h16M7 12h10M10 19h4' },
   { label: 'Monitoring', target: href.monitor(), pages: ['monitor'], icon: 'M3 12h4l3-8 4 16 3-8h4' },
-  { label: 'Zasady punktacji', target: href.rules(), pages: ['rules'], icon: 'M5 4h14v16H5zM9 9h6M9 13h6M9 17h3' },
 ];
 
 export function App() {
@@ -83,7 +87,7 @@ export function App() {
       if (event.ctrlKey || event.metaKey || event.altKey || target.closest('input, textarea, select, [contenteditable], dialog')) return;
       if (prefix) {
         prefix = false;
-        const go = { p: href.dashboard(), t: href.sweep(), m: href.monitor(), z: href.rules() }[event.key];
+        const go = { p: href.dashboard(), s: href.stats(), t: href.sweep(), m: href.monitor(), z: href.rules() }[event.key];
         if (go) navigate(go);
         return;
       }
@@ -140,6 +144,9 @@ export function App() {
             <button type="button" className="sidebar-button" onClick={toggleScheme}>
               {scheme === 'dark' ? '☀ Motyw jasny' : '☾ Motyw ciemny'}
             </button>
+            <a className="sidebar-button" href={href.rules()} aria-current={route.page === 'rules' ? 'page' : undefined} onClick={() => setMenuOpen(false)}>
+              § Zasady punktacji
+            </a>
             <button type="button" className="sidebar-button" onClick={() => openGlossary()}>
               ≡ Słownik pojęć
             </button>

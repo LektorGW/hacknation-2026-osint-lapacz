@@ -525,9 +525,25 @@ describe('ENS', () => {
     assert.match(document!.text, /potwierdzona rekordem tekstowym „github"/);
   });
 
+  test('adres EVM → nazwa główna sprawdzona w obie strony; podrobiona nazwa główna odrzucona', async () => {
+    // Rekord odwrotny może wpisać dowolną nazwę — przyjmujemy ją tylko, gdy nazwa wskazuje z powrotem ten adres.
+    const forged = setup({
+      [`https://api.ensdata.net/${ADDR.kacperEth}`]: { body: { ...record, ens_primary: 'vitalik.eth' } },
+      'https://api.ensdata.net/vitalik.eth': { body: { ...record, address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', ens: 'vitalik.eth', ens_primary: 'vitalik.eth' } },
+    });
+    assert.deepEqual(await forged.run('live-ens', 'crypto_address', ADDR.kacperEth), []);
+    assert.match(forged.logs.join('\n'), /nazwa wskazuje inny adres/);
+    // Brak odpowiedzi w przód — nie da się potwierdzić, więc też nie przyjmujemy.
+    const unverified = setup({ [`https://api.ensdata.net/${ADDR.kacperEth}`]: { body: record } });
+    assert.deepEqual(await unverified.run('live-ens', 'crypto_address', ADDR.kacperEth), []);
+    assert.match(unverified.logs.join('\n'), /nie udało się sprawdzić/);
+  });
+
   test('adres EVM → nazwa główna; autor = nazwa ENS, ten sam adres dokumentu co dla nazwy', async () => {
-    const { run } = setup({ [`https://api.ensdata.net/${ADDR.kacperEth}`]: { body: record } });
+    const { run, calls } = setup({ [`https://api.ensdata.net/${ADDR.kacperEth}`]: { body: record }, 'https://api.ensdata.net/kacper.eth': { body: record } });
     const [document] = await run('live-ens', 'crypto_address', ADDR.kacperEth);
+    assert.equal(calls.length, 2);
+    assert.match(document!.text, /sprawdzenie w obie strony/);
     assert.equal(document!.author, 'kacper.eth');
     assert.equal(document!.url, 'https://app.ens.domains/kacper.eth');
     assert.equal(document!.category, 'cryptographic_proof');

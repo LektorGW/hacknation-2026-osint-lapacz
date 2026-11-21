@@ -490,8 +490,8 @@ test('zajęcie przez organ państwa i pochodzenie środków z incydentu: ustalen
   assert.deepEqual(dossier.totals.cashOutPlnByYear, {});
   assert.deepEqual(dossier.cashOutProof, []);
   assert.deepEqual(dossier.serviceLinks, []);
-  // Wyjaśnienie mówi o zajęciu zamiast o „braku wypływów do usług”.
-  assert.deepEqual(dossier.explanations.map((item) => item.kind), ['seized']);
+  // Wyjaśnienie mówi o zajęciu zamiast o „braku wypływów do usług”; sprawa samego adresu bez publikacji mówi też, dlaczego nie ma osoby.
+  assert.deepEqual(dossier.explanations.map((item) => item.kind), ['no_owner', 'seized']);
   // Kluczowe ustalenia: fakty z publicznych etykiet, ze źródłem etykiety.
   const texts = dossier.keyFindings.map((item) => item.text);
   assert.ok(texts.some((text) => text.includes('przekazane na adres organu państwa: „Rząd USA: środki zajęte po włamaniu” — źródło etykiety: https://justice.example/komunikat. To zajęcie, nie spieniężenie.')));

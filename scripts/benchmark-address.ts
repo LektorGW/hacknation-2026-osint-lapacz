@@ -319,7 +319,7 @@ function abstainReason(run: RunRecord): string {
     return `adres wykluczony: ${rule}${finding.addressClass ? `, klasa ${finding.addressClass}` : ''}`;
   }
   if (finding && finding.evidence === 0 && finding.unrelatedPublishers > 0) {
-    return 'adres tylko we wpisach liczonych jako wzmianka (kategoria źródła spoza OWNERSHIP_CATEGORIES, bez modelu językowego) — autor nie jest kandydatem na właściciela';
+    return 'adres tylko we wpisach liczonych jako wzmianka (kategoria źródła spoza OWNERSHIP_CATEGORIES i bez deklaracji własności w treści, bez modelu językowego) — autor nie jest kandydatem na właściciela';
   }
   if (!finding || finding.evidence === 0) return 'brak publikacji adresu w źródłach';
   const kinds = [...new Set(run.explanations.map((item) => item.kind))];
@@ -687,6 +687,16 @@ async function main() {
         'Zbiory są syntetyczne — patrz „Czego ten pomiar nie mówi”.',
     );
     out();
+    // Wskazania oparte wyłącznie na deklaracji własności w treści wypowiedzi (reguła tekstowa, bez modelu językowego).
+    const byRule = all.filter((item) => item.outcome !== 'wstrzymanie' && item.run.finding?.rules.includes('basis.text_declaration'));
+    const abstainedNoExplanation = all.filter((item) => item.outcome === 'wstrzymanie' && item.run.explanations.length === 0).length;
+    out(
+      `Deklaracja własności w treści (reguła tekstowa — wypowiedź na forum z „mój adres”, „wpłaty na”, „przyjmuję na adres” itp.; ostrzeżenia, pytania, rozdania, cytaty i przeczenia ją wykluczają): ` +
+        `${byRule.length} ${byRule.length === 1 ? 'wskazanie oparte' : byRule.length % 10 >= 2 && byRule.length % 10 <= 4 && (byRule.length % 100 < 12 || byRule.length % 100 > 14) ? 'wskazania oparte' : 'wskazań opartych'} na tej regule (trafienia: ${byRule.filter((item) => item.outcome === 'trafienie').length}, błędy: ${byRule.filter((item) => item.outcome === 'błąd' || item.outcome === 'częściowe').length}); ` +
+        `wypowiedź liczy się z wagą wypowiedzi na forum (50), a reguła ma niższą moc niż jawna kategoria źródła i odczyt modelu. ` +
+        `Teczek bez kandydata i bez żadnego wyjaśnienia: ${abstainedNoExplanation} (wyjaśnienie \`no_owner\` mówi, dlaczego nie ma osoby i co zrobić).`,
+    );
+    out();
   }
 
   out('## Jak mierzono');
@@ -911,10 +921,11 @@ async function main() {
   out('- **Brak opóźnień i limitów.** Serwery zbiorów działają lokalnie; czasy nie zawierają opóźnień sieci ani limitów zapytań prawdziwych serwisów (w ustawieniach: do 20 s na zapytanie, 120 s na analizę).');
   out('- **Dwa kierunki błędu nie są symetryczne.** Dla zespołu dochodzeniowego błędne wskazanie osoby jest kosztowniejsze niż brak wskazania; dlatego najważniejsza liczba to „błąd”, a nie pokrycie.');
   out('- **Kontrole na prawdziwych danych (ręczne, poza tym pomiarem, 21.11.2026, tryb LIVE):**');
-  out('  - adres z kradzieży Bitfinex 2016 `1CGA4srJbPWhtJb7ezgY6GQf4PKhFuzD9w` → teczka bez kandydata na osobę; wykryte przekazanie środków na adres rządu USA (zajęcie środków);');
-  out('  - adres oszustwa z przejęcia kont Twittera 2020 `bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh` → adres powszechnie cytowany (60 niepowiązanych autorów), teczka bez kandydata;');
-  out('  - nazwa ENS `vitalik.eth` (start od nazwy, nie od adresu) → osoba wskazana i adres potwierdzony zapisem ENS.');
-  out('  To trzy pojedyncze próby, nie statystyka — pokazują tylko, że mechanizmy wstrzymania (zajęcie, powszechne cytowanie) i potwierdzenia (ENS) działają także na prawdziwych danych.');
+  out('  - adres z kradzieży Bitfinex 2016 `1CGA4srJbPWhtJb7ezgY6GQf4PKhFuzD9w` → teczka bez kandydata na osobę (7 autorów tylko wymienia adres; wyjaśnienie `no_owner`); wykryte przekazanie środków na adres rządu USA (zajęcie środków);');
+  out('  - adres oszustwa z przejęcia kont Twittera 2020 `bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh` → adres powszechnie cytowany (61 niepowiązanych autorów), teczka bez kandydata, z wyjaśnieniem `no_owner`;');
+  out('  - nazwa ENS `vitalik.eth` (start od nazwy, nie od adresu) → osoba wskazana i adres potwierdzony zapisem ENS;');
+  out('  - sam adres `0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045` → jedyny kandydat `vitalik.eth` (90%) z rozwiązania odwrotnego ENS sprawdzonego w obie strony; 54 autorów wymieniających adres (m.in. README bibliotek z adresem jako przykładem) to wzmianki. Przed zmianą z 21.11.2026 README zwykłych repozytoriów liczyły się jako „własny profil”, więc kandydatów było 11 po 60% i pierwszym był autor biblioteki, nie właściciel nazwy.');
+  out('  To cztery pojedyncze próby, nie statystyka — pokazują tylko, że mechanizmy wstrzymania (zajęcie, powszechne cytowanie) i potwierdzenia (ENS) działają także na prawdziwych danych.');
   out('- **Jeden przebieg, jeden seed laboratorium, stan piaskownicy z chwili pomiaru** (m.in. faza scenariusza podmiany adresu na `/_demo`; skrypt jej nie zmienia).');
   out();
 

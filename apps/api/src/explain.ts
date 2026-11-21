@@ -118,7 +118,11 @@ export function buildUnconfirmedAddresses(input: UnconfirmedInput): UnconfirmedA
   return result.sort((a, b) => b.personAddressProbability - a.personAddressProbability || (b.chain?.transfers ?? 0) - (a.chain?.transfers ?? 0));
 }
 
-export type ExplanationKind = 'seized' | 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'source_errors' | 'partial' | 'no_cash_out';
+/**
+ * `no_owner` — sprawa samego adresu zakończona bez wskazania osoby: dlaczego (tylko wzmianki, adres powszechnie
+ * cytowany, adres usługi lub kontraktu, brak publikacji) i co zrobić dalej.
+ */
+export type ExplanationKind = 'seized' | 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'no_owner' | 'chain_skipped' | 'source_errors' | 'partial' | 'no_cash_out';
 
 /** Wyjaśnienie braku wyniku wraz z tym, co analityk może zrobić. */
 export interface Explanation {
@@ -224,6 +228,8 @@ export function buildExplanations(input: ExplainInput): Explanation[] {
       suggestions: ['Właściciela może wskazać tylko mocna podstawa: adres na własnym profilu, dowód kryptograficzny albo dane usługi, do której trafiły środki.'],
     });
   }
+  const noOwner = explainNoOwner(input, deepHint);
+  if (noOwner) result.push(noOwner);
   const skipped = input.linked.filter((finding) => (finding as ExplainedFinding).chainSkipped || !finding.chain);
   if (skipped.length > 0) {
     result.push({
@@ -276,4 +282,78 @@ export function buildExplanations(input: ExplainInput): Explanation[] {
     });
   }
   return result;
+}
+
+const CLASS_TEXT: Record<string, string> = {
+  exchange: 'giełdy lub portfela powierniczego',
+  smart_contract: 'smart kontraktu',
+  charity: 'zbiórki',
+  mixer: 'miksera',
+  institutional: 'instytucji',
+};
+
+const author = (count: number) => `${count} ${plural(count, 'autora', 'autorów', 'autorów')}`;
+const WALLET_HINT =
+  'Sprawdź powiązane tożsamości, jeśli są: autorów publikujących adresy z tego samego portfela albo wpłacających na ten sam adres wpłat giełdy (heurystyka) — potwierdzenie ich profilu decyzją analityka przypisze im badany adres.';
+const SEARCH_ENGINES =
+  'Włącz źródła wyszukiwania pełnotekstowego (wyszukiwarka internetowa: MARGINALIA_API_KEY=public; wyszukiwarka kodu GitHuba: GITHUB_TOKEN) — szukają pełnego adresu w indeksach stron.';
+
+/**
+ * Sprawa samego adresu bez wskazanej osoby: osoba powstaje wyłącznie z publikacji adresu przez autora
+ * (profil, oferta, dowód, deklaracja w treści), więc brak śladów przy adresie sprawy = brak kandydata.
+ */
+function explainNoOwner(input: ExplainInput, deepHint: string[]): Explanation | undefined {
+  if (input.identifiers.length === 0 || !input.identifiers.every((item) => item.type === 'crypto_address')) return undefined;
+  const wanted = new Set(input.identifiers.map((item) => item.value.trim().toLowerCase()));
+  const subject = input.findings.filter((finding) => wanted.has(finding.address.toLowerCase()));
+  if (subject.length === 0 || !subject.every((finding) => finding.evidence.length === 0 || finding.confidence.excluded)) return undefined;
+  const finding = subject[0]!;
+  const short = shortAddress(finding.address);
+  const confirm = 'Potwierdź profil autora decyzją analityka, jeśli treść wpisu jasno wskazuje, że to jego adres — teczka przeliczy się z tym profilem.';
+  const byNick = 'Podaj nick autora wpisu, który — według Ciebie — podał adres jako własny; analiza sprawdzi jego profile i powiązania.';
+  if (finding.confidence.ledger[0]?.rule === 'exclusion.address_class') {
+    const profile = finding.chain?.profile;
+    const kind = CLASS_TEXT[profile?.addressClass ?? ''] ?? 'usługi';
+    return {
+      kind: 'no_owner',
+      text:
+        `Nie wskazano osoby: adres ${short} należy według publicznych etykiet do ${kind}${profile?.label ? ` („${profile.label}”)` : ''}. ` +
+        'Z adresu pośrednika korzysta wiele osób — jego publikacja ani przelewy nie wskazują, kto za nim stoi.',
+      suggestions: [
+        'Podaj adres portfela, z którego środki trafiły do tej usługi — analiza sprawdzi, kto go publikuje.',
+        'Dane klienta usługi uzyskasz tylko zapytaniem do usługi; jej odpowiedź można wprowadzić do teczki.',
+      ],
+    };
+  }
+  if (finding.widelyCited || finding.confidence.ledger.some((entry) => entry.rule === 'exclusion.widely_cited')) {
+    return {
+      kind: 'no_owner',
+      text:
+        `Nie wskazano osoby: adres ${short} wymienia ${author(finding.unrelatedPublishers)} niezwiązanych ze sobą — to adres powszechnie cytowany, ` +
+        'a ich wpisy są wzmiankami, nie podstawą własności.',
+      suggestions: [byNick, confirm],
+    };
+  }
+  if (finding.unrelatedPublishers > 0 || (finding.excludedEvidence ?? []).length > 0) {
+    const count = Math.max(finding.unrelatedPublishers, 1);
+    return {
+      kind: 'no_owner',
+      text:
+        `Nie wskazano osoby: adres ${short} pojawia się tylko we wzmiankach lub cytatach (${author(count)}) — żaden wpis nie podaje go jako własnego ` +
+        '(własny profil, oferta, dowód kryptograficzny ani deklaracja „mój adres”, „wpłaty na” w treści wypowiedzi). Cytujący i komentujący nie są wskazywani jako osoby.',
+      suggestions: [byNick, confirm, ...deepHint, WALLET_HINT],
+    };
+  }
+  return {
+    kind: 'no_owner',
+    text:
+      `Nie wskazano osoby: w przeszukanych źródłach (${sources(input.connectorCount)}) nie znaleziono żadnej publikacji adresu ${short}, ` +
+      'więc nie ma autora, którego można by wskazać jako właściciela. Ustalenia dotyczą samego adresu (blockchain).',
+    suggestions: [
+      ...deepHint,
+      SEARCH_ENGINES,
+      'Jeśli znasz nick, e-mail lub profil podejrzewanej osoby, podaj go — analiza sprawdzi, czy publikuje ten adres.',
+      WALLET_HINT,
+    ],
+  };
 }

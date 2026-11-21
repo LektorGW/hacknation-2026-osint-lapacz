@@ -17,7 +17,9 @@ import type {
   WatchHit,
 } from '@olcys/core';
 import { DEFAULT_RULES, computeConfidence } from '../../../packages/core/src/score.ts';
-import type { Backend, CaseSummary, Overview, RunSummary } from './api.ts';
+import type { Backend, CaseSummary, CashOutChange, Overview, RunHandle, RunOptions, RunSummary, WatchedCase } from './api.ts';
+import type { Depth } from './proof.ts';
+import { DEFAULT_WATCH_MINUTES, WATCH_INTERVALS, countHits, summarizeStats } from './stats.ts';
 import { ApiError } from './api.ts';
 import {
   ADDR_FORUM,
@@ -139,10 +141,18 @@ function summarizeRun(run: RawRun): RunSummary {
   };
 }
 
-const summarizeCase = (stored: StoredCase): CaseSummary => ({
-  ...stored,
-  runs: runs.filter((run) => run.caseId === stored.id).map(summarizeRun),
-});
+/** Obserwowane sprawy („Monitoruj”) w pamięci karty; tryb demo niczego nie uruchamia sam. */
+const watched = new Map<string, { everyMinutes: number; depth: Depth; since: string; nextRunAt: string }>();
+const minutesLater = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+
+const summarizeCase = (stored: StoredCase): CaseSummary => {
+  const watch = watched.get(stored.id);
+  return {
+    ...stored,
+    runs: runs.filter((run) => run.caseId === stored.id).map(summarizeRun),
+    ...(watch ? { schedule: { everyMinutes: watch.everyMinutes, nextRunAt: watch.nextRunAt } } : {}),
+  };
+};
 
 function findCase(caseId: string): StoredCase {
   const found = cases.find((item) => item.id === caseId);
@@ -160,6 +170,32 @@ function findRun(runId: string): RawRun {
 function replacementsFor(run: RawRun) {
   const addresses = new Set(run.findings.map((finding) => finding.address));
   return demoReplacements.filter((item) => addresses.has(item.to) && !addresses.has(item.from));
+}
+
+/** Nowe przelewy do usług: wskaźniki wypłat nowszej analizy, których nie było w starszej. */
+function diffCashOuts(from: AnalysisRun, to: AnalysisRun): CashOutChange[] {
+  const key = (address: string, txid: string, counterparty: string) => `${address}|${txid}|${counterparty}`.toLowerCase();
+  const before = new Set(from.findings.flatMap((finding) => (finding.chain?.cashOuts ?? []).map((item) => key(finding.address, item.txid, item.counterparty))));
+  return to.findings
+    .filter((finding) => !finding.confidence.excluded)
+    .flatMap((finding) =>
+      (finding.chain?.cashOuts ?? [])
+        .filter((item) => !before.has(key(finding.address, item.txid, item.counterparty)))
+        .map((item) => ({
+          address: finding.address,
+          network: finding.network,
+          txid: item.txid,
+          time: item.time,
+          kind: item.kind,
+          counterparty: item.counterparty,
+          counterpartyLabel: item.counterpartyLabel,
+          asset: item.asset,
+          amount: item.amount,
+          valuePln: item.valuePln ?? undefined,
+          explorerUrl: item.explorerUrl,
+        })),
+    )
+    .sort((a, b) => b.time.localeCompare(a.time));
 }
 
 function diffRuns(from: AnalysisRun, to: AnalysisRun): RunDiff {
@@ -651,6 +687,57 @@ const DEMO_VALUES = ['tomwzor', 'tomasz wzorcowy', 'tomasz.wzorcowy@poczta.examp
   (value) => value.toLowerCase(),
 );
 
+/** Sprawa demonstracyjna powtarza ostatni wynik; nowe sprawy nie mają danych. */
+function startDemoRun(caseId: string, connectors: string[] | undefined, options: RunOptions = {}): RunHandle {
+  const depth = options.depth ?? 'deep';
+  const stored = findCase(caseId);
+  sequence += 1;
+  const now = new Date().toISOString();
+  const used = connectors ?? demoConnectors.filter((item) => item.enabledByDefault).map((item) => item.id);
+  const template = latestRun(caseId) ?? (caseId === DEMO_CASE_ID ? findRun(DEMO_RUN_2) : undefined);
+  const run: RawRun = {
+    id: `demo-analiza-nowa-${sequence}`,
+    caseId,
+    startedAt: now,
+    finishedAt: now,
+    status: 'completed',
+    query: stored.query,
+    connectors: used,
+    findings: template?.findings ?? [],
+    log: template?.log ?? [
+      { time: now, message: `Start analizy. Źródła: ${used.join(', ') || 'brak'}.` },
+      { time: now, message: 'Tryb demo: dla nowych spraw nie ma danych przykładowych — nie znaleziono adresów.' },
+    ],
+  };
+  runs.push(run);
+  startDemoProgress(run.id, depth);
+  return { id: run.id, status: 'running' };
+}
+
+const briefRun = (summary: RunSummary) => ({ id: summary.id, startedAt: summary.startedAt, status: summary.status, findingCount: summary.findingCount, topScore: summary.topScore });
+
+/** Obserwowana sprawa z ostatnią analizą i zmianami względem poprzedniej zakończonej. */
+function watchedCase(caseId: string): WatchedCase | null {
+  const watch = watched.get(caseId);
+  const stored = cases.find((item) => item.id === caseId);
+  if (!watch || !stored) return null;
+  const summary = summarizeCase(stored);
+  const completed = summary.runs.filter((run) => run.status === 'completed');
+  const last = summary.runs.at(-1);
+  const [previous, latest] = completed.length >= 2 ? completed.slice(-2) : [undefined, undefined];
+  const applied = decisionsOf(caseId);
+  const from = previous && scoreRun(findRun(previous.id), applied);
+  const to = latest && scoreRun(findRun(latest.id), applied);
+  return {
+    caseId,
+    name: stored.name,
+    ...watch,
+    running: false,
+    ...(last ? { lastRun: briefRun(last) } : {}),
+    ...(previous && latest && from && to ? { compared: { from: briefRun(previous), to: briefRun(latest) }, changes: { diff: diffRuns(from, to), newCashOuts: diffCashOuts(from, to) } } : {}),
+  };
+}
+
 export const demoBackend: Backend = {
   listConnectors: async () => demoConnectors,
   getRules: async () => DEFAULT_RULES,
@@ -686,32 +773,7 @@ export const demoBackend: Backend = {
     return summarizeCase(stored);
   },
 
-  // Sprawa demonstracyjna powtarza ostatni wynik; nowe sprawy nie mają danych.
-  startRun: async (caseId, connectors, options = {}) => {
-    const depth = options.depth ?? 'standard';
-    const stored = findCase(caseId);
-    sequence += 1;
-    const now = new Date().toISOString();
-    const used = connectors ?? demoConnectors.filter((item) => item.enabledByDefault).map((item) => item.id);
-    const template = latestRun(caseId) ?? (caseId === DEMO_CASE_ID ? findRun(DEMO_RUN_2) : undefined);
-    const run: RawRun = {
-      id: `demo-analiza-nowa-${sequence}`,
-      caseId,
-      startedAt: now,
-      finishedAt: now,
-      status: 'completed',
-      query: stored.query,
-      connectors: used,
-      findings: template?.findings ?? [],
-      log: template?.log ?? [
-        { time: now, message: `Start analizy. Źródła: ${used.join(', ') || 'brak'}.` },
-        { time: now, message: 'Tryb demo: dla nowych spraw nie ma danych przykładowych — nie znaleziono adresów.' },
-      ],
-    };
-    runs.push(run);
-    startDemoProgress(run.id, depth);
-    return { id: run.id, status: 'running' };
-  },
+  startRun: async (caseId, connectors, options = {}) => startDemoRun(caseId, connectors, options),
   getProgress: async (runId) => demoProgress(runId),
   getAi: async () => demoAi,
   getCorpusStats: async () => demoCorpus,
@@ -747,7 +809,6 @@ export const demoBackend: Backend = {
       found.withdrawnBy = 'analityk (demo)';
     }
   },
-
   getOverview: async (): Promise<Overview> => {
     const dossiers = cases.flatMap((item) => {
       const run = latestRun(item.id);
@@ -759,6 +820,16 @@ export const demoBackend: Backend = {
         cashOutPlnByYear[year] = (cashOutPlnByYear[year] ?? 0) + value;
       }
     }
+    const caseStats = dossiers.map(({ item, dossier }) => ({
+      caseId: item.id,
+      name: item.name,
+      priority: dossier.totals.priority,
+      topScore: dossier.totals.topScore,
+      cashOutPlnTotal: sum(Object.values(dossier.totals.cashOutPlnByYear)),
+      linkedAddresses: dossier.totals.linkedAddresses,
+      hits: countHits(dossier.findings),
+      services: dossier.serviceLinks.filter((link) => link.transfersOut > 0).map((link) => link.name),
+    }));
     return {
       cases: cases.length,
       runs: runs.length,
@@ -775,6 +846,8 @@ export const demoBackend: Backend = {
         }))
         .sort((a, b) => b.priority - a.priority),
       monitor: { enabled: monitor.enabled, lastRunAt: monitor.lastRunAt, newHits: hits.filter((hit) => hit.status === 'new').length },
+      caseStats,
+      stats: summarizeStats(caseStats, cases.length),
     };
   },
 
@@ -877,7 +950,7 @@ export const demoBackend: Backend = {
     if (!target) return null;
     sequence += 1;
     const id = `demo-postep-${sequence}`;
-    startDemoProgress(id, options.depth ?? 'standard');
+    startDemoProgress(id, options.depth ?? 'deep');
     return { case: summarizeCase(target), run: { id, status: 'running' } };
   },
   hasServiceRequest: async () => false,
@@ -908,4 +981,33 @@ export const demoBackend: Backend = {
     if (!sample) throw notFound('przelewy do tej usługi, z których można złożyć przykładową odpowiedź');
     return sample;
   },
+
+  setWatch: async (caseId, settings) => {
+    const stored = findCase(caseId);
+    if (!settings) watched.delete(caseId);
+    else {
+      const previous = watched.get(caseId);
+      watched.set(caseId, {
+        everyMinutes: settings.everyMinutes,
+        depth: settings.depth ?? previous?.depth ?? 'deep',
+        since: previous?.since ?? new Date().toISOString(),
+        nextRunAt: minutesLater(settings.everyMinutes),
+      });
+    }
+    return summarizeCase(stored);
+  },
+  listWatched: async () => ({
+    intervals: [...WATCH_INTERVALS],
+    defaultDepth: 'deep',
+    items: [...watched.keys()].map(watchedCase).filter((item): item is WatchedCase => item !== null),
+  }),
+  refreshWatched: async (caseId) => {
+    const watch = watched.get(caseId);
+    if (!watch) throw new ApiError('Ta sprawa nie jest obserwowana — zaznacz „Monitoruj” na pulpicie.', 404);
+    watch.nextRunAt = minutesLater(watch.everyMinutes);
+    return startDemoRun(caseId, undefined, { depth: watch.depth });
+  },
 };
+
+// W pokazie sprawa demonstracyjna jest od początku obserwowana — ekran „Monitoring” ma co pokazać.
+watched.set(DEMO_CASE_ID, { everyMinutes: DEFAULT_WATCH_MINUTES, depth: 'deep', since: DEMO_NOW, nextRunAt: minutesLater(DEFAULT_WATCH_MINUTES) });

@@ -66,6 +66,11 @@ export interface Evidence {
   archivedAt?: string;
   /** Jawny klucz pochodzenia nadany przez źródło (np. identyfikator wpisu przekazanego dalej). */
   originKey?: string;
+  /**
+   * Podstawa własności spoza kategorii źródła: deklaracja „to mój adres” odczytana regułą tekstową
+   * z wypowiedzi (ownership-text.ts). Nie zmienia kategorii ani punktów — trafia do księgi jako osobny wpis.
+   */
+  ownershipBasis?: { rule: 'text_declaration'; quote: string };
 }
 
 export interface ScoreInput {
@@ -356,6 +361,26 @@ export function computeConfidence(input: ScoreInput, rules: ScoreRules = DEFAULT
         ? []
         : ['Publikacja adresu jest deklaracją autora; nie dowodzi dysponowania kluczem prywatnym.'],
   });
+
+  const declared = strongest.item.ownershipBasis;
+  if (declared?.rule === 'text_declaration') {
+    ledger.push({
+      rule: 'basis.text_declaration',
+      delta: 0,
+      running,
+      explanation:
+        `Podstawa własności: deklaracja własności w treści (reguła tekstowa) — „${declared.quote}”. ` +
+        `Wypowiedź liczona jako publikacja autora z wagą kategorii „${CATEGORY_LABEL[strongest.item.category]}” (${rules.base[strongest.item.category]}), nigdy wyższą.`,
+      evidenceIds: [strongest.item.id],
+      weight: 0,
+      sources: [strongest.item.url],
+      independence: 'nie dotyczy — podstawa uznania autora za kandydata na właściciela',
+      limitations: [
+        'Reguła tekstowa czyta tylko słowa przy adresie (np. „mój adres”, „wpłaty na”, „my wallet”); nie rozpoznaje ironii ani cytatu bez oznaczenia.',
+        'Ma niższą moc niż jawna kategoria źródła i odczyt modelu językowego; decyzja analityka „odrzucony” wyłącza ślad.',
+      ],
+    });
+  }
 
   const identityDelta = rules.identityAdjustment[strongest.item.identityMatch];
   if (identityDelta !== 0) {

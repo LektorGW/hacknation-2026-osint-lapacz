@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { Lead, Sweep } from '@olcys/core';
 import { api } from '../api.ts';
+import type { ConnectorInfo } from '../api.ts';
 import { Bar, Crumbs, EmptyState, ErrorBox, LayerTag, Loading, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { KnownFromCases } from '../components/common.tsx';
@@ -10,6 +11,58 @@ import { fmtDateTime, fmtPln } from '../format.ts';
 import { NETWORK_SHORT, STATUS_LABEL } from '../labels.ts';
 import { href, navigate } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
+
+/** Znaczek stanu klucza API przy źródle, które bez klucza nie działa. Wartości klucza interfejs nigdy nie widzi. */
+function KeyBadge({ connector }: { connector: ConnectorInfo }) {
+  if (!connector.requiresKey) return null;
+  const env = (connector.keyEnv ?? []).join(' lub ');
+  return connector.keyConfigured ? (
+    <span className="key-badge is-active" title={env ? `Klucz ustawiony w konfiguracji usługi (${env})` : 'Klucz ustawiony w konfiguracji usługi'}>
+      <span aria-hidden="true">✓</span> klucz aktywny
+    </span>
+  ) : (
+    <span className="key-badge is-missing" title={env ? `Źródło pominięte — ustaw zmienną ${env} i uruchom usługę ponownie` : 'Źródło pominięte bez klucza'}>
+      <span aria-hidden="true">✕</span> brak klucza
+    </span>
+  );
+}
+
+function ConnectorGroup({
+  title,
+  note,
+  items,
+  selected,
+  onToggle,
+}: {
+  title: string;
+  note: string;
+  items: ConnectorInfo[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <section className="connector-group" aria-label={title}>
+      <h3 className="connector-group-title">
+        {title} <span className="muted">({items.length})</span>
+      </h3>
+      <p className="muted small">{note}</p>
+      {items.map((connector) => {
+        const unusable = connector.requiresKey === true && connector.keyConfigured === false;
+        return (
+          <label key={connector.id} className={`connector ${unusable ? 'is-unusable' : ''}`}>
+            <input type="checkbox" checked={selected.has(connector.id)} disabled={unusable} onChange={() => onToggle(connector.id)} />
+            <span>
+              <strong>{connector.label}</strong> <span className="muted">({connector.service})</span> <KeyBadge connector={connector} />
+              <span className="connector-description">{connector.description}</span>
+              {unusable && connector.keyEnv && <span className="connector-accepts">Bez klucza źródło jest pomijane — ustaw {connector.keyEnv.join(' lub ')}.</span>}
+            </span>
+          </label>
+        );
+      })}
+    </section>
+  );
+}
 
 function Launcher({ onDone }: { onDone: (sweep: Sweep) => void }) {
   const connectors = useAsync(() => api.listConnectors(), 'connectors');
@@ -20,9 +73,17 @@ function Launcher({ onDone }: { onDone: (sweep: Sweep) => void }) {
   // Jeśli usługa oznacza łączniki zdolne do przeglądu, pokazujemy tylko je.
   const marked = connectors.data?.some((item) => item.discovers !== undefined);
   const usable = (connectors.data ?? []).filter((item) => !marked || item.discovers);
+  const keyed = usable.filter((item) => item.requiresKey);
+  const open = usable.filter((item) => !item.requiresKey);
+  const toggle = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   useEffect(() => {
-    if (connectors.data) setSelected(new Set(usable.filter((item) => item.enabledByDefault).map((item) => item.id)));
+    if (connectors.data) setSelected(new Set(usable.filter((item) => item.enabledByDefault && !(item.requiresKey && item.keyConfigured === false)).map((item) => item.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectors.data]);
 
@@ -48,25 +109,20 @@ function Launcher({ onDone }: { onDone: (sweep: Sweep) => void }) {
       {connectors.data && (
         <fieldset className="connectors" disabled={running}>
           <legend className="visually-hidden">Źródła do przeglądu</legend>
-          {usable.map((connector) => (
-            <label key={connector.id} className="connector">
-              <input
-                type="checkbox"
-                checked={selected.has(connector.id)}
-                onChange={() =>
-                  setSelected((current) => {
-                    const next = new Set(current);
-                    if (!next.delete(connector.id)) next.add(connector.id);
-                    return next;
-                  })
-                }
-              />
-              <span>
-                <strong>{connector.label}</strong> <span className="muted">({connector.service})</span>
-                <span className="connector-description">{connector.description}</span>
-              </span>
-            </label>
-          ))}
+          <ConnectorGroup
+            title="Źródła publicznie dostępne"
+            note="Działają bez rejestracji i bez klucza — publiczne strony, profile i rejestry."
+            items={open}
+            selected={selected}
+            onToggle={toggle}
+          />
+          <ConnectorGroup
+            title="Źródła wymagające klucza API"
+            note="Działają tylko z kluczem ustawionym w konfiguracji usługi analizy. Znaczek pokazuje, czy klucz jest aktywny — samego klucza interfejs nie widzi."
+            items={keyed}
+            selected={selected}
+            onToggle={toggle}
+          />
           {!marked && <p className="hint">Przegląd wykonają tylko te źródła, które potrafią same wskazać świeże publikacje.</p>}
         </fieldset>
       )}

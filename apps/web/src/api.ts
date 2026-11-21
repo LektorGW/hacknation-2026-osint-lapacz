@@ -21,6 +21,13 @@ import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './id
 import type { RecheckResult } from './monitor.ts';
 import { serviceLinksFromFindings } from './services.ts';
 import type { ServiceReply, ServiceReplyBody, ServiceReplySample } from './service-reply.ts';
+import type { CaseStat, StatsSummary } from './stats.ts';
+
+/**
+ * Tryb analiz uruchamianych z interfejsu: domyślnie głęboki. Usługa analizy bez podanego trybu
+ * liczy standardowo, dlatego interfejs zawsze wysyła tryb jawnie.
+ */
+export const DEFAULT_DEPTH: Depth = 'deep';
 
 export type ConnectorInfo = Pick<
   SourceConnector,
@@ -28,6 +35,12 @@ export type ConnectorInfo = Pick<
 > & {
   /** Czy łącznik potrafi sam wskazać świeże publikacje (przegląd źródeł); pole opcjonalne. */
   discovers?: boolean;
+  /** Źródło działa wyłącznie z kluczem API (pole opcjonalne — starsza usługa go nie podaje). */
+  requiresKey?: boolean;
+  /** Klucz jest ustawiony w konfiguracji usługi; wartości klucza usługa nigdy nie podaje. */
+  keyConfigured?: boolean;
+  /** Nazwy zmiennych środowiskowych z kluczem, np. GITHUB_TOKEN. */
+  keyEnv?: string[];
 };
 
 export interface RunSummary {
@@ -44,7 +57,57 @@ export interface CaseSummary {
   createdAt: string;
   query: SubjectQuery;
   runs: RunSummary[];
+  /** Sprawa obserwowana („Monitoruj”): analiza ponawiana automatycznie. */
+  schedule?: { everyMinutes: number; nextRunAt: string };
 }
+
+/** Przelew do giełdy lub usługi, którego nie było w poprzedniej analizie. */
+export interface CashOutChange {
+  address: string;
+  network: string;
+  txid: string;
+  time: string;
+  kind: string;
+  counterparty: string;
+  counterpartyLabel?: string;
+  asset: string;
+  amount: number;
+  valuePln?: number;
+  explorerUrl?: string;
+}
+
+export interface WatchRunBrief {
+  id: string;
+  startedAt: string;
+  status: string;
+  findingCount: number;
+  topScore: number;
+}
+
+/** Obserwowana sprawa: harmonogram, ostatnia analiza i zmiany względem poprzedniej. */
+export interface WatchedCase {
+  caseId: string;
+  name: string;
+  everyMinutes: number;
+  depth: Depth;
+  since: string;
+  nextRunAt: string;
+  running: boolean;
+  runningRunId?: string;
+  lastError?: string;
+  lastRun?: WatchRunBrief;
+  compared?: { from: WatchRunBrief; to: WatchRunBrief };
+  changes?: { diff: RunDiff; newCashOuts: CashOutChange[] };
+}
+
+export interface WatchList {
+  intervals: number[];
+  defaultDepth: Depth;
+  items: WatchedCase[];
+}
+
+/** Ustawienia obserwacji sprawy; `null` wyłącza obserwację. */
+export type WatchSettings = { everyMinutes: number; depth?: Depth } | null;
 
 export type Replacement = RunDiff['replacedAddresses'][number];
 
@@ -64,6 +127,10 @@ export interface Overview {
   }[];
   /** Stan cyklicznego przeglądu źródeł — pole opcjonalne. */
   monitor?: { enabled: boolean; lastRunAt?: string; newHits: number };
+  /** Liczby każdej sprawy z zakończoną analizą (bez limitu „top 10”) — pole opcjonalne. */
+  caseStats?: CaseStat[];
+  /** Wskaźniki skuteczności (średnia pewność, trafienia, skuteczność) — pole opcjonalne. */
+  stats?: StatsSummary;
   /** Zestawienie policzone w interfejsie z listy spraw (starsza wersja usługi). */
   approximate?: boolean;
 }
@@ -154,6 +221,12 @@ export interface Backend {
   withdrawServiceReply(caseId: string, replyId: string): Promise<void>;
   /** Przykładowa, syntetyczna odpowiedź z piaskownicy — pobierana przez usługę analizy, nigdy wprost z przeglądarki. */
   getServiceReplySample(caseId: string, serviceId: string, variant?: 'inna-osoba'): Promise<ServiceReplySample>;
+  /** Obserwacja sprawy („Monitoruj”): włączenie z odstępem i trybem albo wyłączenie (`null`). */
+  setWatch(caseId: string, settings: WatchSettings): Promise<CaseSummary>;
+  /** Obserwowane sprawy ze zmianami; `null`, gdy usługa nie udostępnia tej trasy (wymaga nowszej wersji). */
+  listWatched(): Promise<WatchList | null>;
+  /** „Odśwież teraz”: analiza obserwowanej sprawy od razu, w tle. */
+  refreshWatched(caseId: string): Promise<RunHandle>;
 }
 
 export class ApiError extends Error {
@@ -260,7 +333,7 @@ const httpBackend: Backend = {
   addIdentifiers: (caseId, identifiers) =>
     feature('Dopisanie identyfikatorów', post(`/api/cases/${enc(caseId)}/identifiers`, { identifiers })),
   startRun: (caseId, connectors, options = {}) =>
-    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth: options.depth ?? 'standard', ...(options.period ? { period: options.period } : {}), async: true }),
+    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth: options.depth ?? DEFAULT_DEPTH, ...(options.period ? { period: options.period } : {}), async: true }),
   getProgress: (runId) => optional(request<RunProgress>(`/api/runs/${enc(runId)}/progress`), null),
   getAi: () => optional(request<AiStatus>('/api/ai'), null),
   getCorpusStats: () => optional(request<CorpusStats>('/api/corpus/stats'), null),
@@ -292,7 +365,7 @@ const httpBackend: Backend = {
   dismissHit: (hitId) => feature('Odrzucenie trafienia', post(`/api/monitor/hits/${enc(hitId)}/dismiss`, {})),
   createCaseFromHit: (hitId) => feature('Założenie sprawy z trafienia', post(`/api/monitor/hits/${enc(hitId)}/case`, {})),
   quick: (value, type, options = {}) =>
-    optional(post<QuickResult>('/api/quick', { value, type, depth: options.depth ?? 'standard', ...(options.period ? { period: options.period } : {}), async: true }), null),
+    optional(post<QuickResult>('/api/quick', { value, type, depth: options.depth ?? DEFAULT_DEPTH, ...(options.period ? { period: options.period } : {}), async: true }), null),
   hasServiceRequest: async (runId, serviceId) => {
     try {
       const response = await fetch(serviceRequestUrl(runId, serviceId), { method: 'HEAD' });
@@ -307,6 +380,16 @@ const httpBackend: Backend = {
   },
   getServiceReplySample: (caseId, serviceId, variant) =>
     request(`/api/cases/${enc(caseId)}/service-replies/sandbox-sample?service=${enc(serviceId)}${variant ? `&variant=${enc(variant)}` : ''}`),
+  // Tryb wysyłany tylko, gdy różni się od domyślnego trybu obserwacji (głębokiego) — starsza usługa nie zna tego pola.
+  setWatch: (caseId, settings) =>
+    feature(
+      'Monitorowanie spraw',
+      settings
+        ? post<CaseSummary>(`/api/cases/${enc(caseId)}/schedule`, { everyMinutes: settings.everyMinutes, ...(settings.depth && settings.depth !== 'deep' ? { depth: settings.depth } : {}) })
+        : request<CaseSummary>(`/api/cases/${enc(caseId)}/schedule`, { method: 'DELETE' }),
+    ),
+  listWatched: () => optional(request<WatchList>('/api/watch'), null),
+  refreshWatched: (caseId) => feature('Odświeżenie obserwowanej sprawy', post(`/api/cases/${enc(caseId)}/schedule/run`, {})),
 };
 
 // Dane demo ładowane są leniwie, żeby nie trafiały do głównej paczki.

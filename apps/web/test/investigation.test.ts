@@ -10,6 +10,7 @@ import {
   findEvidencePath,
   hiddenByCollapse,
   hypothesisForEdge,
+  inputNodeIds,
   linkKeyOf,
   nodeStatus,
   sourceCounts,
@@ -317,4 +318,21 @@ test('tożsamość bez statusu i decyzji jest hipotezą, nigdy ustaleniem', () =
   assert.equal(identityStatus({ decision: 'rejected' }), 'rejected');
   assert.equal(identityStatus({ decision: 'confirmed' }), 'confirmed');
   assert.equal(identityStatus({ status: 'hypothesis', decision: 'confirmed' }), 'hypothesis', 'status z usługi ma pierwszeństwo');
+});
+
+test('wejście wyszukiwania w grafie: identyfikatory analityka i węzeł adresu z wejścia', () => {
+  const nodes = [
+    { id: 'subject', kind: 'subject' as const },
+    { id: 'id:nick:tomwzor', kind: 'identifier' as const },
+    { id: 'id:email:a@b.pl', kind: 'identifier' as const },
+    { id: 'id:crypto_address:bc1qabc', kind: 'identifier' as const },
+    { id: 'addr:bitcoin:bc1qABC', kind: 'address' as const },
+    { id: 'addr:bitcoin:bc1qinny', kind: 'address' as const },
+  ];
+  const ids = inputNodeIds(nodes, [
+    { identifier: { type: 'nick', value: ' TomWzor ' }, origin: 'analyst' },
+    { identifier: { type: 'crypto_address', value: 'bc1qABC' }, origin: 'analyst' },
+    { identifier: { type: 'email', value: 'a@b.pl' }, origin: 'discovered' },
+  ]);
+  assert.deepEqual([...ids].sort(), ['addr:bitcoin:bc1qABC', 'id:crypto_address:bc1qabc', 'id:nick:tomwzor']);
 });

@@ -13,6 +13,7 @@ import type { ServiceLabel } from './explain.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { Monitor, MonitorTimers } from './monitor.ts';
 import type { ExternalServiceMatcher } from './services.ts';
+import type { ConfiguredKeys } from './source-keys.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 
 export interface AppDeps {
@@ -44,6 +45,10 @@ export interface AppDeps {
   monitorConnectors?: SourceConnector[];
   /** Podmiana odliczania czasu harmonogramu monitoringu (testy). */
   monitorTimers?: MonitorTimers;
+  /** Podmiana odliczania czasu obserwowanych spraw (testy). */
+  watchTimers?: MonitorTimers;
+  /** Które klucze API źródeł są ustawione (bez wartości); bez tego o kluczu świadczy sam łącznik. */
+  configuredKeys?: ConfiguredKeys;
   now?: () => Date;
   /** Adres piaskownicy (dane demonstracyjne). Tylko gdy jest ustawiony, API udostępnia przykładową, syntetyczną odpowiedź usługi. */
   sandboxUrl?: string;

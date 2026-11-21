@@ -103,6 +103,51 @@ function currentAddressesByUrl(run: AnalysisRun): Map<string, Map<string, Addres
   return byUrl;
 }
 
+/** Przelew do giełdy lub usługi, którego nie było w poprzedniej analizie. */
+export interface CashOutChange {
+  /** Adres sprawy, z którego wyszedł przelew. */
+  address: string;
+  network: Network;
+  txid: string;
+  time: string;
+  kind: string;
+  counterparty: string;
+  counterpartyLabel?: string;
+  asset: string;
+  amount: number;
+  valuePln?: number;
+  explorerUrl?: string;
+}
+
+/**
+ * Nowe przelewy do giełd i usług: wskaźniki wypłat z nowszej analizy (adresy nieodrzucone),
+ * których nie było w starszej. Klucz: adres sprawy, transakcja i odbiorca.
+ */
+export function diffCashOuts(from: AnalysisRun, to: AnalysisRun): CashOutChange[] {
+  const key = (address: string, txid: string, counterparty: string) => `${address}|${txid}|${counterparty}`.toLowerCase();
+  const before = new Set(from.findings.flatMap((finding) => (finding.chain?.cashOuts ?? []).map((item) => key(finding.address, item.txid, item.counterparty))));
+  return to.findings
+    .filter((finding) => !finding.confidence.excluded)
+    .flatMap((finding) =>
+      (finding.chain?.cashOuts ?? [])
+        .filter((item) => !before.has(key(finding.address, item.txid, item.counterparty)))
+        .map((item) => ({
+          address: finding.address,
+          network: finding.network,
+          txid: item.txid,
+          time: item.time,
+          kind: item.kind,
+          counterparty: item.counterparty,
+          ...(item.counterpartyLabel ? { counterpartyLabel: item.counterpartyLabel } : {}),
+          asset: item.asset,
+          amount: item.amount,
+          ...(typeof item.valuePln === 'number' ? { valuePln: item.valuePln } : {}),
+          ...(item.explorerUrl ? { explorerUrl: item.explorerUrl } : {}),
+        })),
+    )
+    .sort((a, b) => b.time.localeCompare(a.time));
+}
+
 /** Różnice między starszą (`from`) a nowszą (`to`) analizą tego samego podmiotu. */
 export function diffRuns(from: AnalysisRun, to: AnalysisRun): RunDiff {
   const before = new Map(from.findings.map((finding) => [refKey(finding), finding]));

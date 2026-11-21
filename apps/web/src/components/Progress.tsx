@@ -1,17 +1,44 @@
-// Postęp analizy na żywo: etapy, pasek z liczników źródeł oraz liczba dokumentów i adresów.
+// Wybór trybu i okresu analizy oraz postęp analizy na żywo: etapy, pasek z liczników źródeł, liczba dokumentów i adresów.
 import { useId } from 'react';
 import type { Period } from '../proof.ts';
 import { progressView } from '../proof.ts';
 import type { Depth, RunProgress } from '../proof.ts';
+import { Term } from './ui/Term.tsx';
 
-export const DEEP_LABEL = 'Tryb głęboki (przeszukaj ~400 forów i serwisów, 1–4 min)';
+/** Tryby analizy w kolejności wyboru; głęboki jest domyślny, szybki — jedno kliknięcie dalej. */
+export const MODES: { value: Depth; label: string; duration: string; detail: string }[] = [
+  { value: 'standard', label: 'Szybki', duration: 'kilka–kilkanaście sekund', detail: 'podstawowe źródła' },
+  { value: 'deep', label: 'Głęboki', duration: '1–4 minuty', detail: 'szeroki przegląd forów i serwisów' },
+];
 
-export function DepthSwitch({ depth, onChange, disabled }: { depth: Depth; onChange: (depth: Depth) => void; disabled?: boolean }) {
+/** Opis trybu pod tytułem ekranu postępu. */
+export const modeNote = (depth: Depth) =>
+  depth === 'deep' ? 'Tryb głęboki: szeroki przegląd forów i serwisów — zwykle 1–4 minuty.' : 'Tryb szybki: podstawowe źródła — zwykle kilka–kilkanaście sekund.';
+
+/** Przełącznik „Tryb: Szybki / Głęboki” — dwa przyciski wyboru z przewidywanym czasem pod każdym. */
+export function ModeSwitch({ depth, onChange, disabled }: { depth: Depth; onChange: (depth: Depth) => void; disabled?: boolean }) {
+  const name = useId();
   return (
-    <label className="depth-switch">
-      <input type="checkbox" checked={depth === 'deep'} disabled={disabled} onChange={(event) => onChange(event.target.checked ? 'deep' : 'standard')} />
-      {DEEP_LABEL}
-    </label>
+    <fieldset className="mode-switch" disabled={disabled} data-tour="mode">
+      <legend>
+        <Term id={depth === 'deep' ? 'tryb-gleboki' : 'tryb-szybki'}>Tryb</Term>
+      </legend>
+      <div className="mode-options">
+        {MODES.map((mode) => (
+          <label key={mode.value} className={`mode-option ${depth === mode.value ? 'is-checked' : ''}`}>
+            <input type="radio" name={name} value={mode.value} checked={depth === mode.value} onChange={() => onChange(mode.value)} />
+            <span className="mode-option-label">
+              {mode.label}
+              {mode.value === 'deep' && <span className="mode-default">domyślny</span>}
+            </span>
+            <span className="mode-option-note">
+              {mode.duration}
+              <span className="mode-option-detail">, {mode.detail}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }
 
@@ -19,7 +46,9 @@ export function DepthSwitch({ depth, onChange, disabled }: { depth: Depth; onCha
 export function PeriodFields({ from, to, onChange, disabled }: { from: string; to: string; onChange: (period: Required<Period>) => void; disabled?: boolean }) {
   return (
     <fieldset className="period" disabled={disabled}>
-      <legend>Okres analizy (opcjonalnie)</legend>
+      <legend>
+        Okres analizy (od – do) <span className="period-hint">puste pola = cała dostępna historia</span>
+      </legend>
       <label>
         od
         <input type="date" value={from} max={to || undefined} onChange={(event) => onChange({ from: event.target.value, to })} />
@@ -42,9 +71,7 @@ export function AnalysisProgress({ title, progress, depth }: { title: string; pr
   return (
     <section className="card progress" role="status" aria-live="polite" aria-labelledby={labelId}>
       <h2 id={labelId}>{title}</h2>
-      <p className="muted">
-        {(current.depth ?? depth) === 'deep' ? 'Tryb głęboki: szeroki przegląd forów i serwisów, zwykle 1–4 minuty.' : 'Tryb standardowy: zwykle do kilkudziesięciu sekund.'}
-      </p>
+      <p className="muted">{modeNote(current.depth ?? depth)}</p>
       <div className="progress-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={view.percent} aria-label="Postęp analizy">
         <span style={{ width: `${view.percent}%` }} />
       </div>

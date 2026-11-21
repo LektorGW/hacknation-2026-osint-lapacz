@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { GLOSSARY, GLOSSARY_GROUPS, GLOSSARY_IDS, searchGlossary } from '../src/glossary.ts';
 import { TOUR, availableSteps, isTourDone, markTourDone, resetTour } from '../src/tour.ts';
-import { HINT_PREFIX, SCORE_KIND, clearFlags, groupKeyFindings, plural, readFlag, splitLead, summarySentence, tierWords, writeFlag } from '../src/ux.ts';
+import { HINT_PREFIX, SCORE_KIND, clearFlags, groupKeyFindings, noPersonReason, plural, readFlag, searchInput, splitLead, summarySentence, tierWords, writeFlag } from '../src/ux.ts';
 
 /** Pamięć zgodna z `Storage` — testy działają bez przeglądarki. */
 function memoryStorage(): Storage {
@@ -111,6 +111,27 @@ test('zdanie podsumowania mówi, co znaleziono i dokąd trafiły pieniądze', ()
   assert.match(summarySentence({ linked: 0, unconfirmed: 0, services: [], totalPln: 0 }), /Nie znaleziono adresów/);
   assert.match(summarySentence({ linked: 3, unconfirmed: 0, services: ['A', 'B', 'C', 'D'], totalPln: 0 }), /A, B i 2 inne usługi\.$/);
   assert.match(summarySentence({ linked: 5, unconfirmed: 0, services: [], totalPln: 0 }), /5 adresów powiązanych z podmiotem\. Nie wykryto/);
+});
+
+test('zdanie podsumowania zależy od wejścia: dla adresu krypto mówi o osobie powiązanej z adresem', () => {
+  const found = summarySentence({ person: 'Rafał Kowalski', inputAddress: 'bc1qad…k0ze', linked: 1, unconfirmed: 0, services: ['Giełda Bursztyn'], totalPln: 0 });
+  assert.equal(found, 'Znaleziono osobę powiązaną z adresem bc1qad…k0ze: Rafał Kowalski. Środki trafiły do: Giełda Bursztyn.');
+  const reason = noPersonReason({ mentionDocuments: 0 });
+  const missing = summarySentence({ inputAddress: 'bc1qad…k0ze', noPersonReason: reason, addressCase: true, linked: 1, unconfirmed: 0, services: [], totalPln: 0 });
+  assert.equal(missing, 'Nie znaleziono osoby powiązanej z adresem bc1qad…k0ze — w źródłach publicznych nie znaleziono publikacji z tym adresem. Nie wykryto przelewów do giełd ani innych usług.');
+  assert.match(noPersonReason({ widelyCited: true, mentionDocuments: 9 }), /wielu niezwiązanych autorów/);
+  assert.match(noPersonReason({ mentionDocuments: 3 }), /żadna nie wskazuje/);
+  // Wejście „osobowe” zostawia dotychczasową postać zdania.
+  assert.match(summarySentence({ person: 'Jan Nowak', linked: 2, unconfirmed: 0, services: [], totalPln: 0 }), /^Znaleziono 2 adresy powiązane z osobą Jan Nowak\./);
+});
+
+test('wejście wyszukiwania: identyfikatory analityka, rodzaj według pierwszego', () => {
+  const address = { identifier: { type: 'crypto_address', value: 'bc1qxyz' }, origin: 'analyst' as const };
+  const nick = { identifier: { type: 'nick', value: 'tomwzor' }, origin: 'analyst' as const };
+  const discovered = { identifier: { type: 'email', value: 'a@b.pl' }, origin: 'discovered' as const };
+  assert.deepEqual(searchInput([address, discovered]), { kind: 'address', items: [address.identifier] });
+  assert.deepEqual(searchInput([nick, address, discovered]), { kind: 'person', items: [nick.identifier, address.identifier] });
+  assert.deepEqual(searchInput([discovered]), { kind: 'person', items: [] });
 });
 
 test('pamięć wskazówek i przewodnika: odporna na brak dostępu, czyszczenie po prefiksie', () => {
