@@ -1,0 +1,230 @@
+// Układ grafu powiązań — czyste, deterministyczne funkcje bez DOM.
+import type { GraphEdge, GraphNode, GraphNodeKind } from '@olcys/core';
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface GraphLayout {
+  positions: Map<string, Point>;
+  width: number;
+  height: number;
+  /** Układ warstwowy: położenie nagłówków kolumn. */
+  columns: { kind: GraphNodeKind; x: number }[];
+  /** Układ promienisty: promienie pierścieni wokół `centre`. */
+  rings: { kind: GraphNodeKind; radius: number }[];
+  centre?: Point;
+}
+
+/** Kolejność kolumn (i pierścieni): od podmiotu do kontrahentów i osób powiązanych. */
+export const KIND_ORDER: GraphNodeKind[] = ['subject', 'identifier', 'profile', 'address', 'service', 'person'];
+
+type Adjacency = Map<string, string[]>;
+
+function adjacency(nodes: GraphNode[], edges: GraphEdge[]): Adjacency {
+  const result: Adjacency = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of edges) {
+    if (!result.has(edge.from) || !result.has(edge.to) || edge.from === edge.to) continue;
+    result.get(edge.from)!.push(edge.to);
+    result.get(edge.to)!.push(edge.from);
+  }
+  return result;
+}
+
+function groupByKind(nodes: GraphNode[]): { kind: GraphNodeKind; ids: string[] }[] {
+  return KIND_ORDER.map((kind) => ({
+    kind,
+    ids: nodes.filter((node) => node.kind === kind).map((node) => node.id),
+  })).filter((group) => group.ids.length > 0);
+}
+
+const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+
+/**
+ * Redukcja przecięć: węzły kolumny sortujemy po średniej pozycji sąsiadów w kolumnach
+ * już ułożonych (metoda barycentryczna), na przemian od lewej i od prawej.
+ */
+function orderColumns(groups: { ids: string[] }[], neighbours: Adjacency, sweeps = 6): string[][] {
+  const columns = groups.map((group) => [...group.ids]);
+  const columnOf = new Map<string, number>();
+  columns.forEach((ids, index) => ids.forEach((id) => columnOf.set(id, index)));
+  const rank = new Map<string, number>();
+  const rerank = (ids: string[]) =>
+    ids.forEach((id, index) => rank.set(id, ids.length > 1 ? index / (ids.length - 1) : 0.5));
+  columns.forEach(rerank);
+
+  const sortColumn = (index: number, side: (other: number) => boolean) => {
+    const ids = columns[index]!;
+    const current = new Map(ids.map((id, position) => [id, position]));
+    const keys = new Map(
+      ids.map((id) => {
+        const ranks = neighbours
+          .get(id)!
+          .filter((other) => side(columnOf.get(other)!))
+          .map((other) => rank.get(other)!);
+        return [id, ranks.length > 0 ? mean(ranks) : rank.get(id)!];
+      }),
+    );
+    ids.sort((a, b) => keys.get(a)! - keys.get(b)! || current.get(a)! - current.get(b)!);
+    rerank(ids);
+  };
+
+  for (let sweep = 0; sweep < sweeps; sweep += 1) {
+    for (let index = 1; index < columns.length; index += 1) sortColumn(index, (other) => other < index);
+    for (let index = columns.length - 2; index >= 0; index -= 1) sortColumn(index, (other) => other > index);
+  }
+  return columns;
+}
+
+export interface LayeredOptions {
+  columnGap?: number;
+  rowGap?: number;
+  padding?: number;
+}
+
+/** Układ warstwowy: kolumny wg rodzaju węzła, wiersze w stałym odstępie, kolumny wyśrodkowane w pionie. */
+export function layeredLayout(nodes: GraphNode[], edges: GraphEdge[], options: LayeredOptions = {}): GraphLayout {
+  const { columnGap = 250, rowGap = 48, padding = 48 } = options;
+  const groups = groupByKind(nodes);
+  const ordered = orderColumns(groups, adjacency(nodes, edges));
+  const rows = Math.max(1, ...ordered.map((ids) => ids.length));
+  const positions = new Map<string, Point>();
+  ordered.forEach((ids, column) => {
+    const offset = ((rows - ids.length) * rowGap) / 2;
+    ids.forEach((id, row) => positions.set(id, { x: padding + column * columnGap, y: padding + offset + row * rowGap }));
+  });
+  return {
+    positions,
+    // Zapas z prawej na podpisy ostatniej kolumny.
+    width: padding * 2 + Math.max(0, groups.length - 1) * columnGap + 190,
+    height: padding * 2 + (rows - 1) * rowGap,
+    columns: groups.map((group, column) => ({ kind: group.kind, x: padding + column * columnGap })),
+    rings: [],
+  };
+}
+
+export interface RadialOptions {
+  ringGap?: number;
+  /** Najmniejsza odległość między środkami węzłów na jednym pierścieniu. */
+  minDistance?: number;
+  padding?: number;
+}
+
+/** Układ promienisty: podmiot w środku, kolejne rodzaje węzłów na coraz większych pierścieniach. */
+export function radialLayout(nodes: GraphNode[], edges: GraphEdge[], options: RadialOptions = {}): GraphLayout {
+  const { ringGap = 150, minDistance = 112, padding = 90 } = options;
+  const groups = groupByKind(nodes);
+  const neighbours = adjacency(nodes, edges);
+  const hasCentre = groups[0]?.kind === 'subject' && groups[0].ids.length === 1;
+  const angles = new Map<string, number>();
+  const radii = new Map<string, number>();
+  const rings: { kind: GraphNodeKind; radius: number }[] = [];
+
+  let radius = 0;
+  for (const group of hasCentre ? groups.slice(1) : groups) {
+    const count = group.ids.length;
+    const needed = count > 1 ? minDistance / (2 * Math.sin(Math.PI / count)) : 0;
+    radius = Math.max(radius + ringGap, needed);
+    rings.push({ kind: group.kind, radius });
+
+    // Kąt docelowy: średnia kołowa kątów sąsiadów z pierścieni wewnętrznych.
+    const desired = new Map<string, number>();
+    for (const id of group.ids) {
+      const inner = neighbours
+        .get(id)!
+        .filter((other) => angles.has(other))
+        .map((other) => angles.get(other)!);
+      if (inner.length > 0) desired.set(id, Math.atan2(mean(inner.map(Math.sin)), mean(inner.map(Math.cos))));
+    }
+    const index = new Map(group.ids.map((id, position) => [id, position]));
+    const ordered = [...group.ids].sort(
+      (a, b) => (desired.get(a) ?? Math.PI * 2) - (desired.get(b) ?? Math.PI * 2) || index.get(a)! - index.get(b)!,
+    );
+    // Równe odstępy zachowują kolejność; obrót pierścienia przybliża węzły do ich sąsiadów.
+    const step = (Math.PI * 2) / count;
+    const shifts = ordered.flatMap((id, position) => (desired.has(id) ? [desired.get(id)! - position * step] : []));
+    const rotation =
+      shifts.length > 0 ? Math.atan2(mean(shifts.map(Math.sin)), mean(shifts.map(Math.cos))) : -Math.PI / 2;
+    ordered.forEach((id, position) => {
+      angles.set(id, rotation + position * step);
+      radii.set(id, radius);
+    });
+  }
+
+  const centre = { x: radius + padding, y: radius + padding };
+  const positions = new Map<string, Point>();
+  for (const node of nodes) {
+    const r = radii.get(node.id) ?? 0;
+    const angle = angles.get(node.id) ?? 0;
+    positions.set(node.id, { x: centre.x + r * Math.cos(angle), y: centre.y + r * Math.sin(angle) });
+  }
+  return { positions, width: centre.x * 2, height: centre.y * 2, columns: [], rings, centre };
+}
+
+export interface GraphFilter {
+  hideExcluded: boolean;
+  cashOutOnly: boolean;
+  minScore: number;
+}
+
+/** Filtry widoku: po odfiltrowaniu usuwamy także węzły, które straciły wszystkie połączenia. */
+export function filterGraph(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  filter: GraphFilter,
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  let keptNodes = nodes.filter(
+    (node) =>
+      node.kind === 'subject' ||
+      (!(filter.hideExcluded && node.excluded) && !(node.score !== undefined && node.score < filter.minScore)),
+  );
+  let keptEdges = edges.filter((edge) => !(filter.cashOutOnly && edge.kind === 'transfer'));
+  for (;;) {
+    const ids = new Set(keptNodes.map((node) => node.id));
+    keptEdges = keptEdges.filter((edge) => ids.has(edge.from) && ids.has(edge.to));
+    const connected = new Set(keptEdges.flatMap((edge) => [edge.from, edge.to]));
+    const next = keptNodes.filter((node) => node.kind === 'subject' || connected.has(node.id));
+    if (next.length === keptNodes.length) return { nodes: keptNodes, edges: keptEdges };
+    keptNodes = next;
+  }
+}
+
+/** Węzeł i jego bezpośredni sąsiedzi — do podświetlania. */
+export function neighbourhood(edges: { from: string; to: string }[], id: string): Set<string> {
+  const result = new Set([id]);
+  for (const edge of edges) {
+    if (edge.from === id) result.add(edge.to);
+    if (edge.to === id) result.add(edge.from);
+  }
+  return result;
+}
+
+export interface EdgeGeometry {
+  path: string;
+  mid: Point;
+  /** Kierunek krawędzi w połowie długości, w stopniach. */
+  angle: number;
+}
+
+/** Krzywa między węzłami: w układzie warstwowym pozioma „esowata”, w promienistym odcinek. */
+export function edgeGeometry(from: Point, to: Point, curved: boolean): EdgeGeometry {
+  const degrees = (dx: number, dy: number) => (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (!curved) {
+    return {
+      path: `M${from.x},${from.y}L${to.x},${to.y}`,
+      mid: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+      angle: degrees(to.x - from.x, to.y - from.y),
+    };
+  }
+  // Węzły tej samej kolumny łączymy łukiem wychodzącym w prawo.
+  const sameColumn = from.x === to.x;
+  const bend = sameColumn ? 70 : (to.x - from.x) / 2;
+  const c1 = { x: from.x + bend, y: from.y };
+  const c2 = { x: sameColumn ? to.x + bend : to.x - bend, y: to.y };
+  return {
+    path: `M${from.x},${from.y}C${c1.x},${c1.y} ${c2.x},${c2.y} ${to.x},${to.y}`,
+    mid: { x: (from.x + 3 * c1.x + 3 * c2.x + to.x) / 8, y: (from.y + 3 * c1.y + 3 * c2.y + to.y) / 8 },
+    angle: degrees(to.x - from.x + (c2.x - c1.x), to.y - from.y + (c2.y - c1.y)),
+  };
+}

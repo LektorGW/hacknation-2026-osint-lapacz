@@ -1,0 +1,17 @@
+{
+  "name": "@olcys/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "scripts": { "start": "node src/server.ts", "test": "node --test test/*.test.ts" },
+  "dependencies": {
+    "@olcys/core": "workspace:*",
+    "@olcys/chain": "workspace:*",
+    "@olcys/sources": "workspace:*",
+    "fastify": "^5.0.0",
+    "@fastify/cors": "^11.0.0",
+    "@electric-sql/pglite": "^0.3.0",
+    "pg": "^8.13.0"
+  }
+}

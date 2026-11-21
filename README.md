@@ -5,9 +5,17 @@ Narzędzie, które na podstawie identyfikatora podmiotu (imię i nazwisko, nick,
 Status: szkielet monorepo (21.11.2026).
 
 ## Struktura
-- `backend/` — API, zbieranie śladów OSINT, ekstrakcja adresów, analiza blockchain, Wskaźnik Pewności
-- `frontend/` — interfejs analityka i raport
+- `packages/core/` — logika niezależna od źródeł: wykrywanie i walidacja adresów, Wskaźnik Pewności (gotowe, z testami)
+- `apps/` — API, interfejs analityka i syntetyczne źródła do demo (w przygotowaniu)
 - `docs/` — architektura, scenariusze testowe, licencje komponentów
+
+## Uruchomienie testów
+Wymagany Node 24+ i pnpm.
+
+```
+pnpm install
+pnpm test
+```
 
 ## Zasady zadania, których pilnujemy
 - wyłącznie publiczne źródła; bez skanowania, logowania na cudze konta i obchodzenia zabezpieczeń

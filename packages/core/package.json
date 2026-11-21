@@ -1,0 +1,14 @@
+{
+  "name": "@olcys/core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
+  }
+}

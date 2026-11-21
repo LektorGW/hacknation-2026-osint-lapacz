@@ -1,0 +1,72 @@
+-- Schemat OŁCyŚ (PostgreSQL). Wykonywany przy każdym starcie — wszystkie polecenia są idempotentne.
+-- Polecenia oddziela średnik na końcu wiersza; nie używać średników wewnątrz poleceń.
+
+CREATE TABLE IF NOT EXISTS cases (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL,
+  query       JSONB NOT NULL
+);
+
+-- Pełny wynik analizy (AnalysisRun) w kolumnie result; pozostałe kolumny służą do list i sortowania.
+CREATE TABLE IF NOT EXISTS runs (
+  id             TEXT PRIMARY KEY,
+  case_id        TEXT NOT NULL REFERENCES cases (id) ON DELETE CASCADE,
+  started_at     TIMESTAMPTZ NOT NULL,
+  finished_at    TIMESTAMPTZ,
+  status         TEXT NOT NULL,
+  finding_count  INTEGER NOT NULL DEFAULT 0,
+  top_score      INTEGER NOT NULL DEFAULT 0,
+  result         JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS runs_case_started_idx ON runs (case_id, started_at);
+
+-- Łańcuch dowodowy: kopia treści dokładnie w postaci, z której policzono skrót SHA-256.
+CREATE TABLE IF NOT EXISTS documents (
+  run_id        TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+  content_hash  TEXT NOT NULL,
+  url           TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  service       TEXT NOT NULL,
+  connector_id  TEXT NOT NULL,
+  author        TEXT,
+  published_at  TEXT,
+  archived_at   TEXT,
+  fetched_at    TIMESTAMPTZ NOT NULL,
+  content       TEXT NOT NULL,
+  PRIMARY KEY (run_id, content_hash, url)
+);
+
+-- Materiał do teczki (profile, ścieżka odkrywania) — obok wyniku, żeby AnalysisRun pozostał zgodny z kontraktem.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS intel JSONB;
+
+-- Rejestr decyzji analityka. Wpisy nie są zmieniane; obowiązuje najnowsza decyzja dla danego celu.
+CREATE TABLE IF NOT EXISTS decisions (
+  id          TEXT PRIMARY KEY,
+  seq         SERIAL,
+  case_id     TEXT NOT NULL REFERENCES cases (id) ON DELETE CASCADE,
+  target      TEXT NOT NULL,
+  target_key  TEXT NOT NULL,
+  decision    TEXT NOT NULL,
+  note        TEXT,
+  author      TEXT NOT NULL,
+  decided_at  TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS decisions_case_idx ON decisions (case_id, seq);
+
+-- Przegląd źródeł (typowanie podmiotów): wynik z rankingiem w kolumnie result.
+CREATE TABLE IF NOT EXISTS sweeps (
+  id          TEXT PRIMARY KEY,
+  started_at  TIMESTAMPTZ NOT NULL,
+  result      JSONB NOT NULL
+);
+
+-- Pełna analiza wytypowanego podmiotu — po założeniu sprawy staje się jej pierwszą analizą.
+CREATE TABLE IF NOT EXISTS sweep_leads (
+  sweep_id  TEXT NOT NULL REFERENCES sweeps (id) ON DELETE CASCADE,
+  lead_id   TEXT NOT NULL,
+  analysis  JSONB NOT NULL,
+  PRIMARY KEY (sweep_id, lead_id)
+);

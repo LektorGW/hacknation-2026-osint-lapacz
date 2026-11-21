@@ -1,0 +1,9 @@
+{
+  "name": "@olcys/sandbox",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "scripts": { "start": "node src/server.ts" },
+  "dependencies": { "@olcys/core": "workspace:*", "fastify": "^5.0.0" }
+}
