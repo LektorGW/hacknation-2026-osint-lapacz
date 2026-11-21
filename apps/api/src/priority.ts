@@ -40,6 +40,11 @@ export const PRIORITY_RULES = {
   recencyZeroDays: 5 * 365,
   /** Liczba niezależnych źródeł dająca pełny składnik. */
   sourcesFull: 3,
+  /**
+   * Dodatek za związek z incydentem: środki pochodzą z adresu oznaczonego jako związany z włamaniem lub
+   * oszustwem (albo z listy sankcyjnej) lub zostały zajęte przez organ państwa. Doliczany po sumie ważonej, najwyżej do 100.
+   */
+  incidentBonus: 10,
   /** Minimalny Wskaźnik Pewności, od którego adres liczy się do sum wypłat. */
   linkedMinScore: 40,
   components: {
@@ -64,6 +69,8 @@ export interface PriorityInput {
   serviceStrengths: number[];
   /** Łączna pewność najpewniejszego ustalenia z dowodu spieniężenia (jeśli są ścieżki środków). */
   proofConfidence?: number;
+  /** Związek z incydentem lub zajęciem środków — opis do uzasadnienia; brak = bez dodatku. */
+  incident?: string;
   now: Date;
 }
 
@@ -101,13 +108,9 @@ export function computePriority(input: PriorityInput): PriorityResult {
     strengths.length === 0 ? 0 : Math.min(100, strengths[0]! + (strengths.length - 1) * PRIORITY_RULES.extraServicePoints);
   const services = Math.max(fromLinks, input.proofConfidence ?? 0);
 
-  const priority = Math.round(
-    weights.confidence * confidence +
-      weights.scale * scale +
-      weights.services * services +
-      weights.recency * recency +
-      weights.sources * sources,
-  );
+  const weighted =
+    weights.confidence * confidence + weights.scale * scale + weights.services * services + weights.recency * recency + weights.sources * sources;
+  const priority = Math.min(100, Math.round(weighted + (input.incident ? PRIORITY_RULES.incidentBonus : 0)));
 
   const reasons = [
     input.subjectProbability === undefined
@@ -125,6 +128,7 @@ export function computePriority(input: PriorityInput): PriorityResult {
       ? 'Aktualność: brak wypłat do oceny — 0 pkt.'
       : `Aktualność: ostatnia możliwa wypłata ${formatDate(input.lastCashOutAt!)} (${ageDays} dni temu) → ${Math.round(recency)}/100 × ${weight(weights.recency)} = ${points(weights.recency * recency)} pkt.`,
     `Niezależne źródła najlepszego adresu: ${sourceCount} → ${Math.round(sources)}/100 × ${weight(weights.sources)} = ${points(weights.sources * sources)} pkt.`,
+    ...(input.incident ? [`Związek z incydentem lub zajęciem środków: ${input.incident} — +${PRIORITY_RULES.incidentBonus} pkt.`] : []),
     `Razem: ${priority}/100 (wynik obliczeń według jawnego wzoru).`,
   ];
   return { priority, reasons };
@@ -154,6 +158,7 @@ export function summarizeFindings(
   now: Date,
   serviceLinks: ServiceLink[] = [],
   proofConfidence?: number,
+  incident?: string,
 ): FindingsSummary {
   const active = findings.filter((finding) => !finding.confidence.excluded);
   const linked = active.filter(
@@ -176,6 +181,7 @@ export function summarizeFindings(
     independentSources: new Set((best?.evidence ?? []).map((item) => item.service.toLowerCase())).size,
     serviceStrengths: serviceLinks.filter((link) => isCashOutService(link.kind)).map((link) => link.strength),
     proofConfidence,
+    incident,
     now,
   });
   return {

@@ -63,7 +63,7 @@ const top = [...kept].sort((a, b) => b.polishNexus.score + b.suspicion.score - (
 for (const hit of top) console.log(`  ${hit.polishNexus.score}+${hit.suspicion.score} [${hit.basis}] ${hit.service} — ${hit.title.slice(0, 80)} (autor: ${hit.author ?? '—'}, adresów ${hit.addresses.length})`);
 const real = kept.filter((hit) => !hit.connectorId.startsWith('sandbox-'));
 console.log(`  w tym ze źródeł prawdziwych: ${real.length}`);
-for (const hit of [...real].sort((a, b) => b.polishNexus.score + b.suspicion.score - (a.polishNexus.score + a.suspicion.score)).slice(0, 8)) {
+for (const hit of [...real].sort((a, b) => b.polishNexus.score + b.suspicion.score - (a.polishNexus.score + a.suspicion.score)).slice(0, process.env.ALL ? 500 : 8)) {
   console.log(`    ${hit.polishNexus.score}+${hit.suspicion.score} [${hit.basis}] ${hit.service} — ${hit.title.slice(0, 70)} (autor: ${hit.author ?? '—'}, adresów ${hit.addresses.length})`);
   // WHY=1: pierwsza przesłanka sygnałów — do oceny, czy reguła trafia w to, co powinna.
   if (process.env.WHY) console.log(`        ${(hit.suspicion.reasons[0] ?? '').slice(0, 170)}`);

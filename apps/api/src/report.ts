@@ -616,6 +616,41 @@ ${
       inference('<p>Podmiana adresu w profilu może oznaczać zmianę portfela przez podmiot albo próbę ukrycia wcześniejszego adresu. Oba adresy warto analizować łącznie.</p>')
 }
 
+${
+  dossier.seizures.length + dossier.fundingSources.length > 0
+    ? `<h2>Zajęcie i pochodzenie środków</h2>
+      ${
+        dossier.seizures.length > 0
+          ? fact(`<h4>Środki przekazane na adres organu państwa</h4>
+            <p>Ustalenie z publicznej etykiety adresu, nie z dokumentu dotyczącego tej transakcji. To zajęcie środków — nie spieniężenie; kwoty nie wchodzą do sum wypłat.</p>
+            <table><tr><th>Data i czas</th><th>Z adresu podmiotu</th><th>Na adres</th><th class="liczba">Kwota</th><th class="liczba">Szacunek PLN</th><th>Źródło etykiety</th><th>Transakcja</th></tr>
+            ${dossier.seizures
+              .map(
+                (item) => `<tr><td>${dateTime(item.time)}</td><td class="mono">${esc(item.subjectAddress)}</td>
+                  <td>${esc(item.counterpartyLabel)}<br><span class="mono">${esc(item.counterparty)}</span></td>
+                  <td class="liczba">${esc(amount(item.amount))} ${esc(item.asset)}</td><td class="liczba">${item.valuePln !== undefined ? esc(pln(item.valuePln)) : '—'}</td>
+                  <td>${link(item.labelSource)}</td><td class="mono">${link(item.explorerUrl, short(item.txid))}</td></tr>`,
+              )
+              .join('')}</table>`)
+          : ''
+      }
+      ${
+        dossier.fundingSources.length > 0
+          ? fact(`<h4>Skąd przyszły środki</h4>
+            <table><tr><th>Adres podmiotu</th><th>Źródło środków</th><th class="liczba">Udział we wpływach</th><th class="liczba">Kwota</th><th>Kroki</th><th>Uzasadnienie</th></tr>
+            ${dossier.fundingSources
+              .map(
+                (item) => `<tr><td class="mono">${esc(short(item.subjectAddress))}</td>
+                  <td>${esc(item.label ?? 'adres bez publicznej etykiety')}${item.category ? ` <strong>(${esc(item.category === 'incident' ? 'incydent' : item.category === 'sanctioned' ? 'lista sankcyjna' : 'organ państwa')})</strong>` : ''}<br><span class="mono">${esc(item.address)}</span>${item.labelSource ? `<br><span class="meta">źródło etykiety: ${link(item.labelSource)}</span>` : ''}</td>
+                  <td class="liczba">${Math.round(item.share * 100)}%</td><td class="liczba">${esc(amount(item.amount))} ${esc(item.asset)}</td>
+                  <td>${item.hops > 1 ? '2 — przez adres pośredni (heurystyka)' : '1 — przelew wprost'}</td><td>${esc(item.reason)}</td></tr>`,
+              )
+              .join('')}</table>`)
+          : ''
+      }`
+    : ''
+}
+
 <h2>Powiązane tożsamości i ścieżki dojścia</h2>
 ${
   dossier.linkedIdentities.length === 0

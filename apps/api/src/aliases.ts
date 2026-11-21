@@ -217,19 +217,8 @@ export function buildLinkedIdentities(input: AliasInput): { identities: LinkedId
     }
   }
 
-  // Adresy powiązane w blockchainie, których nikt nie opublikował: tożsamość bez profilu.
-  for (const lead of input.leads) {
-    if (lead.kind !== 'linked_address' || lead.docUrl || !lead.link) continue;
-    const group = groupFor(`adres:${lead.value}`);
-    const close = lead.link.kind === 'co_depositor' || lead.link.kind === 'same_wallet' || lead.link.kind === 'repeated_counterparty';
-    group.extraAddresses.push({ address: lead.value, network: input.linked.find((finding) => finding.address === lead.fromAddress)?.network ?? 'unknown', basis: `linked:${lead.link.kind}` });
-    add(group.reasons, {
-      strength: close ? 'medium' : 'weak',
-      text: `Powiązanie adresów w blockchainie: ${linkKindText(lead.link.kind)} ${shortAddress(lead.value)}${lead.link.via ? ` (przez ${shortAddress(lead.link.via)})` : ''}; adresu nikt nie opublikował.`,
-      evidence: [{ kind: 'address', value: lead.value }, ...(lead.link.via ? [{ kind: 'address' as const, value: lead.link.via }] : []), ...lead.link.txids.slice(0, 5).map((txid) => ({ kind: 'txid' as const, value: txid }))],
-      path: lead.path,
-    });
-  }
+  // Adres powiązany w blockchainie, którego nikt nie opublikował, NIE jest tożsamością — teczka pokazuje
+  // go przy adresie podmiotu jako „inny adres tego samego portfela / adres powiązany”, bez udawania osoby.
 
   const identities: LinkedIdentity[] = [];
   let hidden = 0;

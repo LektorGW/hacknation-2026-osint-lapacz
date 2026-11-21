@@ -118,7 +118,7 @@ export function buildUnconfirmedAddresses(input: UnconfirmedInput): UnconfirmedA
   return result.sort((a, b) => b.personAddressProbability - a.personAddressProbability || (b.chain?.transfers ?? 0) - (a.chain?.transfers ?? 0));
 }
 
-export type ExplanationKind = 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out';
+export type ExplanationKind = 'seized' | 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out';
 
 /** Wyjaśnienie braku wyniku wraz z tym, co analityk może zrobić. */
 export interface Explanation {
@@ -152,6 +152,8 @@ export interface ExplainInput {
   partial: boolean;
   serviceLabels?: ServiceLabel[];
   matcher?: ExternalServiceMatcher;
+  /** Liczba przelewów na adresy organów państwa (zajęcia środków). */
+  seizures?: number;
 }
 
 const MAX_SERVICE_ADDRESSES = 20;
@@ -236,7 +238,15 @@ export function buildExplanations(input: ExplainInput): Explanation[] {
     });
   }
   const analysed = input.linked.filter((finding) => finding.chain);
-  if (analysed.length > 0 && input.confirmedProofs === 0 && input.cashOutPlnTotal === 0) {
+  if ((input.seizures ?? 0) > 0 && input.confirmedProofs === 0 && input.cashOutPlnTotal === 0) {
+    result.push({
+      kind: 'seized',
+      text:
+        'Nie ma dowodu spieniężenia, bo środki nie trafiły do giełdy ani innej usługi wymiany — zostały przekazane na adres organu państwa (zajęcie). ' +
+        'Szczegóły są w sekcji o zajęciu i pochodzeniu środków.',
+      suggestions: ['Sprawdź źródło etykiety adresu organu państwa i dokumenty postępowania, którego dotyczy zajęcie.', 'Pochodzenie środków (skąd przyszły na adres) jest w tej samej sekcji.'],
+    });
+  } else if (analysed.length > 0 && input.confirmedProofs === 0 && input.cashOutPlnTotal === 0) {
     const transfers = analysed.reduce((sum, finding) => sum + (finding.chain?.transfers.length ?? 0), 0);
     result.push({
       kind: 'no_cash_out',

@@ -6,6 +6,7 @@ import type { Finding, ProfileCard, TimelineEvent } from '@olcys/core';
 import type { AddressReplacement } from './diff.ts';
 import { formatAmount, shortAddress } from './format.ts';
 import type { CashOutProof } from './proof.ts';
+import type { SeizureView } from './provenance.ts';
 
 /** Najwyżej tyle zwykłych przelewów (największych kwotą) trafia na oś; wypłaty zawsze wszystkie. */
 export const MAX_TIMELINE_TRANSFERS = 300;
@@ -17,6 +18,8 @@ export interface TimelineInput {
   replacements: AddressReplacement[];
   /** Dowód spieniężenia: dotarcie środków do usługi przez adresy pośrednie. */
   proofs?: CashOutProof[];
+  /** Przelewy na adresy organów państwa (zajęcie środków). */
+  seizures?: SeizureView[];
 }
 
 export function buildTimeline(input: TimelineInput): TimelineEvent[] {
@@ -97,6 +100,19 @@ export function buildTimeline(input: TimelineInput): TimelineEvent[] {
       detail: `Wersja z ${replacement.archivedAt.slice(0, 10)} zawierała wcześniejszy adres; podmiana nastąpiła najpóźniej w dniu wskazanym jako czas zdarzenia.`,
       address: replacement.to,
       url: replacement.url,
+      layer: 'fact',
+    });
+  }
+
+  for (const seizure of input.seizures ?? []) {
+    events.push({
+      time: seizure.time,
+      kind: 'transfer_out',
+      title: `Zajęcie środków: ${formatAmount(seizure.amount)} ${seizure.asset} → ${seizure.counterpartyLabel}`,
+      detail: `Przelew na adres organu państwa (etykieta publiczna, źródło: ${seizure.labelSource}). To nie jest spieniężenie.`,
+      address: seizure.subjectAddress,
+      ...(seizure.valuePln !== undefined ? { valuePln: seizure.valuePln } : {}),
+      url: seizure.explorerUrl,
       layer: 'fact',
     });
   }

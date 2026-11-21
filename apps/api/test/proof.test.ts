@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { CashOutTrail, FlowHop, Identifier } from '@olcys/core';
 import { canonicalUrl, runAnalysis } from '../src/analysis.ts';
 import { insightEffect } from '../src/ai-rules.ts';
-import { BTC_A, BTC_B, BTC_C, BTC_D, ETH_A, chainWith, decision, dossierOf, evidence, fakeAi, fakeConnector, fakeProvider } from './helpers.ts';
+import { BTC_A, BTC_B, BTC_C, BTC_D, ETH_A, chainWith, decision, dossierOf, evidence, fakeAi, fakeConnector, fakeProvider, transfer } from './helpers.ts';
 
 const email: Identifier = { type: 'email', value: 'jan.kowalski@poczta.example' };
 const nick: Identifier = { type: 'nick', value: 'krypto_janek' };
@@ -462,4 +462,79 @@ test('sam adres: kandydatem jest tylko autor z mocną podstawą własności albo
   const byModel = await runAnalysis({ query: addressQuery, connectors: [commenters(3)], chainProviders: [fakeProvider()], ai });
   assert.deepEqual(byModel.findings[0]!.evidence.map((item) => item.author), ['komentujacy_0']);
   assert.equal(byModel.findings[0]!.unrelatedPublishers, 2);
+});
+
+// ---------- Zajęcie środków, pochodzenie środków, zestawienia adresów ----------
+
+test('zajęcie przez organ państwa i pochodzenie środków z incydentu: ustalenia, nie spieniężenie', async () => {
+  const GOV = '1BoatSLRHtKNngkdXEeobR76b53LETtpyT';
+  const HACK = '12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX';
+  const seized = transfer(1, { counterparty: GOV, counterpartyClass: 'institutional', counterpartyLabel: 'Rząd USA: środki zajęte po włamaniu', time: '2022-02-01T10:00:00.000Z', amount: 567.49 });
+  const base = chainWith({ [BTC_A]: { transfers: [seized] } });
+  const provider = {
+    ...base,
+    getActivity: async (network: 'bitcoin', address: string) => ({
+      ...(await base.getActivity(network, address, { log() {} })),
+      seizures: [{ txid: seized.txid, time: seized.time, asset: 'BTC', amount: 567.49, counterparty: GOV, counterpartyLabel: 'Rząd USA: środki zajęte po włamaniu', labelSource: 'https://justice.example/komunikat', valuePln: 87_000_000, explanation: 'Przelew na adres organu państwa.', explorerUrl: seized.explorerUrl }],
+      fundingSources: [
+        { address: HACK, network: 'bitcoin', label: 'Włamanie na giełdę (2016)', addressClass: 'unknown', category: 'incident', labelSource: 'https://analiza.example/raport', amount: 500, asset: 'BTC', share: 0.88, hops: 1, txids: ['t1'], reason: 'Nadawca ma etykietę.' },
+        { address: BTC_D, network: 'bitcoin', addressClass: 'unknown', amount: 67, asset: 'BTC', share: 0.12, hops: 2, via: BTC_C, txids: ['t2'], reason: 'Największy nadawca przed przelewem.' },
+      ],
+    }),
+  };
+  const dossier = dossierOf(await runAnalysis({ query: addressQuery, connectors: [], chainProviders: [provider] }), addressQuery);
+
+  assert.deepEqual(dossier.seizures.map((item) => [item.subjectAddress, item.counterparty, item.amount, item.labelSource]), [[BTC_A, GOV, 567.49, 'https://justice.example/komunikat']]);
+  assert.deepEqual(dossier.fundingSources.map((item) => [item.subjectAddress, item.address, item.category, item.share, item.hops]), [[BTC_A, HACK, 'incident', 0.88, 1], [BTC_A, BTC_D, undefined, 0.12, 2]]);
+  // Zajęcie nie jest spieniężeniem: nie ma go w sumach, dowodzie ani usługach.
+  assert.deepEqual(dossier.totals.cashOutPlnByYear, {});
+  assert.deepEqual(dossier.cashOutProof, []);
+  assert.deepEqual(dossier.serviceLinks, []);
+  // Wyjaśnienie mówi o zajęciu zamiast o „braku wypływów do usług”.
+  assert.deepEqual(dossier.explanations.map((item) => item.kind), ['seized']);
+  // Kluczowe ustalenia: fakty z publicznych etykiet, ze źródłem etykiety.
+  const texts = dossier.keyFindings.map((item) => item.text);
+  assert.ok(texts.some((text) => text.includes('przekazane na adres organu państwa: „Rząd USA: środki zajęte po włamaniu” — źródło etykiety: https://justice.example/komunikat. To zajęcie, nie spieniężenie.')));
+  assert.ok(texts.some((text) => text.includes('pochodzą w 88% z adresu') && text.includes('„Włamanie na giełdę (2016)”') && text.includes('incydentem')));
+  // Jawny czynnik priorytetu.
+  assert.ok(dossier.totals.priorityReasons.some((reason) => reason.startsWith('Związek z incydentem lub zajęciem środków: środki pochodzą z adresu oznaczonego jako „Włamanie na giełdę (2016)” — +10 pkt.')));
+  // Graf i oś czasu.
+  assert.ok(dossier.graph.edges.some((edge) => edge.from === `addr:bitcoin:${BTC_A}` && edge.to === `gov:${GOV}` && edge.label!.startsWith('zajęcie')));
+  assert.ok(dossier.graph.edges.some((edge) => edge.from === `src:${HACK}` && edge.label === '88% wpływów'));
+  assert.ok(dossier.timeline.some((event) => event.title.startsWith('Zajęcie środków: 567,49 BTC') && event.layer === 'fact'));
+});
+
+test('autorzy zestawień adresów nie są właścicielami ani osobami powiązanymi', async () => {
+  const COUNTERPARTY = '1BoatSLRHtKNngkdXEeobR76b53LETtpyT';
+  const richList = (address: string) =>
+    `Rich list:\n${[address, BTC_A, BTC_B, BTC_C, BTC_D, ETH_A, '12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX', '1HLoD9E4SDFFPDiYfNYnkBLQ85Y51J3Zb1', '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy', '1BoatSLRHtKNngkdXEeobR76b53LETtpyT', '1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF'].join('\n')}`;
+  const github = fakeConnector('live-github-search', 'github.com', ['crypto_address'], (identifier) => [
+    { url: `https://github.com/lista/rich/${identifier.value}`, author: 'lista_bogaczy', text: richList(identifier.value) },
+  ]);
+  const chain = chainWith({ [BTC_A]: { transfers: [transfer(1, { counterparty: COUNTERPARTY, time: '2025-01-01T00:00:00.000Z', amount: 5 })] } });
+  const result = await runAnalysis({ query: addressQuery, connectors: [github], chainProviders: [chain] });
+  const dossier = dossierOf(result, addressQuery);
+
+  // Ani adres podmiotu, ani adres kontrahenta nie zyskuje „autora”: zestawienie to nie przesłanka.
+  assert.deepEqual(result.findings.map((finding) => [finding.address, finding.evidence.length, finding.unrelatedPublishers]), [[BTC_A, 0, 0]]);
+  assert.deepEqual(dossier.relatedPersons, []);
+  assert.deepEqual(dossier.linkedIdentities, []);
+  assert.deepEqual(dossier.persons, []);
+  assert.ok(!dossier.graph.nodes.some((node) => node.kind === 'person' || node.kind === 'profile'));
+  assert.deepEqual(dossier.mentions, [{ identifier: addressQuery.identifiers[0], documents: 1, authors: 0, services: 0, note: 'adres występuje w publicznych zestawieniach adresów' }]);
+  assert.ok(dossier.findings[0]!.annotations!.some((note) => note.startsWith('Adres występuje w publicznych zestawieniach adresów (1 publikacja)')));
+  assert.ok(result.log.some((entry) => entry.message.includes(`Kontrahent ${COUNTERPARTY} występuje w publicznych zestawieniach adresów`)));
+
+  // Kontrahent opublikowany przez trzech niezależnych autorów też nikogo nie wskazuje.
+  const many = fakeConnector('profile', 'social.example', ['crypto_address'], (identifier) =>
+    identifier.value === COUNTERPARTY ? ['a', 'b', 'c'].map((name) => ({ url: `https://social.example/${name}`, author: `autor_${name}`, text: `Mój adres: ${COUNTERPARTY}` })) : [],
+  );
+  assert.deepEqual(dossierOf(await runAnalysis({ query: addressQuery, connectors: [many], chainProviders: [chain] }), addressQuery).relatedPersons, []);
+
+  // Analiza po nicku: profil z listą wielu adresów nie przypisuje ich podmiotowi.
+  const nickQuery = { identifiers: [nick] };
+  const listProfile = fakeConnector('gitpub', 'gitpub.example', ['nick'], () => [{ url: 'https://gitpub.example/krypto_janek/lista', author: 'krypto_janek', text: richList(BTC_A) }]);
+  const byNick = await runAnalysis({ query: nickQuery, connectors: [listProfile], chainProviders: [fakeProvider()] });
+  assert.deepEqual(byNick.findings, []);
+  assert.ok(byNick.log.some((entry) => entry.message.includes('to zestawienie adresów, nie przypisano ich podmiotowi')));
 });

@@ -10,6 +10,7 @@ import type { DiscoveryStep } from './intel.ts';
 import { identityRelationLabel } from './aliases.ts';
 import type { LinkedIdentity } from './aliases.ts';
 import type { CashOutProof } from './proof.ts';
+import type { FundingSourceView, SeizureView } from './provenance.ts';
 import { CONTRACTS_LINK_ID, isCashOutService, serviceIdOf, serviceKindLabel } from './services.ts';
 
 export interface GraphInput {
@@ -26,6 +27,8 @@ export interface GraphInput {
   /** Dowód spieniężenia: ścieżki środków rysowane krok po kroku. */
   proofs?: CashOutProof[];
   linkedIdentities?: LinkedIdentity[];
+  seizures?: SeizureView[];
+  fundingSources?: FundingSourceView[];
 }
 
 const identifierNodeId = (identifier: Identifier) => `id:${identifier.type}:${identifier.value.trim().toLowerCase()}`;
@@ -171,6 +174,31 @@ export function buildGraph(input: GraphInput): { nodes: GraphNode[]; edges: Grap
         ...(hop.inferred || final ? { inferred: true } : {}),
       });
       from = to;
+    });
+  }
+
+  // Zajęcie: adres podmiotu → adres organu państwa. Pochodzenie środków: adres źródłowy → adres podmiotu.
+  for (const seizure of input.seizures ?? []) {
+    const id = `gov:${seizure.counterparty}`;
+    addNode({ id, kind: 'service', label: seizure.counterpartyLabel, sublabel: 'organ państwa — zajęcie środków (etykieta publiczna)', url: seizure.explorerUrl });
+    addEdge({ from: `addr:${seizure.network}:${seizure.subjectAddress}`, to: id, kind: 'transfer', label: `zajęcie: ${seizure.amount.toLocaleString('pl-PL', { maximumFractionDigits: 8 })} ${seizure.asset}`, weight: 100 });
+  }
+  for (const source of input.fundingSources ?? []) {
+    if (!source.label && !source.category) continue;
+    const id = `src:${source.address}`;
+    addNode({
+      id,
+      kind: 'service',
+      label: source.label ?? shortAddress(source.address),
+      sublabel: source.category === 'incident' ? 'źródło środków — adres związany z incydentem' : source.category === 'sanctioned' ? 'źródło środków — lista sankcyjna' : 'źródło środków',
+    });
+    addEdge({
+      from: id,
+      to: `addr:${source.network}:${source.subjectAddress}`,
+      kind: 'transfer',
+      label: `${Math.round(source.share * 100)}% wpływów${source.hops > 1 ? ' (przez adres pośredni)' : ''}`,
+      weight: Math.max(1, Math.round(source.share * 100)),
+      ...(source.hops > 1 ? { inferred: true } : {}),
     });
   }
 

@@ -165,6 +165,13 @@ export interface ChainContext extends ConnectorContext {
  * oferta lub wiadomość z adresem do wpłaty. Wypowiedź na forum czy komentarz to tylko wzmianka.
  */
 export const OWNERSHIP_CATEGORIES: SourceCategory[] = ['own_profile', 'cryptographic_proof', 'sale_offer', 'settlement_message'];
+/**
+ * Publikacja z tyloma różnymi adresami to lista lub zestawienie (np. „najbogatsze adresy”), a nie
+ * czyjś własny adres: nie jest przesłanką własności ani powiązania między osobami.
+ */
+export const ADDRESS_LIST_MIN = 10;
+/** Adres opublikowany przez tylu niezależnych autorów nie wskazuje żadnego z nich jako właściciela ani kontrahenta. */
+export const MANY_PUBLISHERS_MIN = 3;
 /** Najwyżej tyle wzmianek o adresie czyta model, szukając autora podającego adres jako własny. */
 const MAX_OWNERSHIP_READS = 10;
 
@@ -299,6 +306,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const normalizeText = params.normalizeText ?? ((text: string) => text);
   /** Adresy w treści — po sprowadzeniu nietypowych zapisów do postaci wykrywalnej. */
   const extract = (text: string) => extractAddresses(normalizeText(text));
+
+  /** Czy publikacja jest listą adresów (zestawieniem), a nie publikacją czyjegoś adresu. */
+  const isAddressList = (doc: SourceDocument): boolean => new Set(extract(doc.text).map((item) => item.address)).size >= ADDRESS_LIST_MIN;
 
   const groups = new Map<string, AddressGroup>();
   const documents = new Map<string, CapturedDocument>();
@@ -657,8 +667,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   // ---------- Wyszukiwanie krok po kroku: identyfikatory podane, potem odkryte ----------
 
   const ingest = (doc: SourceDocument, identity: IdentityAssessment, step: number) => {
-    const detected = extract(doc.text);
+    const found = extract(doc.text);
+    // Zestawienie wielu adresów (np. lista „najbogatszych portfeli”) nie jest publikacją własnego adresu.
+    const list = new Set(found.map((item) => item.address)).size >= ADDRESS_LIST_MIN;
+    const detected = list ? [] : found;
     noteSighting(doc, identity, 'subject', step, detected.map(addressKey));
+    if (list) log(`${doc.url}: publikacja zawiera ${found.length} adresów — to zestawienie adresów, nie przypisano ich podmiotowi.`);
     if (detected.length === 0) return;
     const contentHash = sha256Hex(doc.text);
     for (const item of detected) {
@@ -794,7 +808,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const owners = new Set<string>();
     const citing = { documents: 0, authors: new Set<string>(), services: new Set<string>() };
     if (addressOnly) {
-      const relevant = occurrences.filter((doc) => doc.author && containsAddress(doc));
+      const relevant = occurrences.filter((doc) => doc.author && containsAddress(doc) && !isAddressList(doc));
       for (const doc of relevant) if (OWNERSHIP_CATEGORIES.includes(doc.category)) owners.add(normalizeName(doc.author!));
       if (params.ai) {
         // Wyjątek: model czyta wypowiedź i stwierdza (z cytatem), że autor podaje adres jako własny.
@@ -814,9 +828,15 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         );
       }
     }
+    let lists = 0;
     for (const doc of occurrences) {
       const hit = extract(doc.text).find((item) => `${item.network}:${item.address}` === key);
       if (!hit) continue;
+      if (isAddressList(doc)) {
+        // Autor zestawienia adresów nie jest ani właścicielem, ani „niepowiązanym publikującym”.
+        lists++;
+        continue;
+      }
       if ([...group.evidence.values()].some((item) => item.url === doc.url && item.archivedAt === doc.archivedAt)) continue;
       const contentHash = sha256Hex(doc.text);
       const author = doc.author ? normalizeName(doc.author) : '';
@@ -859,6 +879,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         if (!group.notes.includes(note)) group.notes.push(note);
         log(`Adres ${group.address} występuje w ${doc.url} bez wskazanego autora — odnotowano jako wiedzę o adresie, nie wliczono do publikujących.`);
       }
+    }
+    if (lists > 0) {
+      const note = `Adres występuje w publicznych zestawieniach adresów (${lists} ${lists === 1 ? 'publikacja' : 'publikacji'}) — to nie jest przesłanka własności ani powiązania z autorami zestawień.`;
+      group.notes.push(note);
+      mentions.push({ identifier: { type: 'crypto_address', value: group.address }, documents: lists, authors: 0, services: 0, note: 'adres występuje w publicznych zestawieniach adresów' });
+      log(`Adres ${group.address}: ${note}`);
     }
     if (citing.documents > 0) {
       const identifier: Identifier = { type: 'crypto_address', value: group.address };
@@ -923,8 +949,18 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     counterparties.map(async (candidate, index) => {
       const key = addressKey(candidate);
       const options = { timeShare: OCCURRENCE_TIME_SHARE, directOnly: index >= MAX_BROAD_COUNTERPARTIES };
-      for (const doc of await search({ type: 'crypto_address', value: candidate.address }, options)) {
-        if (!extract(doc.text).some((item) => addressKey(item) === key)) continue;
+      const publications = (await search({ type: 'crypto_address', value: candidate.address }, options)).filter((doc) => extract(doc.text).some((item) => addressKey(item) === key));
+      // Adres w zestawieniach albo u kilku niezależnych autorów nie wskazuje żadnego z nich jako kontrahenta.
+      const single = publications.filter((doc) => doc.author && !isAddressList(doc));
+      const authors = new Set(single.map((doc) => normalizeName(doc.author!)));
+      if (publications.length > single.length || authors.size >= MANY_PUBLISHERS_MIN) {
+        log(
+          `Kontrahent ${candidate.address} występuje w publicznych zestawieniach adresów lub u ${authors.size} różnych autorów — ` +
+            'publikacje nie wskazują właściciela; autorzy nie są osobami powiązanymi.',
+        );
+        if (authors.size >= MANY_PUBLISHERS_MIN || single.length === 0) return;
+      }
+      for (const doc of single) {
         const author = doc.author ? normalizeName(doc.author) : '';
         if (!author) continue;
         if (knownNames.has(author)) {
@@ -986,7 +1022,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       ownedAddresses,
       record: (doc, step) => {
         const author = doc.author ? normalizeName(doc.author) : '';
-        if (!author || knownNames.has(author)) return false;
+        if (!author || knownNames.has(author) || isAddressList(doc)) return false;
         const contentHash = sha256Hex(doc.text);
         const owned = ownedAddresses(doc);
         capture(doc, contentHash);

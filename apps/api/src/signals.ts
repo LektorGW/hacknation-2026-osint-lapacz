@@ -22,7 +22,7 @@ interface SignalConfig {
   };
   ownership: { phrases: string[] };
   news: { sourceIds: string[] };
-  governance: { hostPatterns: string[] };
+  governance: { hostPatterns: string[]; connectorPrefixes: string[] };
   polishWeights: Record<string, number>;
   suspicionWeights: Record<string, number>;
   language: { polishWords: string[]; englishWords: string[] };
@@ -111,7 +111,8 @@ const GOVERNANCE_HOSTS = CONFIG.governance.hostPatterns.map((pattern) => new Reg
 export const isNewsSource = (connectorId: string): boolean => NEWS_SOURCES.has(connectorId);
 
 /** Forum zarządzania protokołem lub DAO: adresy w postach to zwykle kontrakty i multisigi. */
-export const isGovernanceForum = (service: string): boolean => GOVERNANCE_HOSTS.some((pattern) => pattern.test(service));
+export const isGovernanceForum = (service: string, connectorId = ''): boolean =>
+  CONFIG.governance.connectorPrefixes.some((prefix) => connectorId.startsWith(prefix)) || GOVERNANCE_HOSTS.some((pattern) => pattern.test(service));
 
 /** W jakiej odległości (w znakach) przed adresem musi stać zwrot wskazujący, że to adres autora. */
 const OWNERSHIP_WINDOW = 120;

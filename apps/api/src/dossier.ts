@@ -30,6 +30,8 @@ import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
 import { resolvePersons } from './persons.ts';
 import { summarizeFindings } from './priority.ts';
+import { collectFundingSources, collectSeizures, isIncidentSource, relatedAddressesOf } from './provenance.ts';
+import type { FundingSourceView, RelatedAddress, SeizureView } from './provenance.ts';
 import { buildCashOutProof } from './proof.ts';
 import type { CashOutProof } from './proof.ts';
 import { buildRelatedPersons } from './relations.ts';
@@ -57,6 +59,11 @@ export type DossierFinding = Omit<Finding, 'evidence'> & {
   /** Ślady pominięte w ocenie — widoczne dla analityka, ale nieliczone. */
   excludedEvidence?: InsightEvidence[];
   decision?: Decision;
+  /**
+   * Inne adresy powiązane z tym adresem w samym blockchainie (ten sam portfel, wspólny adres wpłat,
+   * finansowanie), których nikt nie opublikował — adresy, nie osoby.
+   */
+  relatedAddresses?: RelatedAddress[];
 };
 
 /** Teczka w odpowiedzi API: kontrakt `Dossier` z lokalnymi, dodatkowymi polami. */
@@ -95,6 +102,10 @@ export interface DossierView extends Dossier {
   partial: boolean;
   /** Identyfikatory podmiotu wymieniane w publikacjach innych autorów — wzmianki, nie profile. */
   mentions: MentionSummary[];
+  /** Przelewy na adresy organów państwa (zajęcie środków) — nie są spieniężeniem i nie wchodzą do sum wypłat. */
+  seizures: SeizureView[];
+  /** Skąd przyszły środki na adresy podmiotu (z publicznych etykiet). */
+  fundingSources: FundingSourceView[];
   /** Adresy znalezione, ale nieprzypisane podmiotowi — sekcja „Adresy do potwierdzenia”. */
   unconfirmedAddresses: UnconfirmedAddress[];
   /** Dlaczego nie ma adresów albo dowodu spieniężenia i co można zrobić. */
@@ -334,7 +345,15 @@ export function buildDossier(input: DossierInput): DossierView {
     accountNames,
     matcher: input.matchService,
   });
-  const summary = summarizeFindings(findings, subjectAddresses, input.now, serviceLinks, confirmedProofs[0]?.combinedConfidence);
+  const seizures = collectSeizures(linked);
+  const fundingSources = collectFundingSources(linked);
+  const incidentSource = fundingSources.find(isIncidentSource);
+  const incident = incidentSource
+    ? `środki pochodzą z adresu oznaczonego jako „${incidentSource.label ?? incidentSource.category}”`
+    : seizures[0]
+      ? `środki przekazano na adres organu państwa „${seizures[0].counterpartyLabel}”`
+      : undefined;
+  const summary = summarizeFindings(findings, subjectAddresses, input.now, serviceLinks, confirmedProofs[0]?.combinedConfidence, incident);
 
   // ---------- Reszta obrazu ----------
   const trail = input.intel?.trail ?? [];
@@ -370,6 +389,13 @@ export function buildDossier(input: DossierInput): DossierView {
         decisionOf: (node) => latestDecisions(input.decisions, 'profile').find((decision) => decisionMatchesProfile(decision.key, node))?.decision,
         rules,
       });
+  // Adresy powiązane w blockchainie, które mają publikację, są tożsamościami; pozostałe to „inne adresy”.
+  const publishedLinked = new Set(linkedIdentities.flatMap((identity) => identity.addresses.map((item) => item.address.toLowerCase())));
+  for (const finding of findings) {
+    if (!linkedKeys.has(addressKey(finding))) continue;
+    const related = relatedAddressesOf(finding, publishedLinked);
+    if (related.length > 0) finding.relatedAddresses = related;
+  }
   const likelySame = sumByYear([summary.cashOutPlnByYear, ...linkedIdentities.filter((item) => item.relation === 'same_person_likely').map((item) => item.cashOutPlnByYear)]);
   const profiles = (ownerUnknown ? [] : nodes)
     .map((node) => node.card)
@@ -388,6 +414,7 @@ export function buildDossier(input: DossierInput): DossierView {
     partial: input.intel?.partial === true,
     serviceLabels: input.serviceLabels,
     matcher: input.matchService,
+    seizures: seizures.length,
   });
 
   return {
@@ -414,6 +441,8 @@ export function buildDossier(input: DossierInput): DossierView {
     summary: null,
     partial: input.intel?.partial === true,
     mentions: input.intel?.mentions ?? [],
+    seizures,
+    fundingSources,
     unconfirmedAddresses,
     explanations,
     linkedIdentities,
@@ -430,8 +459,10 @@ export function buildDossier(input: DossierInput): DossierView {
       trail,
       proofs: confirmedProofs,
       linkedIdentities,
+      seizures,
+      fundingSources,
     }),
-    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: confirmedProofs }),
+    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: confirmedProofs, seizures }),
     totals: {
       linkedAddresses: summary.linkedAddresses,
       excludedAddresses: summary.excludedAddresses,
@@ -452,6 +483,8 @@ export function buildDossier(input: DossierInput): DossierView {
       mentions: input.intel?.mentions ?? [],
       explanations,
       linkedIdentities,
+      seizures,
+      fundingSources,
       unconfirmed: unconfirmedAddresses,
       proofs: cashOutProof,
       persons,

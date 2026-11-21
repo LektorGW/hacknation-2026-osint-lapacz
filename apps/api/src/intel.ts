@@ -75,6 +75,8 @@ export interface MentionSummary {
   services: number;
   /** Zbieranie wzmianek przerwano po przekroczeniu progu — liczby są dolnym oszacowaniem („co najmniej”). */
   atLeast?: boolean;
+  /** Adnotacja, np. „adres występuje w publicznych zestawieniach adresów”. */
+  note?: string;
 }
 
 /** Czas jednej fazy analizy (kolejne kroki wyszukiwania są osobnymi wpisami `search-N`). */

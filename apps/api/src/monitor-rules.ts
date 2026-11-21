@@ -12,7 +12,8 @@
 // nie jest — zostaje tylko w indeksie publikacji. Adresy rozpoznane jako kontrakty są pomijane.
 
 import type { ProfileAttributes, ScoredSignal, TextInsight } from '@olcys/core';
-import { SIGNAL_RULES, isCryptoAsset, isNewsSource, ownershipClaim, polishNexus, suspicion, tradeOfferAt } from './signals.ts';
+import { ADDRESS_LIST_MIN } from './analysis.ts';
+import { SIGNAL_RULES, isCryptoAsset, isGovernanceForum, isNewsSource, ownershipClaim, polishNexus, suspicion, tradeOfferAt } from './signals.ts';
 
 export type HitBasis = 'own_address' | 'offer_poland' | 'address_poland';
 
@@ -44,6 +45,8 @@ export interface Evaluation {
   ownership?: string;
   /** Kanał wiadomości albo artykuł redakcyjny. */
   news: boolean;
+  /** Forum zarządzania protokołem lub DAO — tu liczy się tylko wyraźne podanie adresu jako własnego. */
+  governance: boolean;
   /** Publikacja przeszła wstępny filtr: ma adres albo ofertę obrotu kryptowalutą — tylko takie czyta model. */
   candidate: boolean;
 }
@@ -64,12 +67,15 @@ export function evaluatePublication(doc: Publication, addresses: PublicationAddr
     language: nexus.language,
     suspicion: suspicion(doc, { hasAddress }),
     ...(offer ? { offer } : {}),
-    // Oferta z adresem do wpłaty też jest podaniem adresu jako własnego.
+    // Oferta z adresem do wpłaty też jest podaniem adresu jako własnego — poza forami zarządzania,
+    // gdzie „buying/selling ETH” to język propozycji, a adresy to kontrakty i multisigi.
     ...(hasAddress ? (() => {
-      const claim = ownershipClaim(doc.text, addresses.map((item) => item.address)) ?? (offer ? `oferta z adresem: ${offer}` : undefined);
+      const governance = isGovernanceForum(doc.service, doc.connectorId);
+      const claim = ownershipClaim(doc.text, addresses.map((item) => item.address)) ?? (offer && !governance ? `oferta z adresem: ${offer}` : undefined);
       return claim ? { ownership: claim } : {};
     })() : {}),
     news: isNewsSource(doc.connectorId) || article,
+    governance: isGovernanceForum(doc.service, doc.connectorId),
     candidate: hasAddress || offer !== undefined,
   };
 }
@@ -99,13 +105,19 @@ export function decideHit(evaluation: Evaluation, insight?: TextInsight, contrac
   // sprzedaż komputera czy monitora też jest „ofertą”, ale nie obrotem kryptowalutą.
   const offer = evaluation.offer !== undefined || isCryptoAsset(insight?.offer?.asset);
 
+  // Publikacja z wieloma adresami to zestawienie (lista kontraktów, odbiorców, „najbogatszych portfeli”),
+  // a nie czyjś adres.
+  if (evaluation.addresses.length >= ADDRESS_LIST_MIN) {
+    return { hit: false, addresses, reason: `Nie spełnia kryteriów trafienia: publikacja jest zestawieniem ${evaluation.addresses.length} adresów.` };
+  }
   if (addresses.length > 0 && own) {
     return { hit: true, basis: 'own_address', addresses, reason: insight ? `Autor podaje adres jako własny (odczyt modelu ${insight.model}${insight.quote ? `: „${insight.quote}”` : ''}).` : `Autor podaje adres jako własny: „${evaluation.ownership}”.` };
   }
   if (offer && polish && !evaluation.news) {
     return { hit: true, basis: 'offer_poland', addresses, reason: `Oferta obrotu kryptowalutą ze związkiem z Polską (${nexus}/100, próg ${threshold}).` };
   }
-  if (addresses.length > 0 && polish) {
+  // Na forach zarządzania sam adres z polską treścią nie wystarcza — adresy to tam kontrakty i multisigi.
+  if (addresses.length > 0 && polish && !evaluation.governance) {
     return { hit: true, basis: 'address_poland', addresses, reason: `Adres kryptowalutowy i związek z Polską (${nexus}/100, próg ${threshold}).` };
   }
   const why =

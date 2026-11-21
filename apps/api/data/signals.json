@@ -640,16 +640,14 @@
     ]
   },
   "governance": {
-    "uwaga": "Fora zarządzania protokołami i DAO: adresy w postach to zwykle kontrakty i multisigi. Dla takich publikacji adres EVM jest sprawdzany w zbiorze etykiet i u dostawcy danych blockchain (w ramach budżetu); kontrakt nie tworzy trafienia.",
+    "uwaga": "Fora zarządzania protokołami i DAO: adresy w postach to zwykle kontrakty i multisigi, a „buying/selling ETH” to język propozycji. Dla tych źródeł trafieniem jest tylko publikacja ze zwrotem własności („my address”, „send to”, „wpłaty na”) albo z odczytem modelu own_address; reguła „oferta + adres = własny adres” nie działa. Źródło jest forum zarządzania, gdy jego identyfikator zaczyna się od jednego z prefiksów albo host pasuje do wzorca.",
+    "connectorPrefixes": [
+      "mon-discourse-"
+    ],
     "hostPatterns": [
       "^gov\\.",
       "^governance\\.",
       "^dao\\.",
-      "^forum\\.",
-      "^research\\.",
-      "^community\\.",
-      "^discuss\\.",
-      "^commonwealth\\.",
       "dao",
       "governance"
     ]

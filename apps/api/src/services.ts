@@ -423,7 +423,11 @@ export function buildServiceLinks(input: ServiceLinkInput): ServiceLink[] {
     );
     // Kontrahent, do którego prowadzi wskaźnik wypłaty, jest usługą także przy przelewach w drugą stronę.
     const cashOutParties = new Set((finding.chain?.cashOuts ?? []).map((item) => item.counterparty));
+    // Przelew na adres organu państwa (zajęcie) nie jest powiązaniem z usługą — nawet gdy etykieta
+    // adresu wymienia nazwę giełdy („środki zajęte po włamaniu na …”).
+    const seized = new Set(((finding.chain as { seizures?: { txid?: string }[] } | undefined)?.seizures ?? []).map((item) => item.txid));
     for (const transfer of finding.chain?.transfers ?? []) {
+      if (seized.has(transfer.txid) || transfer.counterpartyClass === 'institutional') continue;
       if (ownAddresses.has(addressKey({ network: finding.network, address: transfer.counterparty }))) continue;
       const cashOut = transfer.direction === 'out' ? cashOuts.get(`${transfer.txid}|${transfer.counterparty}`) : undefined;
       const inferredName = INFERRED_LABEL.exec(transfer.counterpartyLabel ?? '')?.[1] ?? INFERRED_LABEL.exec(cashOut?.explanation ?? '')?.[1];

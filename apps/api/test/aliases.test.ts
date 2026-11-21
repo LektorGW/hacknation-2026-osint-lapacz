@@ -172,13 +172,15 @@ test('rozszerzanie z adresu: adresy powiązane w blockchainie i ich publikacje',
     'na ten sam adres wpłat wpłaca także adres bc1qar0srr…wf5mdq'.replace('bc1qar0srr…wf5mdq', `${BTC_B.slice(0, 10)}…${BTC_B.slice(-8)}`),
     `adres ${BTC_B.slice(0, 10)}…${BTC_B.slice(-8)} opublikowany jako własny przez „julka_k” w serwisie targ.example (https://targ.example/u/julka_k)`,
   ]);
-  // Ten sam adres wpłat bez publikacji: możliwa ta sama osoba albo bliska — tożsamość bez profilu.
-  const unpublished = byName.get(`Nieznany właściciel adresu ${BTC_C.slice(0, 10)}…${BTC_C.slice(-8)}`)!;
-  assert.deepEqual([unpublished.relation, unpublished.score, unpublished.profiles.length], ['possibly_same_or_close', 55, 0]);
-  assert.deepEqual(unpublished.addresses, [{ address: BTC_C, network: 'bitcoin', basis: 'linked:co_depositor' }]);
-  // Jednokierunkowe finansowanie to słaby trop (30 < 50): nie tworzy karty, jest tylko policzone.
-  assert.equal(byName.has(`Nieznany właściciel adresu ${BTC_D.slice(0, 10)}…${BTC_D.slice(-8)}`), false);
-  assert.equal(dossier.weakLeadsHidden, 1);
+  // Adres powiązany bez żadnej publikacji NIE jest „osobą”: nie ma karty tożsamości ani węzła grafu —
+  // jest na liście innych adresów przy adresie podmiotu.
+  assert.deepEqual([...byName.keys()], ['Julia Kowalska']);
+  assert.equal(dossier.weakLeadsHidden, 0);
+  assert.ok(!dossier.graph.nodes.some((node) => node.label.startsWith('Nieznany właściciel')));
+  assert.deepEqual(
+    dossier.findings[0]!.relatedAddresses!.map((item) => [item.address, item.kind, item.strength]),
+    [[BTC_C, 'co_depositor', 70], [BTC_D, 'funded_by', 60], [EXCHANGE, 'same_wallet', 20]],
+  );
   assert.ok(result.intel.pivot!.some((lead) => lead.value === BTC_D && lead.link?.kind === 'funded_by'));
 });
 

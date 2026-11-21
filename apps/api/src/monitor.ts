@@ -307,15 +307,24 @@ export function createMonitor(deps: MonitorDeps): Monitor {
    * dla publikacji z forów zarządzania, w ramach małego budżetu zapytań — wskazane jako kontrakt
    * przez dostawcę danych blockchain. Adres, który autor podaje jako własny, nie jest sprawdzany.
    */
-  const findContracts = async (items: { service: string; evaluation: Evaluation; insight?: TextInsight }[]): Promise<Set<string>> => {
+  const findContracts = async (items: { service: string; connectorId: string; evaluation: Evaluation; insight?: TextInsight }[]): Promise<Set<string>> => {
     const contracts = new Set<string>();
     const toCheck: { address: string; network: string }[] = [];
-    for (const { service, evaluation, insight } of items) {
+    for (const { service, connectorId, evaluation, insight } of items) {
       for (const item of evaluation.addresses) {
         const key = item.address.toLowerCase();
         const label = labelled.get(key);
         if (label && label.addressClass !== 'private' && label.addressClass !== 'unknown') contracts.add(key);
-        else if (isGovernanceForum(service) && /^0x/i.test(item.address) && insight?.ownership !== 'own_address' && !toCheck.some((known) => known.address === item.address)) toCheck.push(item);
+        // U dostawcy sprawdzamy adresy EVM z forów zarządzania oraz te, które byłyby trafieniem tylko
+        // dzięki związkowi z Polską (kontrakt tokena z polskiego wpisu to nie adres osoby).
+        else if (
+          /^0x/i.test(item.address) &&
+          insight?.ownership !== 'own_address' &&
+          (isGovernanceForum(service, connectorId) || (evaluation.ownership === undefined && evaluation.polishNexus.score >= thresholds.hitPolishNexus)) &&
+          !toCheck.some((known) => known.address === item.address)
+        ) {
+          toCheck.push(item);
+        }
       }
     }
     const resolve = deps.resolveActivity;
@@ -347,7 +356,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
       const addresses = [...found, ...hit.addresses.filter((item) => !found.some((known) => known.address === item.address))];
       prepared.push({ hit, publication, evaluation: evaluatePublication(publication, addresses) });
     }
-    const contracts = await findContracts(prepared.map(({ hit, evaluation }) => ({ service: hit.service, evaluation, insight: hit.insight })));
+    const contracts = await findContracts(prepared.map(({ hit, evaluation }) => ({ service: hit.service, connectorId: hit.connectorId, evaluation, insight: hit.insight })));
     let dismissed = 0;
     for (const { hit, evaluation } of prepared) {
       const decision = decideHit(evaluation, hit.insight, contracts);
@@ -424,7 +433,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
       stats.aiRead = insights.size;
     }
 
-    const contracts = await findContracts(candidates.map(({ doc, evaluation }) => ({ service: doc.service, evaluation, insight: insights.get(doc.url) })));
+    const contracts = await findContracts(candidates.map(({ doc, evaluation }) => ({ service: doc.service, connectorId: doc.connectorId, evaluation, insight: insights.get(doc.url) })));
     stats.contractsFiltered = contracts.size;
 
     // Trafienia dotknięte w tym przebiegu: klucz autora → trafienie i informacja, czy jest nowe.

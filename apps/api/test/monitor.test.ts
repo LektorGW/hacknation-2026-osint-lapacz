@@ -523,3 +523,34 @@ test('ponowne przeliczenie zapisanych trafień: niespełniające kryteriów są 
   assert.equal(byId.get('h4')!.status, 'analyzed');
   await storage.close();
 });
+
+test('fora zarządzania: „oferta + adres” nie czyni adresu własnym; kontrakt tokena nie daje trafienia z samej polskiej treści', async () => {
+  const storage = await freshStorage();
+  const TOKEN = '0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe';
+  const governance = {
+    ...forumSource('mon-discourse-forum-protokol', () => [
+      // Język propozycji: „selling ETH” i adres multisiga — bez zwrotu własności to nie trafienie.
+      { url: 'https://forum.protokol.example/t/1', author: 'delegate_x', text: `Proposal: the treasury is selling ETH to cover costs; proceeds go to ${BTC_C} after the vote.` },
+      // Zwrot własności działa także na forum zarządzania.
+      { url: 'https://forum.protokol.example/t/2', author: 'grantee', text: `Grant request. Please send to my address: ${BTC_B}` },
+    ]),
+    service: 'forum.protokol.example',
+  };
+  const polishBlog = forumSource('mon-rss-blog', () => [
+    // Polski wpis o tokenie z adresem kontraktu: sam związek z Polską nie wystarcza.
+    { url: 'https://blog.example/token', text: `Nowy token dla graczy z Warszawy, płatność BLIK. Kontrakt: ${TOKEN}` },
+  ]);
+  const provider = { ...fakeProvider(), getActivity: async (network: 'ethereum', address: string) => ({ ...(await fakeProvider().getActivity(network, address, { log() {} })), profile: { ...(await fakeProvider().getActivity(network, address, { log() {} })).profile, isContract: true } }) };
+  const monitor = createMonitor({
+    storage,
+    connectors: [governance, polishBlog],
+    chainProviders: [provider],
+    resolveActivity: async (providers, network, address, context) => providers[0]!.getActivity(network, address, context),
+    now: FIXED_NOW,
+  });
+  const hits = await monitor.run();
+
+  assert.deepEqual(hits.map((hit) => [hit.author, (hit as { basis?: string }).basis]), [['grantee', 'own_address']]);
+  assert.equal((await monitor.status()).totals.lastRun!.contractsFiltered, 1);
+  await storage.close();
+});

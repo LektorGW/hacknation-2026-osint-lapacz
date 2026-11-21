@@ -10,6 +10,8 @@ import type { LinkedIdentity } from './aliases.ts';
 import type { Explanation, UnconfirmedAddress } from './explain.ts';
 import type { MentionSummary } from './intel.ts';
 import type { CashOutProof } from './proof.ts';
+import { fundingSentence, isIncidentSource, seizureSentence } from './provenance.ts';
+import type { FundingSourceView, SeizureView } from './provenance.ts';
 import { describeServiceLink, isCashOutService } from './services.ts';
 
 type KeyFinding = Dossier['keyFindings'][number];
@@ -23,6 +25,9 @@ export interface KeyFindingsInput {
   explanations?: Explanation[];
   /** Adresy do potwierdzenia przez analityka. */
   unconfirmed?: UnconfirmedAddress[];
+  /** Zajęcia środków i pochodzenie środków z publicznych etykiet. */
+  seizures?: SeizureView[];
+  fundingSources?: FundingSourceView[];
   /** Powiązane tożsamości — najmocniejsza trafia do ustaleń. */
   linkedIdentities?: LinkedIdentity[];
   /** Wzmianki o identyfikatorach podmiotu u innych autorów. */
@@ -185,7 +190,18 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
   const services = serviceSentences(input.serviceLinks).map((item) =>
     input.addressOnly ? { ...item, text: item.text.replace(/^Podmiot jest powiązany/, 'Badany adres jest powiązany') } : item,
   );
-  const result: KeyFinding[] = [...leadExplanations, ...addressLead, ...personSentences(input), ...pendingSentences, ...proofSentences, ...services, ...addressSentence(best)];
+  // Zajęcie przez organ państwa i pochodzenie środków z incydentu: fakty z publicznych etykiet adresów.
+  const seized = input.seizures ?? [];
+  const provenance: KeyFinding[] = [];
+  if (seized[0]) {
+    provenance.push({
+      text: seizureSentence(seized[0]) + (seized.length > 1 ? ` Łącznie takich przelewów: ${seized.length}.` : ''),
+      layer: 'fact',
+    });
+  }
+  const origin = (input.fundingSources ?? []).find(isIncidentSource) ?? (input.fundingSources ?? []).find((item) => item.label !== undefined);
+  if (origin) provenance.push({ text: fundingSentence(origin), layer: origin.hops > 1 ? 'inference' : 'fact' });
+  const result: KeyFinding[] = [...leadExplanations, ...addressLead, ...personSentences(input), ...provenance, ...pendingSentences, ...proofSentences, ...services, ...addressSentence(best)];
 
   const identity = input.linkedIdentities?.[0];
   if (identity) {
