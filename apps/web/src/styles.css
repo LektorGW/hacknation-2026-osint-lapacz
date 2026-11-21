@@ -1073,3 +1073,178 @@ kbd { font-family: var(--mono); font-size: 0.84em; padding: 0.05rem 0.4rem; bord
 @media print {
   .related-list { max-height: none; overflow: visible; }
 }
+
+/* ---------- Tryb pracy: DEMO / SANDBOX / LIVE ---------- */
+
+.mode-badge { position: sticky; top: 0; z-index: 12; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s3); margin: 0; padding: 0.4rem var(--s5); border-bottom: 2px solid var(--mode); background: var(--mode-bg); color: var(--text); font-size: 0.86rem; }
+.mode-badge strong { padding: 0.05rem 0.55rem; border-radius: var(--radius-small); background: var(--mode); color: var(--mode-on); letter-spacing: 0.06em; font-size: 0.8rem; }
+.mode-live { --mode: var(--ok); --mode-bg: var(--ok-bg); --mode-on: var(--surface); }
+.mode-sandbox { --mode: var(--calc); --mode-bg: var(--calc-bg); --mode-on: var(--surface); }
+.mode-demo { --mode: var(--inference); --mode-bg: var(--inference-bg); --mode-on: var(--surface); }
+.mode-unknown { --mode: var(--danger); --mode-bg: var(--danger-bg); --mode-on: var(--surface); }
+.chip-synthetic { background: var(--calc-bg); border: 1px dashed var(--calc); color: var(--calc); font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.demo-watermark-note { margin: 0 0 var(--s4); padding: var(--s2) var(--s3); border: 2px dashed var(--inference); border-radius: var(--radius-small); background: var(--inference-bg); }
+.demo-watermark { display: none; }
+
+/* ---------- Statusy twierdzeń ---------- */
+
+.st-source_fact { --status: var(--fact); --status-bg: var(--fact-bg); }
+.st-computed { --status: var(--calc); --status-bg: var(--calc-bg); }
+.st-hypothesis { --status: var(--inference); --status-bg: var(--inference-bg); }
+.st-confirmed { --status: var(--ok); --status-bg: var(--ok-bg); }
+.st-rejected { --status: var(--level-excluded); --status-bg: var(--surface-sunken); }
+.status-badge { display: inline-block; padding: 0.02rem 0.55rem; border: 1.5px solid var(--status); border-radius: 999px; background: var(--status-bg); color: var(--status); font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+.status-badge.st-hypothesis { border-style: dashed; }
+.status-badge.st-rejected { border-style: dotted; text-decoration: line-through; }
+.status-explained { margin: var(--s2) 0; padding: var(--s2) var(--s3); border-left: 4px solid var(--status); background: var(--status-bg); border-radius: var(--radius-small); font-size: 0.86rem; }
+.status-explained.st-hypothesis { border-left-style: dashed; }
+.status-explained p { margin: var(--s1) 0 0; }
+.is-struck { text-decoration: line-through; color: var(--muted); }
+.ordinal-score { margin: var(--s2) 0; }
+.ordinal-score .cell-note { max-width: none; }
+.notice-inline { margin: var(--s2) 0; padding: var(--s2) var(--s3); font-size: 0.86rem; }
+
+/* ---------- Graf śledczy: statusy relacji, zwijanie, ścieżka ---------- */
+
+.graph-switches { display: flex; flex-wrap: wrap; gap: var(--s2); justify-content: flex-end; }
+.graph-filters { display: flex; flex-direction: column; gap: var(--s2); margin-bottom: var(--s3); padding: var(--s3) var(--s4); }
+.graph-filters fieldset { border: 0; margin: 0; padding: 0; }
+.status-swatch { width: 36px; height: 14px; flex: none; }
+.gedge .gedge-hit { stroke: transparent; stroke-opacity: 0; stroke-width: 14; pointer-events: stroke; }
+.gedge .gedge-line { stroke: var(--status, var(--border-strong)); stroke-opacity: 0.85; stroke-width: 2; pointer-events: none; }
+.gedge.st-computed .gedge-line { stroke-width: 1.2; }
+.gedge.st-hypothesis .gedge-line { stroke-dasharray: 7 5; stroke-width: 1.8; }
+.gedge.st-confirmed .gedge-line { stroke-width: 4; stroke-opacity: 1; }
+.gedge.st-rejected .gedge-line { stroke-dasharray: 1.5 5; stroke-linecap: round; stroke-width: 1.8; stroke-opacity: 0.7; }
+.gedge .gedge-arrow { fill: var(--status, var(--muted)); }
+.gedge-mark circle { fill: var(--surface); stroke: var(--ok); stroke-width: 2; }
+.gedge .gedge-check { fill: none; stroke: var(--ok); stroke-width: 2.2; stroke-opacity: 1; stroke-dasharray: none; stroke-linecap: round; stroke-linejoin: round; }
+.gedge-label { font-size: 10px; font-weight: 700; fill: var(--status, var(--muted)); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+.gedge-label.is-struck { text-decoration: line-through; font-weight: 500; }
+.gedge:hover .gedge-line, .gedge.is-selected .gedge-line { stroke-opacity: 1; filter: drop-shadow(0 0 2px var(--status)); }
+.gedge.is-selected .gedge-line { stroke-width: 4.5; }
+.gedge:focus-visible { outline: none; }
+.gedge:focus-visible .gedge-line { stroke: var(--focus); stroke-width: 4.5; }
+.gedge.is-path .gedge-line { stroke-width: 5; stroke-opacity: 1; }
+.gnode.is-path > :is(circle, rect, polygon, ellipse, path) { stroke-width: 4.5; }
+.gnode > ellipse, .gnode > path { fill: var(--surface); stroke: var(--border-strong); stroke-width: 2; }
+.gnode-operator > polygon { fill: var(--inference-bg); stroke: var(--inference); stroke-width: 2.5; }
+.gnode-persona > ellipse { fill: var(--calc-bg); stroke: var(--calc); }
+.gnode-source > path { fill: var(--fact-bg); stroke: var(--fact); stroke-width: 1.6; }
+.gnode.st-hypothesis > :is(circle, rect, polygon, ellipse) { stroke-dasharray: 5 4; fill: var(--surface); }
+.gnode.st-confirmed > :is(circle, rect, polygon, ellipse) { stroke: var(--ok); stroke-width: 3.5; stroke-dasharray: none; }
+.gnode.st-rejected { opacity: 0.55; }
+.gnode.st-rejected > :is(circle, rect, polygon, ellipse) { stroke: var(--level-excluded); stroke-dasharray: 1.5 4; }
+.gnode.st-rejected .gnode-label { text-decoration: line-through; }
+.gnode-caption { font-size: 10px; font-weight: 800; fill: var(--status, var(--inference)); text-transform: uppercase; letter-spacing: 0.04em; }
+.gnode:hover > :is(ellipse, path), .gnode.is-selected > :is(ellipse, path) { stroke-width: 4; }
+.gnode:focus-visible > :is(ellipse, path) { stroke: var(--focus); stroke-width: 4.5; }
+.gnode-toggle circle { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; }
+.gnode-toggle path { fill: none; stroke: var(--text); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.gnode-toggle:hover circle, .gnode-toggle:focus-visible circle { stroke: var(--primary); stroke-width: 2.5; fill: var(--fact-bg); }
+.gnode-toggle:focus-visible, .gnode-sources:focus-visible { outline: none; }
+.gnode-hidden { font-size: 10px; font-weight: 700; fill: var(--muted); }
+.gnode-sources rect { fill: var(--fact-bg); stroke: var(--fact); stroke-width: 1.2; stroke-dasharray: none; }
+.gnode-sources text { font-size: 9.5px; font-weight: 700; fill: var(--fact); }
+.gnode-sources.is-open rect { fill: var(--fact); }
+.gnode-sources.is-open text { fill: var(--surface); }
+.gnode-sources:hover rect, .gnode-sources:focus-visible rect { stroke-width: 2.5; }
+.link-graph.is-picking { cursor: crosshair; outline: 3px dashed var(--focus); outline-offset: -3px; }
+.graph-legend { margin-top: var(--s3); }
+.legend-arrow { color: var(--muted); }
+.legend-glyph.st-hypothesis > polygon { stroke-dasharray: 5 4; }
+.panel-actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s3) 0; }
+.edge-ends { font-weight: 600; overflow-wrap: anywhere; }
+.side-panel h4 { margin: var(--s3) 0 var(--s1); }
+.side-panel .table-scroll { max-width: 100%; }
+.path-panel { margin-bottom: var(--s3); padding: var(--s2) var(--s3); border: 2px solid var(--primary); border-radius: var(--radius-small); background: var(--surface-alt); }
+.path-panel > header { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
+.path-panel h4 { margin: 0; }
+.path-steps-list { list-style: none; margin: var(--s2) 0 0; padding: 0; }
+.path-steps-list li { display: flex; gap: var(--s2); padding: var(--s2) 0; border-top: 1px solid var(--border); font-size: 0.86rem; }
+.path-steps-list li > div { min-width: 0; overflow-wrap: anywhere; }
+.path-steps-list p { margin: 0 0 2px; }
+.path-steps-list .path-mark { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; border: 2px solid var(--status); color: var(--status); font-weight: 700; font-size: 0.78rem; }
+.path-steps-list li.st-hypothesis .path-mark { border-style: dashed; }
+.evidence-refs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 0.84rem; overflow-wrap: anywhere; }
+
+/* ---------- Historia zmian (decyzje analityka) ---------- */
+
+.history { list-style: none; margin: 0; padding: 0; }
+.history-item { padding: var(--s2) 0; border-top: 1px solid var(--border); font-size: 0.88rem; }
+.history-item:first-child { border-top: 0; }
+.history-item p { margin: 0 0 2px; }
+.history-main { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+.history-main .chip { margin: 0; }
+.history-key { overflow-wrap: anywhere; font-size: 0.78rem; }
+.history-target { font-weight: 600; }
+.history-item.is-withdrawn .history-main { text-decoration: line-through; opacity: 0.65; }
+.history-withdrawn { color: var(--muted); font-style: italic; }
+
+/* ---------- Wskaźniki A / B / C ---------- */
+
+.scale-note { margin-bottom: var(--s4); }
+.indicator-card { margin-bottom: var(--s4); }
+.indicator-card > h3 { display: flex; align-items: center; gap: var(--s2); }
+.indicator-letter { display: inline-flex; align-items: center; justify-content: center; width: 1.8rem; height: 1.8rem; border-radius: var(--radius-small); background: var(--primary); color: var(--on-primary); font-weight: 800; }
+.indicator-list { list-style: none; margin: var(--s3) 0 0; padding: 0; }
+.indicator-item { padding: var(--s3); margin-bottom: var(--s3); border: 1px solid var(--border); border-left: 5px solid var(--status, var(--border-strong)); border-radius: var(--radius-small); background: var(--surface-alt); }
+.indicator-item.st-hypothesis, .indicator-item.st-auto_grouped, .indicator-item.st-blocked { --status: var(--inference); border-left-style: dashed; }
+.indicator-item.st-rejected { opacity: 0.75; border-left-style: dotted; }
+.indicator-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.indicator-title { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+.indicator-score { display: inline-flex; align-items: baseline; gap: 2px; color: var(--level); white-space: nowrap; }
+.indicator-score strong { font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+.indicator-max { font-size: 0.8rem; color: var(--muted); }
+.indicator-level { margin-left: var(--s2); font-size: 0.84rem; font-weight: 600; }
+.indicator-statement { margin: var(--s2) 0; }
+.indicator-meta { margin: var(--s2) 0; font-size: 0.88rem; }
+.component-table { font-size: 0.82rem; min-width: 880px; }
+.component-table td { vertical-align: top; }
+.component-table .component-group th { text-align: left; background: var(--ok-bg); color: var(--ok); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.component-table .component-group-contra th { background: var(--danger-bg); color: var(--danger); }
+.component-table tr.is-contra td { background: var(--danger-bg); }
+.component-table tr.is-contra td:first-child { border-left: 4px solid var(--danger); }
+.component-table tr.is-unapplied td { color: var(--muted); }
+.component-table .chip { margin: 2px 0 0; display: block; width: fit-content; }
+.plain-list.tight { margin: 0; padding: 0; }
+.blocked-merges { margin-top: var(--s3); padding: var(--s3); border: 1px dashed var(--danger); border-radius: var(--radius-small); background: var(--danger-bg); }
+.blocked-merges h4 { margin-top: 0; }
+.ladder { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); margin: var(--s3) 0; padding: 0; }
+.ladder li { display: flex; gap: var(--s2); padding: var(--s2); border: 1.5px solid var(--border); border-radius: var(--radius-small); background: var(--surface); font-size: 0.84rem; }
+.ladder-step { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; border: 2px solid var(--border-strong); font-weight: 800; }
+.ladder-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ladder-state { font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.ladder li.is-passed { border-color: var(--ok); }
+.ladder li.is-passed .ladder-step { border-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
+.ladder li.is-reached { border: 2.5px solid var(--primary); background: var(--fact-bg); box-shadow: var(--shadow); }
+.ladder li.is-reached .ladder-step { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+.ladder li.is-reached .ladder-state { color: var(--primary); }
+.ladder li.is-open { opacity: 0.6; border-style: dashed; }
+.identity-hypothesis { margin: var(--s2) 0; padding: var(--s2) var(--s3); border-left: 4px dashed var(--inference); background: var(--inference-bg); border-radius: var(--radius-small); font-size: 0.88rem; }
+.identity-relation .status-badge { align-self: flex-start; }
+
+/* ---------- Niezależność pochodzenia w księdze reguł ---------- */
+
+.provenance { margin-bottom: var(--s3); padding: var(--s2) var(--s3); border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); font-size: 0.9rem; }
+.provenance p { margin: 0 0 var(--s1); }
+.provenance-groups ul { margin: 2px 0; padding-left: 1.2rem; }
+.ledger-extra { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--s1) var(--s3); margin: var(--s1) 0 0; font-size: 0.8rem; color: var(--muted); }
+.ledger-extra dt { font-weight: 700; }
+.ledger-extra dd { margin: 0; overflow-wrap: anywhere; }
+.ledger-source { display: block; }
+
+.link-graph .gnode-label, .link-graph .gnode-sub { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-dasharray: none; }
+
+@media (max-width: 900px) {
+  .ladder { grid-template-columns: 1fr; }
+  /* Na wąskim ekranie przyklejony jest pasek menu — znaczek trybu zostaje tuż pod nim, w treści. */
+  .mode-badge { position: static; padding-inline: var(--s4); }
+}
+
+@media print {
+  .mode-badge { position: static; border: 2px solid #000; }
+  .graph-filters, .panel-actions { display: none !important; }
+  .demo-watermark { display: block; position: fixed; top: 45%; left: 0; right: 0; z-index: 100; text-align: center; font-size: 46pt; font-weight: 800; letter-spacing: 0.08em; color: rgb(160 90 0 / 0.16); transform: rotate(-24deg); pointer-events: none; }
+  .demo-watermark-note { border: 2px solid #000; }
+}

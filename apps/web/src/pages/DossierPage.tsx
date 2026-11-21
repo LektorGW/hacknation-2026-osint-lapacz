@@ -12,7 +12,9 @@ import { AddressesTab, DecisionsTab, FlowsTab, PeopleTab, ProfilesTab, TimelineT
 import { RunLauncher, RunsTab } from '../components/Runs.tsx';
 import { ProofTab } from '../components/ProofTab.tsx';
 import { IdentitiesTab } from '../components/IdentitiesTab.tsx';
-import { RELATION_TEXT, linkLabel } from '../identities.ts';
+import { IndicatorsTab } from '../components/Indicators.tsx';
+import { DemoWatermark } from '../components/Mode.tsx';
+import { RELATION_TEXT, identityStatus, linkLabel } from '../identities.ts';
 import { Explanations } from '../components/Explanations.tsx';
 import { FundingSources, Seizures } from '../components/FundsOrigin.tsx';
 import { periodLabel } from '../proof.ts';
@@ -29,6 +31,9 @@ import type { DossierTab } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
 
 type Source = { caseId: string } | { runId: string };
+
+/** Pierwsze pole pakietu JSON pobranego w trybie demo — plik nie może uchodzić za wynik analizy. */
+const DEMO_NOTICE = 'DEMO — dane przykładowe wbudowane w interfejs; nie pochodzą ze źródeł publicznych ani z blockchaina.';
 
 function downloadJson(name: string, data: unknown) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
@@ -125,7 +130,7 @@ function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Fu
           query={query.identifiers.length > 0 ? query : summary.query}
           findings={dossier.findings}
           identities={(dossier.linkedIdentities ?? [])
-            .filter((identity) => identity.decision !== 'rejected')
+            .filter((identity) => identityStatus(identity) !== 'rejected')
             .map((identity) => ({
               id: identity.id,
               name: identity.displayName,
@@ -165,6 +170,8 @@ function TabContent({ tab, summary, dossier, onChanged }: { tab: DossierTab; sum
       return <ProofTab />;
     case 'tozsamosci':
       return <IdentitiesTab />;
+    case 'wskazniki':
+      return <IndicatorsTab />;
     default:
       return (
         <>
@@ -220,7 +227,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
       undo: async (decisionId) => {
         try {
           await api.removeDecision(caseId, decisionId);
-          toast.success('Cofnięto decyzję — przywrócono wynik automatyczny.');
+          toast.success('Wycofano decyzję — pozostaje w historii zmian, wynik przeliczono bez niej.');
           loaded.reload();
         } catch (error) {
           toast.error(error);
@@ -276,7 +283,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                 <button type="button" className="button" onClick={print}>
                   Raport do druku
                 </button>
-                <button type="button" className="button" onClick={() => downloadJson(`teczka-${dossier.caseId}.json`, dossier)}>
+                <button type="button" className="button" onClick={() => downloadJson(`teczka-${isDemo ? 'DEMO-' : ''}${dossier.caseId}.json`, isDemo ? { uwaga: DEMO_NOTICE, ...dossier } : dossier)}>
                   Pakiet JSON
                 </button>
               </>
@@ -293,6 +300,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
           </div>
         </header>
 
+        <DemoWatermark />
         {loaded.error && <ErrorBox message={loaded.error} onRetry={loaded.reload} />}
         {dossier.partial && (
           <p className="notice notice-strong" role="alert">

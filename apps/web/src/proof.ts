@@ -218,7 +218,7 @@ export function proofTier(confidence: number): string {
 
 // ---------- Wyjaśnienia braków, adresy do potwierdzenia, okres analizy ----------
 
-export type ExplanationKind = 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out' | 'seized';
+export type ExplanationKind = 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out' | 'source_errors' | 'seized';
 
 export interface Explanation {
   kind: ExplanationKind;

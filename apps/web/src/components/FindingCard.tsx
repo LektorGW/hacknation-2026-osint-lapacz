@@ -2,7 +2,9 @@ import type { Finding, LedgerEntry } from '@olcys/core';
 import { fmtDelta, fmtPln } from '../format.ts';
 import { CLASS_LABEL, NETWORK_LABEL, ruleLabel } from '../labels.ts';
 import { CashOutTable, ChainProfile, FlowTimeline } from './ChainSections.tsx';
-import { CopyButton, DualScore, LayerSection, ScoreMeter } from './common.tsx';
+import { CopyButton, DualScore, ExternalLink, LayerSection, ScoreMeter } from './common.tsx';
+import { SyntheticTag } from './Mode.tsx';
+import { isSyntheticChain } from '../mode.ts';
 import { DecisionControls, useDossier } from './DossierContext.tsx';
 import { addressKey, jointProbability } from '../dossier.ts';
 import type { DossierFinding } from '../proof.ts';
@@ -22,6 +24,11 @@ function AddressHeader({ finding, index }: { finding: Finding; index: number }) 
       <div className="finding-chips">
         <CopyButton value={finding.address} label={`Kopiuj adres ${finding.address}`} />
         <span className="chip">{NETWORK_LABEL[finding.network] ?? finding.network}</span>
+        {isSyntheticChain(finding.chain, finding.network) && (
+          <span className="chip chip-synthetic" title="Dane blockchain tego adresu pochodzą z eksploratora piaskownicy albo sieci laboratoryjnej.">
+            blockchain: dane syntetyczne
+          </span>
+        )}
         {finding.checksumVerified ? (
           <span className="chip chip-ok">✓ suma kontrolna zweryfikowana</span>
         ) : (
@@ -51,6 +58,42 @@ function Ledger({ entries }: { entries: LedgerEntry[] }) {
               {ruleLabel(entry.rule)} <code className="mono rule-id">{entry.rule}</code>
             </p>
             <p>{entry.explanation}</p>
+            {(entry.weight !== undefined || entry.independence || (entry.sources ?? []).length > 0 || (entry.limitations ?? []).length > 0) && (
+              <dl className="ledger-extra">
+                {entry.weight !== undefined && entry.weight !== entry.delta && (
+                  <div>
+                    <dt>Waga reguły</dt>
+                    <dd>
+                      {fmtDelta(entry.weight)} (zastosowano {fmtDelta(entry.delta)})
+                    </dd>
+                  </div>
+                )}
+                {entry.independence && (
+                  <div>
+                    <dt>Niezależność</dt>
+                    <dd>{entry.independence}</dd>
+                  </div>
+                )}
+                {(entry.sources ?? []).length > 0 && (
+                  <div>
+                    <dt>Źródła kroku</dt>
+                    <dd>
+                      {entry.sources!.map((url) => (
+                        <span key={url} className="ledger-source">
+                          <ExternalLink url={url} /> <SyntheticTag source={{ url }} />
+                        </span>
+                      ))}
+                    </dd>
+                  </div>
+                )}
+                {(entry.limitations ?? []).length > 0 && (
+                  <div>
+                    <dt>Czego ten krok nie dowodzi</dt>
+                    <dd>{entry.limitations!.join(' ')}</dd>
+                  </div>
+                )}
+              </dl>
+            )}
           </div>
           <span className="ledger-running">
             <span className="ledger-running-label">po kroku</span> {entry.running}%
@@ -58,6 +101,50 @@ function Ledger({ entries }: { entries: LedgerEntry[] }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+/** Niezależność pochodzenia śladów: liczba niezależnych pochodzeń i grupy kopii liczone jako jedno potwierdzenie. */
+function Provenance({ finding }: { finding: Finding }) {
+  const { confidence } = finding;
+  const groups = confidence.provenance ?? [];
+  const copies = groups.filter((group) => group.evidenceIds.length > 1);
+  const independent = confidence.independentSources ?? (groups.length > 0 ? groups.length : undefined);
+  if (independent === undefined && !confidence.interpretation) return null;
+  const title = (id: string) => {
+    const item = finding.evidence.find((entry) => entry.id === id);
+    return item ? item.title || item.url : id;
+  };
+  return (
+    <div className="provenance">
+      {independent !== undefined && (
+        <p>
+          <strong>niezależnych pochodzeń: {independent}</strong>
+          <span className="muted">
+            {' '}
+            · śladów łącznie: {finding.evidence.length}
+            {copies.length > 0 ? ' · kopie, przedruki i wersje archiwalne liczą się jako jedno potwierdzenie' : ''}
+          </span>
+        </p>
+      )}
+      {copies.length > 0 && (
+        <ul className="plain-list provenance-groups">
+          {copies.map((group, index) => (
+            <li key={index}>
+              <span className="chip chip-archive">jedno pochodzenie · {group.evidenceIds.length} ślady</span>
+              {group.services.length > 0 && <span className="muted"> {group.services.join(', ')}</span>}
+              <ul>
+                {group.evidenceIds.map((id) => (
+                  <li key={id}>{title(id)}</li>
+                ))}
+              </ul>
+              {group.reasons.length > 0 && <p className="muted">Dlaczego razem: {group.reasons.join(' ')}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {confidence.interpretation && <p className="muted scale-inline">{confidence.interpretation}</p>}
+    </div>
   );
 }
 
@@ -120,6 +207,7 @@ export function FindingCard({ finding, index }: { finding: Finding; index: numbe
       </LayerSection>
 
       <LayerSection layer="calc" title="Księga reguł — skąd wziął się wynik">
+        <Provenance finding={finding} />
         <Ledger entries={confidence.ledger} />
       </LayerSection>
 

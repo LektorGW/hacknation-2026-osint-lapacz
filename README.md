@@ -115,7 +115,7 @@ Włączenie prawdziwych źródeł: `ENABLE_LIVE=1` (patrz [Zmienne środowiskowe
 pnpm --filter @olcys/web dev
 ```
 
-Adres: <http://localhost:5173>. Serwer deweloperski Vite przekazuje `/api` do `http://localhost:4000`. Interfejs bez API (dane wbudowane): <http://localhost:5173/?demo=1>. Wersja statyczna: `pnpm --filter @olcys/web build` (wynik w `apps/web/dist`).
+Adres: <http://localhost:5173>. Serwer deweloperski Vite przekazuje `/api` do `http://localhost:4000`. Interfejs bez API (dane wbudowane): <http://localhost:5173/?demo=1>. Pasek u góry każdego ekranu pokazuje tryb: **LIVE** (publiczne źródła), **SANDBOX** (piaskownica, dane syntetyczne) albo **DEMO** (dane wbudowane w interfejs); ślady z łączników piaskownicy i laboratorium mają dodatkowo znacznik „dane syntetyczne”. Tryb podaje `GET /api/health` — interfejs nigdy nie zakłada LIVE domyślnie. Wersja statyczna: `pnpm --filter @olcys/web build` (wynik w `apps/web/dist`).
 
 ### Zamykanie API
 
@@ -275,6 +275,8 @@ Model językowy jest **pomocniczy i opcjonalny**. Bez niego narzędzie działa w
 
 ## Wskaźnik Pewności i prawdopodobieństwa
 
+Narzędzie liczy trzy osobne wskaźniki: **A. konto → portfel**, **B. wspólny operator**, **C. wyjście do walut tradycyjnych**. Wszystkie są liczbami porządkowymi 0–100 z jawnych reguł, a nie skalibrowanym prawdopodobieństwem. Pełny opis: [docs/WSKAZNIKI.md](docs/WSKAZNIKI.md); wyniki audytu silnika łączenia tożsamości: [docs/AUDYT.md](docs/AUDYT.md); przebieg demonstracji: [docs/DEMO-JURY.md](docs/DEMO-JURY.md).
+
 Reguły są jawne i edytowalne; wartości zwraca `GET /api/rules` i `GET /api/priority-rules`, a każdy wynik w teczce ma księgę kroków. Kod: `packages/core/src/score.ts`.
 
 **Wskaźnik Pewności adresu (0–100%)** — na ile adres jest powiązany z autorem śladów:
@@ -284,7 +286,7 @@ Reguły są jawne i edytowalne; wartości zwraca `GET /api/rules` i `GET /api/pr
 | Wykluczenie | adres giełdy, smart kontrakt, zbiórka, mikser, adres instytucjonalny → 0%, odnotowany tylko fakt publikacji |
 | Punkt wyjścia | najmocniejszy ślad: dowód kryptograficzny 95, własny profil 85, ogłoszenie / oferta P2P 70, wiadomość w kontekście rozliczenia 65, wypowiedź na forum 50, masowy komentarz 25 |
 | Tożsamość profilu | potwierdzona lub unikalny identyfikator 0; profil wskazany przez inny profil −5; zgodny tylko nick −10; pospolity nick −20; tylko imię i nazwisko −20 |
-| Synergia | drugie niezależne źródło (inna usługa) +15; każde kolejne +5, łącznie najwyżej +10 |
+| Synergia | drugie niezależne **pochodzenie** +15; każde kolejne +5, łącznie najwyżej +10. Ta sama treść w kilku serwisach, przedruk i kopia archiwalna liczą się jako jedno pochodzenie |
 | Adres współdzielony | co najmniej 3 niepowiązane tożsamości publikują ten sam adres → −30 |
 | Progi | 80–100 bardzo wysokie prawdopodobieństwo, 60–79 prawdopodobne, 40–59 średnie, 10–39 niskie / szum, 0 wykluczone |
 
@@ -292,7 +294,9 @@ Wartości bazowe odpowiadają przedziałom z załącznika pojęciowo-metodyczneg
 
 **Prawdopodobieństwa pochodne** (reguły w `apps/api/src`, zwracane przez `GET /api/priority-rules`):
 
-- **Osoba** — profile są łączone w kandydatów na rzeczywistą osobę po wspólnych cechach (ten sam e-mail lub telefon 100, wzajemne odnośniki 90, ten sam adres 80…; próg łączenia 50). Kilku kandydatów oznacza, że ślady mogą należeć do różnych osób (imiennicy, ten sam nick).
+- **Osoba (hipoteza operatora)** — konta są łączone w kandydatów po wspólnych cechach (ten sam e-mail lub telefon 100, wzajemne odnośniki 90, ten sam adres publikowany jako własny 80…; próg łączenia 50). Dwa skupienia łączą się tylko wtedy, gdy żadna para ich kont nie ma kontrdowodu twardego (sprzeczne deklarowane nazwiska, decyzja analityka), więc ścieżka A–B–C nie scala sprzecznych A i C. Sam zgodny nick niczego nie łączy. Kandydat pozostaje hipotezą, dopóki analityk go nie potwierdzi.
+- **Wspólny operator pary kont** — najmocniejsza przesłanka + 20% każdej kolejnej niezależnej (najwyżej +15) − kontrdowody; najwyżej 95 bez decyzji analityka i najwyżej 45 przy kontrdowodzie twardym.
+- **Wyjście do walut tradycyjnych** — cztery szczeble: transakcja w blockchainie, interakcja z usługą wymiany, potencjalny sygnał wypłaty, udokumentowane wyjście. Ostatni wymaga dokumentu spoza blockchaina.
 - **Osoba–adres** — Wskaźnik Pewności adresu × pewność przynależności profilu do osoby.
 - **Ścieżka środków** — 95 za bezpośredni przelew na adres z publiczną etykietą usługi; każde ogniwo pośrednie obniża wynik; ścieżka z ogniwem pośrednim najwyżej 90 (wzór w [packages/chain/README.md](packages/chain/README.md)).
 - **Dowód spieniężenia** — P(osoba–adres) × P(ścieżka) / 100.
@@ -307,12 +311,12 @@ Wszystkie osoby, konta i adresy są zmyślone (`apps/sandbox`, 32 fikcyjne osoby
 
 | Krok | Identyfikator | Co pokazuje | Oczekiwany wynik |
 |---|---|---|---|
-| 1 | login `kwrzosek_dev` | wykrycie adresów, synergia źródeł, wskaźniki wypłat | `bc1qxhvk…kl0ze`: własny profil GitPub (85) + ogłoszenie na Targu (+15) = **100%**; `0x5214…e86a`: sam profil = **85%**. W danych blockchain wpłaty na „Giełda Bursztyn: Hot Wallet” (2024–2026), „KantorKrypto P2P”, zamiana ETH→USDT, bramka płatnicza, karta |
+| 1 | login `kwrzosek_dev` | wykrycie adresów, synergia źródeł, wskaźniki wypłat | `bc1qxhvk…kl0ze`: własny profil GitPub (85), zgodny tylko nick (−10), ogłoszenie na Targu (+15) = **90**; `0x5214…e86a`: sam profil = **75**. W danych blockchain wpłaty na „Giełda Bursztyn: Hot Wallet” (2024–2026), „KantorKrypto P2P”, zamiana ETH→USDT, bramka płatnicza, karta |
 | 2 | nick `bkruk_trader` | odrzucenie błędnych przypisań | adres gorącego portfela giełdy i kontrakt stablecoina: **wykluczone, 0%** |
 | 3 | imię i nazwisko `Kacper Wrzosek` | imiennicy | adresy dwóch różnych osób po **65%** (85 − 20) ze wskazówką, by potwierdzić tożsamość |
 | 4 | nick `oli_stepniak` | adres współdzielony | masowy komentarz (25) i 7 innych kont z tym samym adresem → **0%** |
 | 5 | e-mail `m.zielonka@skrzynka.example` | łańcuch odkrywania identyfikatorów | profil bez adresu → odkryte nicki → adresy `0x3fb2…9D84` i `TETb8r…Tsv6` po **80%** |
-| 6 | login `rkowalski_btc` (Rafał Kowalski) | powiązana tożsamość pod innym nazwiskiem | **Julia Kowalska** (`julka_k`): ten sam adres `bc1q43zh…2g98` publikowany jako własny przez oba konta, ta sama miejscowość |
+| 6 | login `rkowalski_btc` (Rafał Kowalski) | hipoteza wspólnego operatora pod innym nazwiskiem | **Julia Kowalska** (`julka_k`): ten sam adres `bc1q43zh…2g98` publikowany jako własny przez oba konta; sprzeczne deklarowane nazwiska blokują scalenie (wskaźnik B ograniczony do 45), rozstrzyga analityk |
 | 7 | nick `t_nowak_foto` (Tomasz Nowak) | wspólny indywidualny adres wpłat giełdy | **Ewa Wiśniewska** (`ewa_wisniewska`): oba adresy wysyłają środki na ten sam adres pośredni, który przekazuje całość na „Giełda Bursztyn: Hot Wallet” |
 | 8 | nick `dsroka` | podmiana adresu w czasie | otwórz `http://localhost:4100/_demo/faza/before`, wykonaj analizę, otwórz `…/_demo/faza/after`, wykonaj ponownie i porównaj analizy: stary adres zastąpiony nowym w tym samym miejscu publikacji |
 | 9 | nick `zosia_mielcarz` | brak kryptowalut | dokumenty znalezione, **zero adresów**, teczka wyjaśnia dlaczego |
@@ -345,18 +349,20 @@ pnpm test
 
 albo w katalogu modułu: `node --test test/*.test.ts` (laboratorium: `node --test tests/*.test.mjs`).
 
-Wynik z 21.11.2026 (Node 24.22.0, Windows 11), wszystkie zaliczone:
+Wynik z 21.11.2026 po audycie (Windows 11), wszystkie zaliczone:
 
 | Moduł | Testy | Zaliczone | Niezaliczone |
 |---|---|---|---|
-| `packages/core` | 13 | 13 | 0 |
+| `packages/core` | 19 | 19 | 0 |
 | `packages/sources` | 135 | 135 | 0 |
-| `packages/chain` | 115 | 115 | 0 |
+| `packages/chain` | 127 | 127 | 0 |
 | `packages/ai` | 36 | 36 | 0 |
-| `apps/api` | 123 | 123 | 0 |
-| `apps/web` | 52 | 52 | 0 |
+| `apps/api` | 184 | 184 | 0 |
+| `apps/web` | 91 | 91 | 0 |
 | `apps/identity-lab` | 46 | 46 | 0 |
-| **Razem** | **520** | **520** | **0** |
+| **Razem** | **638** | **638** | **0** |
+
+Scenariusz konkursowy od identyfikatora do raportu (trzy fikcyjne persony, decyzje analityka z wycofaniem, niedostępne źródło) jest w `apps/api/test/scenario.test.ts`; tabela scenariuszy regresyjnych — w [docs/AUDYT.md](docs/AUDYT.md). Sprawdzone 21.11.2026 także ręcznie: pełna ścieżka przez API i interfejs na piaskownicy oraz jedna analiza na publicznych źródłach (`LIVE=1 SANDBOX_URL=off node test/e2e-sandbox.manual.ts vitalik.eth`).
 
 `apps/sandbox` nie ma własnych testów — jest sprawdzana przez testy `packages/sources`, które uruchamiają ją na losowym porcie. Sprawdzenie typów interfejsu: `pnpm --filter @olcys/web typecheck`.
 

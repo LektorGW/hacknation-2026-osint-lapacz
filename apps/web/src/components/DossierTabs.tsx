@@ -8,7 +8,6 @@ import { cashOutFlows, cashOutRows, cashOutSeries } from '../dossier.ts';
 import { fmtAmount, fmtDate, fmtDateTime, fmtPln, shorten, sum, yearOf } from '../format.ts';
 import {
   CASH_OUT_LABEL,
-  DECISION_LABEL,
   IDENTITY_LABEL,
   RELATION_LABEL,
   TIMELINE_KINDS,
@@ -17,7 +16,10 @@ import {
 import { href, navigate } from '../router.ts';
 import { Bar, EmptyState, ExternalLink, Initial, LAYER_KEYS, LayerTag, ShortAddress, layerLabel, toLayer } from './common.tsx';
 import type { Layer } from './common.tsx';
-import { DecisionControls, useDossier } from './DossierContext.tsx';
+import { DecisionControls, DecisionHistory, useDossier } from './DossierContext.tsx';
+import { isWithdrawn } from '../decisions.ts';
+import type { DecisionRecord } from '../decisions.ts';
+import { SyntheticTag } from './Mode.tsx';
 import { FindingCard, RejectedCard } from './FindingCard.tsx';
 import { UnconfirmedAddresses } from './Explanations.tsx';
 import { useToast } from './Toast.tsx';
@@ -72,7 +74,7 @@ function ProfileItem({ profile }: { profile: ProfileCard }) {
         <div>
           <h3>{profile.handle ?? profile.attributes.displayName ?? profile.service}</h3>
           <p className="muted">
-            {profile.service} · <ExternalLink url={profile.url}>otwórz profil</ExternalLink>
+            {profile.service} · <ExternalLink url={profile.url}>otwórz profil</ExternalLink> <SyntheticTag source={{ service: profile.service, url: profile.url }} />
           </p>
         </div>
         <span className={`chip ${main ? 'chip-ok' : ''}`}>
@@ -102,7 +104,7 @@ function ProfileItem({ profile }: { profile: ProfileCard }) {
               </span>
             ))}
       </p>
-      <DecisionControls target="profile" decisionKey={profile.id} confirmLabel="To ta osoba" rejectLabel="To nie ta osoba" />
+      <DecisionControls target="profile" decisionKey={profile.id} confirmLabel="Potwierdź: konto podmiotu" rejectLabel="Odrzuć: to nie konto podmiotu" />
     </article>
   );
 }
@@ -453,52 +455,29 @@ export function PeopleTab() {
 // ---------- Rejestr decyzji ----------
 
 export function DecisionsTab() {
-  const { dossier, undo } = useDossier();
-  const decisions = [...dossier.decisions].sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
+  const { dossier } = useDossier();
+  const all = dossier.decisions as DecisionRecord[];
+  const withdrawn = all.filter(isWithdrawn).length;
   return (
     <section aria-labelledby="decyzje">
       <header className="section-head">
         <div>
-          <h2 id="decyzje">Rejestr decyzji analityka ({decisions.length})</h2>
-          <p className="muted">Każda korekta zostaje w rejestrze z czasem i notatką; cofnięcie przywraca wynik automatyczny.</p>
+          <h2 id="decyzje">Rejestr decyzji analityka ({all.length - withdrawn})</h2>
+          <p className="muted">
+            Historia zmian: każda decyzja zostaje w rejestrze z czasem, autorem i notatką. Wycofanie przywraca wynik automatyczny, a wycofana decyzja
+            pozostaje widoczna{withdrawn > 0 && ` (wycofane: ${withdrawn})`}.
+          </p>
         </div>
       </header>
-      {decisions.length === 0 ? (
+      {all.length === 0 ? (
         <EmptyState title="Brak decyzji — wynik jest w całości automatyczny">
-          Korekty są opcjonalne. Można je wprowadzić na kartach profili i adresów albo w sekcji „Ślady prawdopodobnie należące do innej osoby”.
+          Korekty są opcjonalne. Można je wprowadzić na kartach profili i adresów, w panelu grafu, przy hipotezach wspólnego operatora (sekcja
+          „Wskaźniki”) albo w sekcji „Ślady prawdopodobnie należące do innej osoby”.
         </EmptyState>
       ) : (
-        <div className="card table-scroll">
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Czas</th>
-                <th scope="col">Dotyczy</th>
-                <th scope="col">Obiekt</th>
-                <th scope="col">Decyzja</th>
-                <th scope="col">Notatka</th>
-                <th scope="col">Akcja</th>
-              </tr>
-            </thead>
-            <tbody>
-              {decisions.map((decision) => (
-                <tr key={decision.id}>
-                  <td>{fmtDateTime(decision.decidedAt)}</td>
-                  <td>{decision.target === 'profile' ? 'profil' : 'adres'}</td>
-                  <td className="mono">{decision.key}</td>
-                  <td>
-                    <span className={`chip ${decision.decision === 'confirmed' ? 'chip-ok' : 'chip-warn'}`}>{DECISION_LABEL[decision.decision]}</span>
-                  </td>
-                  <td>{decision.note ?? '—'}</td>
-                  <td>
-                    <button type="button" className="button button-small" onClick={() => undo(decision.id)}>
-                      Cofnij
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="card">
+          <h3>Historia zmian</h3>
+          <DecisionHistory />
         </div>
       )}
     </section>

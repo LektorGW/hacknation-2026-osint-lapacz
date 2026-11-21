@@ -5,6 +5,9 @@ import { useDossier } from './DossierContext.tsx';
 import { fmtDateTime, shorten } from '../format.ts';
 import { CATEGORY_LABEL, IDENTIFIER_LABEL, IDENTITY_LABEL } from '../labels.ts';
 import { ExternalLink, LayerTag } from './common.tsx';
+import { SyntheticTag } from './Mode.tsx';
+import { currentDecision } from '../decisions.ts';
+import type { DecisionRecord } from '../decisions.ts';
 
 /** Cytat ze źródła jako zwykły tekst, z wyróżnionym adresem. */
 function Excerpt({ text, address }: { text: string; address: string }) {
@@ -59,7 +62,7 @@ const EXCLUDING: TextInsight['ownership'][] = ['third_party_address', 'warning_a
 /** Odczyt treści przez model językowy — zawsze sugestia, którą analityk może cofnąć. */
 function Insight({ evidenceId, insight }: { evidenceId: string; insight: TextInsight }) {
   const { dossier, decide, undo } = useDossier();
-  const override = dossier.decisions.filter((item) => (item.target as string) === 'evidence' && item.key === evidenceId).at(-1);
+  const override = currentDecision(dossier.decisions as DecisionRecord[], 'evidence', evidenceId);
   const { offer } = insight;
   return (
     <aside className="insight">
@@ -114,6 +117,7 @@ function EvidenceItem({ item, address }: { item: EvidenceWithInsight; address: s
     <li className="evidence">
       <p className="evidence-title">
         <ExternalLink url={item.url}>{item.title || item.url}</ExternalLink>
+        <SyntheticTag source={{ connectorId: item.connectorId, service: item.service, url: item.url }} />
         {item.archivedAt && (
           <span className="chip chip-archive">wersja archiwalna z {fmtDateTime(item.archivedAt)}</span>
         )}

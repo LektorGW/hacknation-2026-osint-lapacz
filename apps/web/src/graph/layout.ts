@@ -11,14 +11,14 @@ export interface GraphLayout {
   width: number;
   height: number;
   /** Układ warstwowy: położenie nagłówków kolumn. */
-  columns: { kind: GraphNodeKind; x: number }[];
+  columns: { kind: GraphNodeKind; x: number; label?: string }[];
   /** Układ promienisty: promienie pierścieni wokół `centre`. */
   rings: { kind: GraphNodeKind; radius: number }[];
   centre?: Point;
 }
 
-/** Kolejność kolumn (i pierścieni): od podmiotu do kontrahentów i osób powiązanych. */
-export const KIND_ORDER: GraphNodeKind[] = ['subject', 'identifier', 'profile', 'address', 'service', 'person'];
+/** Kolejność kolumn (i pierścieni): od podmiotu przez hipotezy operatora, persony i konta do kontrahentów. */
+export const KIND_ORDER: GraphNodeKind[] = ['subject', 'operator', 'persona', 'identifier', 'profile', 'source', 'address', 'service', 'person'];
 
 type Adjacency = Map<string, string[]>;
 
@@ -85,8 +85,9 @@ export interface LayeredOptions {
 
 /** Układ warstwowy: kolumny wg rodzaju węzła, wiersze w stałym odstępie, kolumny wyśrodkowane w pionie. */
 export function layeredLayout(nodes: GraphNode[], edges: GraphEdge[], options: LayeredOptions = {}): GraphLayout {
-  const { columnGap = 250, rowGap = 48, padding = 48 } = options;
   const groups = groupByKind(nodes);
+  // Przy wielu kolumnach (graf śledczy ma ich do dziewięciu) odstęp jest mniejszy, żeby graf mieścił się w oknie.
+  const { columnGap = groups.length > 6 ? 200 : 250, rowGap = 48, padding = 48 } = options;
   const ordered = orderColumns(groups, adjacency(nodes, edges));
   const rows = Math.max(1, ...ordered.map((ids) => ids.length));
   const positions = new Map<string, Point>();
@@ -100,6 +101,52 @@ export function layeredLayout(nodes: GraphNode[], edges: GraphEdge[], options: L
     width: padding * 2 + Math.max(0, groups.length - 1) * columnGap + 190,
     height: padding * 2 + (rows - 1) * rowGap,
     columns: groups.map((group, column) => ({ kind: group.kind, x: padding + column * columnGap })),
+    rings: [],
+  };
+}
+
+/**
+ * Układ przepływów blockchain: od lewej do prawej zgodnie z kierunkiem przelewów.
+ * Kolumna węzła = najdłuższa ścieżka od źródeł przepływu (węzłów bez wpływów); cykle przerywamy
+ * w miejscu, w którym krawędź wracałaby do węzła już odwiedzanego.
+ */
+export function flowLayout(nodes: GraphNode[], edges: GraphEdge[], options: LayeredOptions = {}): GraphLayout {
+  const { columnGap = 250, rowGap = 48, padding = 48 } = options;
+  const ids = new Set(nodes.map((node) => node.id));
+  const outgoing = new Map<string, string[]>(nodes.map((node) => [node.id, []]));
+  const incoming = new Map<string, number>(nodes.map((node) => [node.id, 0]));
+  for (const edge of edges) {
+    if (!ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to) continue;
+    outgoing.get(edge.from)!.push(edge.to);
+    incoming.set(edge.to, incoming.get(edge.to)! + 1);
+  }
+  const depth = new Map<string, number>();
+  const visiting = new Set<string>();
+  const visit = (id: string, level: number) => {
+    if (visiting.has(id) || (depth.get(id) ?? -1) >= level) return;
+    depth.set(id, level);
+    visiting.add(id);
+    for (const next of outgoing.get(id)!) visit(next, level + 1);
+    visiting.delete(id);
+  };
+  for (const node of nodes) if (incoming.get(node.id) === 0) visit(node.id, 0);
+  // Węzły leżące wyłącznie na cyklu nie mają źródła — zaczynamy od pierwszego nieodwiedzonego.
+  for (const node of nodes) if (!depth.has(node.id)) visit(node.id, 0);
+
+  const levels = Math.max(0, ...depth.values()) + 1;
+  const groups = Array.from({ length: levels }, (_, level) => ({ ids: nodes.filter((node) => depth.get(node.id) === level).map((node) => node.id) }));
+  const ordered = orderColumns(groups, adjacency(nodes, edges));
+  const rows = Math.max(1, ...ordered.map((column) => column.length));
+  const positions = new Map<string, Point>();
+  ordered.forEach((column, level) => {
+    const offset = ((rows - column.length) * rowGap) / 2;
+    column.forEach((id, row) => positions.set(id, { x: padding + level * columnGap, y: padding + offset + row * rowGap }));
+  });
+  return {
+    positions,
+    width: padding * 2 + Math.max(0, levels - 1) * columnGap + 190,
+    height: padding * 2 + (rows - 1) * rowGap,
+    columns: groups.map((_, level) => ({ kind: 'address' as GraphNodeKind, x: padding + level * columnGap, label: level === 0 ? 'Początek przepływu' : `Krok ${level}` })),
     rings: [],
   };
 }

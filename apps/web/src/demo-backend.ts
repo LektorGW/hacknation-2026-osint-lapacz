@@ -55,6 +55,8 @@ import { demoHits, demoMonitorSources } from './demo-monitor.ts';
 import { demoAi, demoCorpus, demoExtras, demoOwnInsight, demoProgress, demoProofs, demoWarningEvidence, startDemoProgress } from './demo-proof.ts';
 import type { DossierFinding, FullDossier } from './proof.ts';
 import { applyDemoIdentities } from './demo-identities.ts';
+import { applyDemoInvestigation } from './demo-indicators.ts';
+import type { DecisionRecord } from './decisions.ts';
 import { ADDRESS_CASE_ADDR, addressCaseDossier, demoAddressCase, demoAddressRun, demoServiceCase, demoServiceRun, serviceCaseDossier } from './demo-cases.ts';
 import { IDENTITY_SCORE, addressKey, computePriority, dossierFromRun, profileKey } from './dossier.ts';
 import { fmtPln, sum } from './format.ts';
@@ -64,14 +66,16 @@ type StoredCase = Omit<CaseSummary, 'runs'>;
 const NOW = new Date(DEMO_NOW);
 const cases: StoredCase[] = [demoCase, demoAddressCase, demoServiceCase];
 const runs: RawRun[] = [...demoRuns, demoAddressRun, demoServiceRun];
-const decisions: AnalystDecision[] = [];
+const decisions: DecisionRecord[] = [];
 const sweeps: Sweep[] = [];
 let sequence = 0;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const notFound = (what: string) => new ApiError(`Nie znaleziono: ${what}.`, 404);
 const evidenceKey = (item: StoredEvidence) => profileKey({ service: item.service, handle: item.author, url: item.url });
-const decisionsOf = (caseId: string) => decisions.filter((item) => item.caseId === caseId);
+/** Decyzje obowiązujące: wycofane zostają w rejestrze, ale nie wpływają na wynik. */
+const decisionsOf = (caseId: string): AnalystDecision[] => decisions.filter((item) => item.caseId === caseId && !item.withdrawnAt);
+const historyOf = (caseId: string): DecisionRecord[] => decisions.filter((item) => item.caseId === caseId);
 
 /** Wycena analizy z uwzględnieniem decyzji: odrzucony profil traci ślady, potwierdzony zyskuje pewną tożsamość. */
 function scoreRun(run: RawRun, applied: AnalystDecision[]): AnalysisRun {
@@ -410,7 +414,13 @@ function enrichDemo(dossier: Dossier, summary: StoredCase, applied: AnalystDecis
   };
 }
 
+/** Teczka demo ze wskaźnikami A/B/C, statusami relacji grafu i pełną historią decyzji (także wycofanych). */
 function buildDossier(raw: RawRun): FullDossier {
+  const caseId = findCase(raw.caseId).id;
+  return { ...applyDemoInvestigation(buildBaseDossier(raw), decisionsOf(caseId)), decisions: historyOf(caseId) };
+}
+
+function buildBaseDossier(raw: RawRun): FullDossier {
   const summary = findCase(raw.caseId);
   const applied = decisionsOf(raw.caseId);
   const demo = raw.caseId === DEMO_CASE_ID && raw.findings.some((finding) => finding.address === ADDR_TRON);
@@ -710,17 +720,26 @@ export const demoBackend: Backend = {
   addDecision: async (caseId, input) => {
     findCase(caseId);
     sequence += 1;
-    const created: AnalystDecision = { id: `demo-decyzja-${sequence}`, caseId, ...input, target: input.target as AnalystDecision['target'], decidedAt: new Date().toISOString() };
-    // Nowa decyzja zastępuje wcześniejszą dla tego samego obiektu.
-    const previous = decisions.findIndex((item) => item.caseId === caseId && item.target === input.target && item.key === input.key);
-    if (previous >= 0) decisions.splice(previous, 1);
+    const now = new Date().toISOString();
+    const created: DecisionRecord = { id: `demo-decyzja-${sequence}`, caseId, ...input, target: input.target as AnalystDecision['target'], decidedAt: now, author: 'analityk (demo)' };
+    // Nowa decyzja zastępuje wcześniejszą dla tego samego obiektu: poprzednia zostaje w historii jako wycofana.
+    for (const item of decisions) {
+      if (item.caseId === caseId && item.target === input.target && item.key === input.key && !item.withdrawnAt) {
+        item.withdrawnAt = now;
+        item.withdrawnBy = 'analityk (demo) — zastąpiona nową decyzją';
+      }
+    }
     decisions.push(created);
     return created;
   },
   removeDecision: async (caseId, decisionId) => {
-    const index = decisions.findIndex((item) => item.caseId === caseId && item.id === decisionId);
-    if (index < 0) throw notFound('decyzja');
-    decisions.splice(index, 1);
+    // Wycofanie miękkie: decyzja zostaje w historii zmian i przestaje wpływać na wynik.
+    const found = decisions.find((item) => item.caseId === caseId && item.id === decisionId);
+    if (!found) throw notFound('decyzja');
+    if (!found.withdrawnAt) {
+      found.withdrawnAt = new Date().toISOString();
+      found.withdrawnBy = 'analityk (demo)';
+    }
   },
 
   getOverview: async (): Promise<Overview> => {

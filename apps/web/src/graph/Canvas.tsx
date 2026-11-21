@@ -20,9 +20,11 @@ interface CanvasProps {
   children: ReactNode;
   /** Elementy SVG rysowane pod treścią, w układzie ekranu (np. tło). */
   defs?: ReactNode;
+  /** Najmniejsze powiększenie przy dopasowaniu: szerszy graf zaczyna od lewej krawędzi i jest czytelny, zamiast kurczyć się do nieczytelnej miniatury. */
+  minFit?: number;
 }
 
-export function Canvas({ width, height, label, className = '', children, defs }: CanvasProps) {
+export function Canvas({ width, height, label, className = '', children, defs, minFit = MIN_ZOOM }: CanvasProps) {
   const container = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number } | null>(null);
@@ -31,9 +33,11 @@ export function Canvas({ width, height, label, className = '', children, defs }:
     const element = container.current;
     if (!element) return;
     const { clientWidth, clientHeight } = element;
-    const k = clamp(Math.min(clientWidth / width, clientHeight / height), MIN_ZOOM, 1.25);
-    setView({ k, x: (clientWidth - width * k) / 2, y: (clientHeight - height * k) / 2 });
-  }, [width, height]);
+    const k = clamp(Math.min(clientWidth / width, clientHeight / height), minFit, 1.25);
+    // Treść, która się nie mieści, zaczyna od lewego górnego rogu; mieszcząca się jest wyśrodkowana.
+    const place = (space: number, size: number) => (size <= space ? (space - size) / 2 : 8);
+    setView({ k, x: place(clientWidth, width * k), y: place(clientHeight, height * k) });
+  }, [width, height, minFit]);
 
   useEffect(() => {
     fit();

@@ -24,6 +24,7 @@ const KIND_TITLE: Record<Explanation['kind'], string> = {
   widely_cited: 'Adres jest powszechnie cytowany',
   chain_skipped: 'Nie przeanalizowano blockchainu',
   partial: 'Wynik częściowy',
+  source_errors: 'Część źródeł nie odpowiedziała — wynik częściowy',
   no_cash_out: 'Brak udokumentowanego spieniężenia',
   seized: 'Środki zajęte przez organ państwa — to nie spieniężenie',
 };

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, isDemo } from './api.ts';
+import { api } from './api.ts';
+import { ModeBadge, ModeProvider } from './components/Mode.tsx';
 import { useAsync } from './useAsync.ts';
 import { ToastProvider } from './components/Toast.tsx';
 import { DashboardPage } from './pages/DashboardPage.tsx';
@@ -39,6 +40,7 @@ const SHORTCUTS: [string, string][] = [
   ['m', 'przełączenie motywu jasny / ciemny'],
   ['strzałki, + − 0', 'przesuwanie, powiększenie i dopasowanie grafu (gdy graf ma fokus)'],
   ['Enter / spacja', 'szczegóły węzła lub krawędzi grafu'],
+  ['Shift + klik / dwuklik', 'graf: ścieżka dowodowa do drugiego węzła / zwinięcie gałęzi'],
 ];
 
 function focusSearch() {
@@ -91,6 +93,7 @@ export function App() {
   }, []);
 
   return (
+    <ModeProvider>
     <ToastProvider>
       <a
         className="skip-link"
@@ -128,11 +131,6 @@ export function App() {
                 Model językowy: <strong>{ai.data.enabled ? (ai.data.model ?? 'włączony') : 'wyłączony'}</strong>
               </a>
             )}
-            {isDemo && (
-              <p className="demo-badge" role="note">
-                Tryb demo — dane w całości fikcyjne
-              </p>
-            )}
             <button type="button" className="sidebar-button" onClick={toggleScheme}>
               {scheme === 'dark' ? '☀ Motyw jasny' : '☾ Motyw ciemny'}
             </button>
@@ -142,6 +140,7 @@ export function App() {
           </div>
         </header>
         <div className="content">
+          <ModeBadge />
           <main id="tresc" tabIndex={-1}>
             <Page route={route} />
           </main>
@@ -174,5 +173,6 @@ export function App() {
         </form>
       </dialog>
     </ToastProvider>
+    </ModeProvider>
   );
 }

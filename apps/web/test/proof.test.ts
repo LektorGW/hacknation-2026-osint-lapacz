@@ -202,7 +202,7 @@ test('powiązane tożsamości: kolejność, skrót, identyfikatory nowej sprawy 
     identity('trop', 90, { profiles: [], handles: [], addresses: [{ address: 'bc1qtrop', network: 'bitcoin', basis: 'linked:transfer' }] }),
   ];
   assert.deepEqual(sortIdentities(list).map((item) => item.id), ['trop', 'julia', 'slaba', 'odrzucona']);
-  assert.deepEqual(identityHeadline(list), ['julia — prawdopodobnie ta sama osoba (85)', 'slaba — możliwe, że ta sama osoba albo ktoś bliski (40)']);
+  assert.deepEqual(identityHeadline(list), ['julia — hipoteza: możliwy wspólny operator — mocne przesłanki (85)', 'slaba — hipoteza: możliwy wspólny operator albo osoba bliska (40)']);
   assert.equal(isAddressLead(list[3]!), true);
   assert.deepEqual(identityIdentifiers(list[2]!), [
     { type: 'full_name', value: 'Julia Kowalska' },

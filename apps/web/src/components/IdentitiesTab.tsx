@@ -1,30 +1,22 @@
 // „Powiązane tożsamości”: inne nazwiska i konta, do których prowadzą ślady podmiotu.
 import { useState } from 'react';
 import { api, quickCheck } from '../api.ts';
-import { fmtAmount, fmtPln, shorten, sum } from '../format.ts';
+import { fmtAmount, fmtPln, sum } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
-import { RELATION_LEVEL, RELATION_TEXT, basisText, explorerForTxid, identityIdentifiers, isAddressLead, sortIdentities } from '../identities.ts';
+import { RELATION_LEVEL, RELATION_TEXT, basisText, identityAccounts, identityIdentifiers, identityStatus, isAddressLead, parseIdentityId, sortIdentities } from '../identities.ts';
 import type { IdentityEvidence, LinkedIdentity } from '../identities.ts';
 import { href, navigate } from '../router.ts';
-import { CopyButton, EmptyState, ExternalLink, Initial, LayerTag, ScoreBadge, ShortAddress } from './common.tsx';
+import { EmptyState, ExternalLink, Initial, LayerTag, ScoreBadge, ShortAddress } from './common.tsx';
+import { EvidenceRefItem, StatusBadge } from './Indicators.tsx';
+import { SyntheticTag } from './Mode.tsx';
+import { ORDINAL_NOTE } from '../labels.ts';
 import { useDossier } from './DossierContext.tsx';
 import { useToast } from './Toast.tsx';
 
+const IDENTITY_STATUS_LABEL = { hypothesis: 'hipoteza', confirmed: 'potwierdzona', rejected: 'odrzucona' } as const;
+
 function Evidence({ item }: { item: IdentityEvidence }) {
-  const { dossier } = useDossier();
-  if (item.kind === 'url') return <ExternalLink url={item.value} />;
-  if (item.kind === 'address') return <ShortAddress value={item.value} />;
-  if (item.kind === 'txid') {
-    const explorer = explorerForTxid(dossier.findings, item.value);
-    return explorer ? (
-      <ExternalLink url={explorer}>transakcja {shorten(item.value, 8, 6)}</ExternalLink>
-    ) : (
-      <span className="evidence-txid">
-        transakcja <code className="mono" title={item.value}>{shorten(item.value, 8, 6)}</code> <CopyButton value={item.value} label="Kopiuj identyfikator transakcji" />
-      </span>
-    );
-  }
-  return <span className="chip">{item.value}</span>;
+  return <EvidenceRefItem item={item} />;
 }
 
 function IdentityCard({ identity }: { identity: LinkedIdentity }) {
@@ -32,14 +24,17 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const lead = isAddressLead(identity);
-  const rejected = identity.decision === 'rejected';
+  const status = identityStatus(identity);
+  const rejected = status === 'rejected';
+  const accounts = identityAccounts(identity);
+  const origin = parseIdentityId(identity.id);
   const total = sum(Object.values(identity.cashOutPlnByYear));
 
   async function sendAll(decision: 'confirmed' | 'rejected') {
     setBusy(true);
     try {
       for (const target of identity.mergeWith) {
-        await decide(target.target, target.key, decision, decision === 'confirmed' ? `Scalono z tożsamością „${identity.displayName}”` : `„${identity.displayName}” to inna osoba`);
+        await decide(target.target, target.key, decision, decision === 'confirmed' ? `Potwierdzono wspólnego operatora z „${identity.displayName}”` : `Odrzucono hipotezę wspólnego operatora z „${identity.displayName}”`);
       }
     } finally {
       setBusy(false);
@@ -68,12 +63,19 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
           <h3>{identity.displayName}</h3>
           <p className="muted">
             {identity.fullName && identity.fullName !== identity.displayName && `${identity.fullName} · `}
-            {identity.handles.length > 0 ? `konta: ${identity.handles.join(', ')}` : lead ? 'trop bez profilu — znany tylko adres' : 'bez nazw kont'}
+            {accounts.length > 0
+              ? `konta: ${accounts.map((account) => account.replace('|', ' · ')).join(', ')}`
+              : identity.handles.length > 0
+                ? `konta: ${identity.handles.join(', ')}${origin.service ? ` (${origin.service})` : ''}`
+                : lead
+                  ? 'trop bez profilu — znany tylko adres'
+                  : 'bez nazw kont'}
           </p>
         </div>
         <div className="identity-relation">
+          <StatusBadge status={status} label={IDENTITY_STATUS_LABEL[status]} />
           <strong>{RELATION_TEXT[identity.relation] ?? identity.relation}</strong>
-          <span className="bar bar-wide">
+          <span className="bar bar-wide" title={ORDINAL_NOTE}>
             <span className="bar-track" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={identity.score} aria-label={`Siła powiązania z ${identity.displayName}`}>
               <span className="bar-fill" style={{ width: `${Math.max(0, Math.min(100, identity.score))}%` }} />
             </span>
@@ -81,7 +83,13 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
           </span>
         </div>
       </header>
-      {rejected && <p className="chip chip-warn">Analityk uznał: inna osoba — zostaje jako powiązana</p>}
+      {rejected && <p className="chip chip-warn">Hipoteza odrzucona przez analityka — tożsamość zostaje jako powiązana</p>}
+      {status === 'confirmed' && <p className="chip chip-ok">✓ Wspólny operator potwierdzony decyzją analityka</p>}
+      {status === 'hypothesis' && (
+        <p className="identity-hypothesis">
+          To przypuszczenie narzędzia, a nie ustalenie. Liczba obok jest wskaźnikiem porządkowym z jawnych reguł — nie prawdopodobieństwem.
+        </p>
+      )}
 
       <section className="path" aria-label="Ścieżka dojścia od podmiotu do tej tożsamości">
         <h4>
@@ -127,7 +135,7 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
                     <Initial name={profile.service} />
                     <span className="mini-text">
                       <span className="mini-title">
-                        <ExternalLink url={profile.url}>{profile.service}</ExternalLink>
+                        <ExternalLink url={profile.url}>{profile.service}</ExternalLink> <SyntheticTag source={{ service: profile.service, url: profile.url }} />
                       </span>
                       <span className="mini-sub">{profile.handle ?? 'bez nazwy konta'}</span>
                     </span>
@@ -181,12 +189,12 @@ function IdentityCard({ identity }: { identity: LinkedIdentity }) {
           <>
             {identity.mergeWith.length > 0 && (
               <button type="button" className="button button-primary" disabled={busy} onClick={() => sendAll('confirmed')}>
-                To ta sama osoba — scal
+                Potwierdź wspólnego operatora — scal
               </button>
             )}
             {identity.mergeWith.length > 0 && !rejected && (
               <button type="button" className="button" disabled={busy} onClick={() => sendAll('rejected')}>
-                Inna osoba — zostaw jako powiązaną
+                Odrzuć hipotezę — zostaw jako powiązaną
               </button>
             )}
             <button type="button" className="button" disabled={busy} onClick={openCase}>
@@ -209,8 +217,8 @@ export function IdentitiesTab() {
         <div>
           <h2 id="tozsamosci">Powiązane tożsamości ({identities.length})</h2>
           <p className="muted">
-            Każdy profil podmiotu jest punktem wyjścia do dalszych ścieżek: ten sam adres, telefon lub adres wpłat giełdy pod innym nazwiskiem. To wskazania
-            do weryfikacji — scalenie jest decyzją analityka.
+            Każde konto podmiotu jest punktem wyjścia do dalszych ścieżek: ten sam adres, telefon lub adres wpłat giełdy pod inną nazwą. Każde powiązanie
+            to hipoteza wspólnego operatora — potwierdzenie albo odrzucenie jest decyzją analityka.
           </p>
         </div>
       </header>

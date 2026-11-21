@@ -199,7 +199,7 @@ const SECTION_TITLE: Record<string, string> = {
   ai: 'Model językowy: co wolno mu zmienić',
   proof: 'Jak powstaje łączna pewność dowodu spieniężenia',
   analysis: 'Tryby analizy i limity',
-  aliases: 'Powiązane tożsamości: kiedy inne nazwisko to prawdopodobnie ta sama osoba',
+  aliases: 'Powiązane tożsamości: kiedy powstaje hipoteza wspólnego operatora',
   pivot: 'Rozszerzanie poszukiwań: każdy profil jako punkt wyjścia',
 };
 

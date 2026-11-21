@@ -2,6 +2,8 @@
 import type {
   AddressClass,
   CashOutKind,
+  CashOutStage,
+  ClaimStatus,
   Decision,
   GraphEdge,
   GraphNodeKind,
@@ -102,19 +104,25 @@ export const STATUS_LABEL: Record<string, string> = {
 
 export const NODE_KIND_LABEL: Record<GraphNodeKind, string> = {
   subject: 'Podmiot',
+  operator: 'Hipoteza wspólnego operatora',
+  persona: 'Persona (deklarowana tożsamość)',
   identifier: 'Identyfikator',
-  profile: 'Profil w serwisie',
+  profile: 'Konto w serwisie',
   address: 'Adres krypto',
   service: 'Serwis / kontrahent',
+  source: 'Źródło dowodowe',
   person: 'Osoba powiązana',
 };
 
 export const NODE_KIND_PLURAL: Record<GraphNodeKind, string> = {
   subject: 'Podmiot',
+  operator: 'Hipotezy operatora',
+  persona: 'Persony',
   identifier: 'Identyfikatory',
-  profile: 'Profile',
+  profile: 'Konta',
   address: 'Adresy',
   service: 'Serwisy i kontrahenci',
+  source: 'Źródła',
   person: 'Osoby powiązane',
 };
 
@@ -126,6 +134,50 @@ export const EDGE_KIND_LABEL: Record<GraphEdge['kind'], string> = {
   transfer: 'przelew',
   cash_out: 'możliwa wypłata',
   related: 'powiązanie z inną osobą',
+  operates: 'hipoteza: operator obsługuje konto',
+  declares: 'konto deklaruje personę',
+  documented_by: 'udokumentowane w źródle',
+  same_operator: 'hipoteza wspólnego operatora kont',
+};
+
+/** Status twierdzenia: skąd wiemy to, co pokazujemy. Kolejność = kolejność w legendzie i filtrach. */
+export const CLAIM_STATUSES: ClaimStatus[] = ['source_fact', 'computed', 'hypothesis', 'confirmed', 'rejected'];
+
+export const CLAIM_STATUS_LABEL: Record<ClaimStatus, string> = {
+  source_fact: 'fakt źródłowy',
+  computed: 'wynik obliczeń',
+  hypothesis: 'hipoteza',
+  confirmed: 'potwierdzone przez analityka',
+  rejected: 'odrzucone',
+};
+
+/** Znaczenie statusu prostym językiem — panel boczny grafu i legenda. */
+export const CLAIM_STATUS_MEANING: Record<ClaimStatus, string> = {
+  source_fact: 'Informacja wprost ze źródła: publikacja, rekord albo transakcja w blockchainie. Można ją sprawdzić pod podanym adresem.',
+  computed: 'Wynik obliczeń narzędzia na faktach (sumy, wyceny, ścieżka środków wprost z transakcji). Każdy krok da się odtworzyć.',
+  hypothesis: 'Przypuszczenie narzędzia oparte na przesłankach. Nie jest ustaleniem — wymaga weryfikacji i decyzji analityka.',
+  confirmed: 'Hipoteza przyjęta decyzją analityka. Odpowiedzialność za potwierdzenie spoczywa na analityku; decyzję można wycofać.',
+  rejected: 'Powiązanie odrzucone decyzją analityka albo wykluczone sprzecznością. Pozostaje widoczne wyłącznie dla przejrzystości.',
+};
+
+/** Stała uwaga przy każdej liczbie wskaźnika. */
+export const ORDINAL_NOTE = 'Wskaźnik porządkowy 0–100 z jawnych reguł eksperckich — nie jest skalibrowanym prawdopodobieństwem.';
+
+export const INDEPENDENCE_LABEL: Record<string, string> = {
+  independent: 'niezależny',
+  dependent: 'zależny — nie doliczono',
+  single: 'jedyny składnik',
+  not_applicable: 'nie dotyczy',
+};
+
+export const HYPOTHESIS_STATUS_LABEL: Record<string, string> = {
+  hypothesis: 'hipoteza',
+  auto_grouped: 'hipoteza — konta zgrupowane automatycznie',
+  blocked: 'hipoteza zablokowana kontrdowodem',
+  confirmed: 'potwierdzone przez analityka',
+  rejected: 'odrzucone',
+  source_fact: 'fakt źródłowy',
+  computed: 'wynik obliczeń',
 };
 
 export const TIMELINE_KIND_LABEL: Record<TimelineEvent['kind'], string> = {
@@ -187,3 +239,17 @@ export function ruleLabel(rule: string): string {
   if (rule === 'exclusion.analyst_decision' || rule === 'decision.address_rejected') return 'Wykluczenie: decyzja analityka';
   return rule;
 }
+
+/** Drabina dowodowa wyjścia do walut tradycyjnych — każdy następny szczebel wymaga więcej niż poprzedni. */
+export const CASH_OUT_STAGES: CashOutStage[] = ['onchain_transfer', 'service_interaction', 'cashout_signal', 'documented_fiat_exit'];
+
+export const CASH_OUT_STAGE_TEXT: Record<CashOutStage, { label: string; meaning: string }> = {
+  onchain_transfer: { label: 'Transakcja w blockchainie', meaning: 'Przelew na adres bez etykiety usługi — sam w sobie nie świadczy o wymianie.' },
+  service_interaction: { label: 'Interakcja z usługą wymiany', meaning: 'Przelew na adres publicznie oznaczony jako giełda, serwis P2P, bramka albo karta.' },
+  cashout_signal: { label: 'Potencjalny sygnał wypłaty', meaning: 'Wzorzec typowy dla wypłaty: adres wpłat giełdy, zamiana na stablecoin i wpłata, powtarzalne wpłaty.' },
+  documented_fiat_exit: { label: 'Udokumentowane wyjście do walut tradycyjnych', meaning: 'Potwierdzenie spoza blockchaina: odpowiedź usługi albo decyzja analityka z podstawą.' },
+};
+
+/** Stałe ograniczenie wskaźnika C. */
+export const CASH_OUT_LIMITATION =
+  'Wypłatę na rachunek bankowy może potwierdzić wyłącznie usługa (giełda, operator płatności). Dane blockchain pokazują najwyżej, że środki do niej dotarły.';

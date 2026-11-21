@@ -6,6 +6,7 @@ export const DOSSIER_TABS = [
   { id: 'tozsamosci', label: 'Powiązane tożsamości' },
   { id: 'uslugi', label: 'Giełdy i portfele' },
   { id: 'graf', label: 'Graf powiązań' },
+  { id: 'wskazniki', label: 'Wskaźniki' },
   { id: 'profile', label: 'Profile' },
   { id: 'adresy', label: 'Adresy' },
   { id: 'przeplywy', label: 'Przepływy' },

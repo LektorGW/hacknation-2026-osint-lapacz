@@ -170,9 +170,9 @@ function PersonDetermination() {
               {withLikelySame !== undefined && (
                 <p
                   className="total-combined"
-                  title="Suma wypłat podmiotu powiększona o wypłaty tożsamości ocenionych jako prawdopodobnie ta sama osoba. Nie jest ustaleniem — liczby łączą się dopiero po scaleniu przez analityka."
+                  title="Suma wypłat podmiotu powiększona o wypłaty tożsamości z mocną hipotezą wspólnego operatora. Nie jest ustaleniem — liczby łączą się dopiero po scaleniu przez analityka."
                 >
-                  <strong>{fmtPln(withLikelySame)}</strong> łącznie z tożsamościami prawdopodobnie tymi samymi
+                  <strong>{fmtPln(withLikelySame)}</strong> łącznie z tożsamościami z hipotezą wspólnego operatora
                 </p>
               )}
               <details className="why">
@@ -271,7 +271,7 @@ export function OtherCandidates() {
             )}
             <div className="actions">
               <button type="button" className="button button-small" onClick={() => decideAll(person, 'confirmed')}>
-                To jednak ta sama osoba
+                Potwierdź: to ślady podmiotu
               </button>
               <button type="button" className="button button-small" onClick={() => decideAll(person, 'rejected')}>
                 Rozdziel (usuń ślady ze sprawy)

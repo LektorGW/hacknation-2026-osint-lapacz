@@ -308,6 +308,20 @@ export const api = new Proxy({} as Backend, {
       backend.then((resolved) => (resolved[method] as (...input: unknown[]) => unknown)(...args)),
 });
 
+/**
+ * Stan usługi analizy (`GET /api/health`) — źródło znaczka trybu LIVE / SANDBOX.
+ * Tryb demo nie pyta usługi: jego dane są wbudowane w interfejs. Błąd daje `null` („tryb nieustalony”),
+ * nigdy dane zastępcze.
+ */
+export async function fetchHealth(): Promise<unknown | null> {
+  if (isDemo) return null;
+  try {
+    return (await send('/api/health')).body;
+  } catch {
+    return null;
+  }
+}
+
 export const reportHtmlUrl = (runId: string) => `/api/runs/${enc(runId)}/report.html`;
 export const reportJsonUrl = (runId: string) => `/api/runs/${enc(runId)}/report.json`;
 export const serviceRequestUrl = (runId: string, serviceId: string) =>
@@ -348,6 +362,7 @@ function complete(dossier: Dossier): FullDossier {
     unconfirmedAddresses: partial.unconfirmedAddresses ?? [],
     linkedIdentities: partial.linkedIdentities ?? [],
     mentions: partial.mentions ?? [],
+    graph: { nodes: partial.graph?.nodes ?? [], edges: partial.graph?.edges ?? [] },
   };
 }
 
