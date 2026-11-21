@@ -1,11 +1,10 @@
 // Trasy typowania podmiotów: uruchomienie przeglądu źródeł, odczyt rankingu
 // i założenie sprawy z wytypowanego podmiotu (bez ponownej analizy).
 
-import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { AnalysisRun } from '@olcys/core';
 import { HttpError, idParams } from './http-common.ts';
 import type { RouteContext } from './http-common.ts';
+import { createCaseFromAnalysis } from './lead-case.ts';
 import { DEFAULT_SWEEP_LIMIT, runSweep } from './sweep.ts';
 
 export function registerSweepRoutes(app: FastifyInstance, context: RouteContext): void {
@@ -74,28 +73,17 @@ export function registerSweepRoutes(app: FastifyInstance, context: RouteContext)
 
       const analysis = await storage.getLeadAnalysis(sweep.id, lead.id);
       if (!analysis) throw new HttpError(404, 'Brak zapisanej analizy tego wskazania.');
-      const created = await storage.createCase(`Typowanie: ${lead.handle}`, analysis.query, now().toISOString());
-      const run: AnalysisRun = {
-        id: randomUUID(),
-        caseId: created.id,
-        startedAt: analysis.startedAt,
-        finishedAt: analysis.finishedAt,
-        status: 'completed',
-        query: analysis.query,
-        connectors: analysis.connectors,
-        findings: analysis.findings,
-        log: [
-          ...analysis.log,
-          { time: now().toISOString(), message: `Analiza wykonana w przeglądzie źródeł ${sweep.id}; sprawa założona z wytypowanego podmiotu „${lead.handle}”.` },
-        ],
-      };
-      await storage.saveRun(run);
-      await storage.saveDocuments(run.id, analysis.documents);
-      await storage.saveRunIntel(run.id, analysis.intel);
+      const created = await createCaseFromAnalysis(
+        storage,
+        `Typowanie: ${lead.handle}`,
+        analysis,
+        `Analiza wykonana w przeglądzie źródeł ${sweep.id}; sprawa założona z wytypowanego podmiotu „${lead.handle}”.`,
+        now().toISOString(),
+      );
       lead.caseId = created.id;
       await storage.saveSweep(sweep);
       context.invalidateDossiers();
-      return reply.code(201).send(await context.requireCase(created.id));
+      return reply.code(201).send(created);
     },
   );
 }

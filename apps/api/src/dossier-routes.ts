@@ -12,6 +12,7 @@ import { PRIORITY_RULES } from './priority.ts';
 import { RELATION_STRENGTH } from './relations.ts';
 import { renderServiceRequestHtml } from './report-service.ts';
 import { SERVICE_STRENGTH_RULES } from './services.ts';
+import { SIGNAL_RULES } from './signals.ts';
 import { sumByYear } from './format.ts';
 import type { DecisionRecord } from './storage.ts';
 
@@ -38,6 +39,7 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     persons: PERSON_RULES,
     services: SERVICE_STRENGTH_RULES,
     relations: RELATION_STRENGTH,
+    signals: SIGNAL_RULES,
   }));
 
   app.get<{ Params: { id: string } }>('/api/runs/:id/dossier', { schema: { params: idParams } }, async (request) =>
@@ -167,6 +169,11 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
       linkedAddresses: dossiers.reduce((sum, dossier) => sum + dossier.totals.linkedAddresses, 0),
       cashOutPlnByYear: sumByYear(dossiers.map((dossier) => dossier.totals.cashOutPlnByYear)),
       topCases,
+      monitor: await context.monitor.status().then((status) => ({
+        enabled: status.enabled,
+        ...(status.lastRunAt ? { lastRunAt: status.lastRunAt } : {}),
+        newHits: status.totals.newHits,
+      })),
     };
   });
 

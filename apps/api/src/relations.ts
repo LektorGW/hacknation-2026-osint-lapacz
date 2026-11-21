@@ -153,10 +153,17 @@ export function buildRelatedPersons(input: RelationsInput): RelatedPersonView[] 
 
   // (c) Inne sprawy w bazie: wspólny adres, bezpośredni przelew albo wspólny kontrahent bez etykiety.
   const ownCounterparties = new Map(unlabeledCounterparties(input.linked, linkedKeys).map((item) => [addressKey(item), item]));
+  const identifierKeys = (run: AnalysisRun) => new Set(run.query.identifiers.map((item) => `${item.type}:${item.value.trim().toLowerCase()}`));
+  const ownIdentifiers = identifierKeys(input.run);
   for (const other of input.otherCases) {
     const theirs = linkedOf(other.run);
     if (theirs.length === 0) continue;
     const theirKeys = new Set(theirs.map(addressKey));
+    // Wcześniejsza sprawa tego samego podmiotu (wspólny identyfikator wejściowy albo ten sam
+    // zestaw adresów) nie jest „osobą powiązaną”.
+    const sameIdentifier = [...identifierKeys(other.run)].some((key) => ownIdentifiers.has(key));
+    const sameAddresses = linkedKeys.size > 0 && linkedKeys.size === theirKeys.size && [...linkedKeys].every((key) => theirKeys.has(key));
+    if (sameIdentifier || sameAddresses) continue;
     const draft = draftFor(`sprawa:${other.caseId}`, other.caseName, other.caseId);
 
     for (const key of linkedKeys) {

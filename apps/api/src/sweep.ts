@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_RULES, extractAddresses } from '@olcys/core';
-import type { ConnectorContext, DiscoveringConnector, Lead, SourceConnector, SourceDocument, Sweep } from '@olcys/core';
+import type { ConnectorContext, DiscoveringConnector, Lead, SourceConnector, SourceDocument, SubjectQuery, Sweep } from '@olcys/core';
 import { runAnalysis } from './analysis.ts';
 import type { AnalysisParams } from './analysis.ts';
 import { mapLimit } from './concurrency.ts';
@@ -20,13 +20,9 @@ const DISCOVER_DOCUMENTS = 100;
 /** Ile analiz wytypowanych podmiotów trwa jednocześnie (każda ma własny limit zapytań). */
 const LEAD_CONCURRENCY = 3;
 
-export interface SweepParams extends Pick<AnalysisParams, 'chainProviders' | 'resolveActivity' | 'rules' | 'timeoutMs'> {
-  /** Łączniki wybrane do przeglądu; analiza autorów korzysta z tych samych. */
-  connectors: SourceConnector[];
+export interface SweepParams extends AuthorAnalysisParams {
   /** Najwyżej tylu autorów zostanie przeanalizowanych. */
   limit?: number;
-  now?: () => Date;
-  matchService?: ExternalServiceMatcher;
 }
 
 export interface SweepResult {
@@ -35,7 +31,7 @@ export interface SweepResult {
   analyses: Map<string, LeadAnalysis>;
 }
 
-const canDiscover = (connector: SourceConnector): connector is DiscoveringConnector =>
+export const canDiscover = (connector: SourceConnector): connector is DiscoveringConnector =>
   typeof (connector as Partial<DiscoveringConnector>).discover === 'function';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -44,6 +40,67 @@ interface AuthorGroup {
   handle: string;
   documents: SourceDocument[];
   addresses: Set<string>;
+}
+
+/** Zależności pełnej analizy jednego autora — wspólne dla przeglądu źródeł i monitoringu. */
+export interface AuthorAnalysisParams extends Pick<AnalysisParams, 'chainProviders' | 'resolveActivity' | 'rules' | 'timeoutMs' | 'signal'> {
+  connectors: SourceConnector[];
+  now?: () => Date;
+  matchService?: ExternalServiceMatcher;
+}
+
+/**
+ * Pełna analiza autora publikacji i wskazanie (`Lead`) z priorytetem liczonym tak samo
+ * jak w teczce sprawy — priorytet wskazania i późniejszej sprawy jest spójny.
+ */
+export async function analyzeAuthor(
+  params: AuthorAnalysisParams,
+  handle: string,
+  query: SubjectQuery,
+): Promise<{ lead: Lead; analysis: LeadAnalysis }> {
+  const now = params.now ?? (() => new Date());
+  const connectors = params.connectors.map((connector) => connector.id);
+  const startedAt = now().toISOString();
+  const result = await runAnalysis({
+    query,
+    connectors: params.connectors,
+    chainProviders: params.chainProviders,
+    resolveActivity: params.resolveActivity,
+    rules: params.rules,
+    timeoutMs: params.timeoutMs,
+    signal: params.signal,
+    now,
+  });
+  const finishedAt = now().toISOString();
+  const id = randomUUID();
+  const dossier = buildDossier({
+    caseSummary: { id: '', name: handle, createdAt: startedAt, query, runs: [] },
+    run: { id, caseId: '', startedAt, finishedAt, status: 'completed', query, connectors, findings: result.findings, log: [] },
+    intel: result.intel,
+    decisions: [],
+    otherCases: [],
+    rules: params.rules ?? DEFAULT_RULES,
+    now: now(),
+    matchService: params.matchService,
+  });
+  const mainProfiles = dossier.profiles.filter((profile) => dossier.persons[0]?.profileIds.includes(profile.id));
+  return {
+    lead: {
+      id,
+      handle,
+      services: [...new Set(mainProfiles.map((profile) => profile.service))],
+      profileUrls: [...new Set(mainProfiles.map((profile) => profile.url))],
+      addresses: dossier.findings
+        .filter((finding) => !finding.confidence.excluded && finding.confidence.score > 0)
+        .map((finding) => ({ address: finding.address, network: finding.network, score: finding.confidence.score })),
+      topScore: dossier.totals.topScore,
+      cashOutPlnByYear: dossier.totals.cashOutPlnByYear,
+      cashOutPlnTotal: dossier.totals.cashOutPlnTotal,
+      priority: dossier.totals.priority,
+      priorityReasons: dossier.totals.priorityReasons,
+    },
+    analysis: { query, connectors, startedAt, finishedAt, findings: result.findings, log: result.log, documents: result.documents, intel: result.intel },
+  };
 }
 
 export async function runSweep(params: SweepParams): Promise<SweepResult> {
@@ -107,57 +164,10 @@ export async function runSweep(params: SweepParams): Promise<SweepResult> {
 
   // ---------- Pełna analiza każdego autora ----------
   const leads = await mapLimit(selected, LEAD_CONCURRENCY, async (group): Promise<Lead | undefined> => {
-    const query = { identifiers: [{ type: 'nick' as const, value: group.handle }] };
-    const startedAt = now().toISOString();
     try {
-      const result = await runAnalysis({
-        query,
-        connectors: params.connectors,
-        chainProviders: params.chainProviders,
-        resolveActivity: params.resolveActivity,
-        rules: params.rules,
-        timeoutMs: params.timeoutMs,
-        now,
-      });
-      const finishedAt = now().toISOString();
-      const id = randomUUID();
-      const analysis: LeadAnalysis = {
-        query,
-        connectors: sweep.connectors,
-        startedAt,
-        finishedAt,
-        findings: result.findings,
-        log: result.log,
-        documents: result.documents,
-        intel: result.intel,
-      };
-      // Ten sam rachunek co w teczce sprawy — priorytet wskazania i późniejszej sprawy jest spójny.
-      const dossier = buildDossier({
-        caseSummary: { id: '', name: group.handle, createdAt: startedAt, query, runs: [] },
-        run: { id, caseId: '', startedAt, finishedAt, status: 'completed', query, connectors: sweep.connectors, findings: result.findings, log: [] },
-        intel: result.intel,
-        decisions: [],
-        otherCases: [],
-        rules: params.rules ?? DEFAULT_RULES,
-        now: now(),
-        matchService: params.matchService,
-      });
-      analyses.set(id, analysis);
-      const mainProfiles = dossier.profiles.filter((profile) => dossier.persons[0]?.profileIds.includes(profile.id));
-      return {
-        id,
-        handle: group.handle,
-        services: [...new Set(mainProfiles.map((profile) => profile.service))],
-        profileUrls: [...new Set(mainProfiles.map((profile) => profile.url))],
-        addresses: dossier.findings
-          .filter((finding) => !finding.confidence.excluded && finding.confidence.score > 0)
-          .map((finding) => ({ address: finding.address, network: finding.network, score: finding.confidence.score })),
-        topScore: dossier.totals.topScore,
-        cashOutPlnByYear: dossier.totals.cashOutPlnByYear,
-        cashOutPlnTotal: dossier.totals.cashOutPlnTotal,
-        priority: dossier.totals.priority,
-        priorityReasons: dossier.totals.priorityReasons,
-      };
+      const { lead, analysis } = await analyzeAuthor(params, group.handle, { identifiers: [{ type: 'nick', value: group.handle }] });
+      analyses.set(lead.id, analysis);
+      return lead;
     } catch (error) {
       log(`Analiza autora „${group.handle}” nie powiodła się: ${errorText(error)}.`);
       return undefined;

@@ -32,6 +32,11 @@ import { buildTimeline } from './timeline.ts';
 
 /** Adres w teczce: wynik względem osoby głównej plus adnotacje o korektach. */
 export type DossierFinding = Finding & {
+  /**
+   * Łączne prawdopodobieństwo (0–100), że adres należy do OSOBY ZE SPRAWY: prawdopodobieństwo
+   * kandydata głównego × prawdopodobieństwo adresu u tego kandydata / 100.
+   */
+  subjectProbability: number;
   /** Dlaczego wynik różni się od zapisanego w analizie (inna osoba, decyzja analityka). */
   annotations?: string[];
   /** Ślady pominięte w ocenie — widoczne dla analityka, ale nieliczone. */
@@ -148,10 +153,12 @@ export function buildDossier(input: DossierInput): DossierView {
     } else if (decision) {
       annotations.push(`Adres potwierdzony przez analityka — ${decisionNote(decision)}. Decyzja odnotowana; wynik liczony bez zmian.`);
     }
+    const personAddress = main?.addresses.find((item) => item.key === addressKey(finding))?.probability ?? 0;
     return {
       ...finding,
       evidence: kept,
       confidence,
+      subjectProbability: confidence.excluded || kept.length === 0 ? 0 : Math.round(((main?.probability ?? 0) * personAddress) / 100),
       ...(annotations.length > 0 ? { annotations } : {}),
       ...(dropped.length > 0 ? { excludedEvidence: dropped } : {}),
       ...(decision ? { decision: decision.decision } : {}),

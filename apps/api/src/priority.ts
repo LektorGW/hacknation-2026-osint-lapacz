@@ -4,7 +4,9 @@
 //
 //   priorytet = 0,35·P + 0,30·S + 0,15·U + 0,10·A + 0,10·Z   (zaokrąglony do liczby całkowitej)
 //
-//   P — Wskaźnik Pewności najlepszego niewykluczonego adresu.
+//   P — pewność najlepszego niewykluczonego adresu: średnia Wskaźnika Pewności (adres–autor publikacji)
+//       i łącznego prawdopodobieństwa, że adres należy do osoby ze sprawy; gdy tego drugiego
+//       nie policzono (brak ustalenia osoby), sam Wskaźnik Pewności.
 //   S — skala szacowanych wypłat w PLN, logarytmicznie: 100·log10(1+PLN)/log10(1+1 000 000),
 //       najwyżej 100 (pełna skala od 1 mln zł). Logarytm, bo różnica między 10 a 100 tys. zł
 //       jest dla sprawy ważniejsza niż między 1,0 a 1,1 mln zł.
@@ -39,7 +41,7 @@ export const PRIORITY_RULES = {
   /** Minimalny Wskaźnik Pewności, od którego adres liczy się do sum wypłat. */
   linkedMinScore: 40,
   components: {
-    confidence: 'P — Wskaźnik Pewności najlepszego niewykluczonego adresu (0–100).',
+    confidence: 'P — pewność najlepszego niewykluczonego adresu: średnia Wskaźnika Pewności i łącznego prawdopodobieństwa, że adres należy do osoby ze sprawy (0–100).',
     scale: 'S — skala szacowanych wypłat w PLN: 100·log10(1+PLN)/log10(1+1 000 000), najwyżej 100.',
     services: 'U — powiązania z usługami wypłat: siła najmocniejszego powiązania + 10 za każdą kolejną usługę, najwyżej 100.',
     recency: 'A — aktualność ostatniej możliwej wypłaty: 100 do roku wstecz, liniowo do 0 po 5 latach; brak wypłat = 0.',
@@ -50,6 +52,8 @@ export const PRIORITY_RULES = {
 
 export interface PriorityInput {
   topScore: number;
+  /** Łączne prawdopodobieństwo, że najlepszy adres należy do osoby ze sprawy (jeśli ustalono osobę). */
+  subjectProbability?: number;
   cashOutPlnTotal: number;
   /** Czas ostatniej możliwej wypłaty (ISO 8601). */
   lastCashOutAt?: string;
@@ -71,7 +75,8 @@ const weight = (value: number) => value.toLocaleString('pl-PL', { minimumFractio
 export function computePriority(input: PriorityInput): PriorityResult {
   const { weights } = PRIORITY_RULES;
 
-  const confidence = Math.max(0, Math.min(100, input.topScore));
+  const indicator = Math.max(0, Math.min(100, input.topScore));
+  const confidence = input.subjectProbability === undefined ? indicator : (indicator + Math.max(0, Math.min(100, input.subjectProbability))) / 2;
 
   const pln = Math.max(0, input.cashOutPlnTotal);
   const scale = Math.min(100, (100 * Math.log10(1 + pln)) / Math.log10(1 + PRIORITY_RULES.scaleFullPln));
@@ -100,7 +105,9 @@ export function computePriority(input: PriorityInput): PriorityResult {
   );
 
   const reasons = [
-    `Pewność najlepszego adresu: ${confidence}% × ${weight(weights.confidence)} = ${points(weights.confidence * confidence)} pkt.`,
+    input.subjectProbability === undefined
+      ? `Pewność najlepszego adresu: ${confidence}% × ${weight(weights.confidence)} = ${points(weights.confidence * confidence)} pkt.`
+      : `Pewność najlepszego adresu: Wskaźnik Pewności ${indicator}% i prawdopodobieństwo, że adres należy do osoby ze sprawy, ${input.subjectProbability}% → średnia ${points(confidence)} × ${weight(weights.confidence)} = ${points(weights.confidence * confidence)} pkt.`,
     pln > 0
       ? `Skala szacowanych wypłat: ${roundPln(pln)} → ${Math.round(scale)}/100 w skali logarytmicznej (pełna skala od 1 mln zł) × ${weight(weights.scale)} = ${points(weights.scale * scale)} pkt.`
       : 'Skala szacowanych wypłat: nie stwierdzono wypłat z adresów powiązanych — 0 pkt.',
@@ -135,7 +142,7 @@ export interface FindingsSummary {
  * adresów podanych przez analityka jako identyfikatory.
  */
 export function summarizeFindings(
-  findings: Finding[],
+  findings: (Finding & { subjectProbability?: number })[],
   analystAddresses: Set<string>,
   now: Date,
   serviceLinks: ServiceLink[] = [],
@@ -155,6 +162,7 @@ export function summarizeFindings(
   const topScore = best?.confidence.score ?? 0;
   const { priority, reasons } = computePriority({
     topScore,
+    subjectProbability: best?.subjectProbability,
     cashOutPlnTotal,
     lastCashOutAt,
     independentSources: new Set((best?.evidence ?? []).map((item) => item.service.toLowerCase())).size,

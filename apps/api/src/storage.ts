@@ -4,7 +4,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
-import type { AnalysisRun, AnalystDecision, SubjectQuery, Sweep } from '@olcys/core';
+import type { AnalysisRun, AnalystDecision, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
 import type { CapturedDocument } from './analysis.ts';
 import type { RunIntel } from './intel.ts';
 
@@ -77,6 +77,19 @@ export interface Storage {
   listSweeps(): Promise<Sweep[]>;
   saveLeadAnalysis(sweepId: string, leadId: string, analysis: LeadAnalysis): Promise<void>;
   getLeadAnalysis(sweepId: string, leadId: string): Promise<LeadAnalysis | null>;
+  /** Ustawienia i statystyki monitoringu (jeden dokument JSON); `null` przed pierwszym zapisem. */
+  getMonitorState<T>(): Promise<T | null>;
+  saveMonitorState(state: unknown): Promise<void>;
+  /** Z podanych adresów zwraca te, których monitoring jeszcze nie widział. */
+  filterUnseenUrls(urls: string[]): Promise<string[]>;
+  markUrlsSeen(urls: string[], seenAt: string): Promise<void>;
+  /** Zapisuje trafienie; `dedupeKey` (autor w serwisie) gwarantuje jedno trafienie na autora. */
+  saveHit(hit: WatchHit, dedupeKey: string): Promise<void>;
+  getHit(id: string): Promise<WatchHit | null>;
+  getHitByKey(dedupeKey: string): Promise<WatchHit | null>;
+  listHits(): Promise<WatchHit[]>;
+  saveHitAnalysis(id: string, analysis: LeadAnalysis): Promise<void>;
+  getHitAnalysis(id: string): Promise<LeadAnalysis | null>;
   close(): Promise<void>;
 }
 
@@ -332,6 +345,66 @@ export function createStorage(driver: SqlDriver): Storage {
     async getLeadAnalysis(sweepId, leadId) {
       const [row] = await driver.query('SELECT analysis FROM sweep_leads WHERE sweep_id = $1 AND lead_id = $2', [sweepId, leadId]);
       return row ? (row.analysis as LeadAnalysis) : null;
+    },
+
+    async getMonitorState<T>() {
+      const [row] = await driver.query("SELECT data FROM monitor_config WHERE id = 'monitor'");
+      return row ? (row.data as T) : null;
+    },
+
+    async saveMonitorState(state) {
+      await driver.query(
+        `INSERT INTO monitor_config (id, data) VALUES ('monitor', $1::jsonb)
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+        [JSON.stringify(state)],
+      );
+    },
+
+    async filterUnseenUrls(urls) {
+      const unseen: string[] = [];
+      for (const url of new Set(urls)) {
+        const rows = await driver.query('SELECT 1 FROM monitor_seen WHERE url = $1', [url]);
+        if (rows.length === 0) unseen.push(url);
+      }
+      return unseen;
+    },
+
+    async markUrlsSeen(urls, seenAt) {
+      for (const url of new Set(urls)) {
+        await driver.query('INSERT INTO monitor_seen (url, seen_at) VALUES ($1, $2) ON CONFLICT DO NOTHING', [url, seenAt]);
+      }
+    },
+
+    async saveHit(hit, dedupeKey) {
+      await driver.query(
+        `INSERT INTO monitor_hits (id, dedupe_key, detected_at, data) VALUES ($1, $2, $3, $4::jsonb)
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+        [hit.id, dedupeKey, hit.detectedAt, JSON.stringify(hit)],
+      );
+    },
+
+    async getHit(id) {
+      const [row] = await driver.query('SELECT data FROM monitor_hits WHERE id = $1', [id]);
+      return row ? (row.data as WatchHit) : null;
+    },
+
+    async getHitByKey(dedupeKey) {
+      const [row] = await driver.query('SELECT data FROM monitor_hits WHERE dedupe_key = $1', [dedupeKey]);
+      return row ? (row.data as WatchHit) : null;
+    },
+
+    async listHits() {
+      const rows = await driver.query('SELECT data FROM monitor_hits ORDER BY detected_at DESC, id');
+      return rows.map((row) => row.data as WatchHit);
+    },
+
+    async saveHitAnalysis(id, analysis) {
+      await driver.query('UPDATE monitor_hits SET analysis = $2::jsonb WHERE id = $1', [id, JSON.stringify(analysis)]);
+    },
+
+    async getHitAnalysis(id) {
+      const [row] = await driver.query('SELECT analysis FROM monitor_hits WHERE id = $1', [id]);
+      return row?.analysis ? (row.analysis as LeadAnalysis) : null;
     },
 
     close: () => driver.close(),

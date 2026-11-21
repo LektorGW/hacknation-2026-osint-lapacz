@@ -7,6 +7,7 @@ import type { AnalysisRun, ChainProvider, Identifier, ScoreRules, SourceConnecto
 import type { ActivityResolver } from './analysis.ts';
 import type { DossierView } from './dossier.ts';
 import type { ConnectorInfo } from './report.ts';
+import type { Monitor, MonitorTimers } from './monitor.ts';
 import type { ExternalServiceMatcher } from './services.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 
@@ -19,6 +20,10 @@ export interface AppDeps {
   rules?: ScoreRules;
   /** Rozpoznawanie usług po etykiecie adresu (np. `matchService` z `@olcys/chain`); bez niego działa lista lokalna. */
   matchService?: ExternalServiceMatcher;
+  /** Źródła objęte cyklicznym monitoringiem; domyślnie wszystkie łączniki z metodą `discover`. */
+  monitorConnectors?: SourceConnector[];
+  /** Podmiana odliczania czasu harmonogramu monitoringu (testy). */
+  monitorTimers?: MonitorTimers;
   now?: () => Date;
   /** Włącza log serwera (domyślnie wyłączony, żeby nie zaśmiecać testów). */
   logger?: boolean;
@@ -65,6 +70,7 @@ export interface RouteContext {
   loadDossier(run: AnalysisRun): Promise<DossierView>;
   /** Unieważnia teczki po zmianie, która może wpłynąć na wynik (decyzja, nowa analiza). */
   invalidateDossiers(): void;
+  monitor: Monitor;
 }
 
 /** Błąd z kodem HTTP i komunikatem dla analityka. */

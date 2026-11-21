@@ -70,3 +70,24 @@ CREATE TABLE IF NOT EXISTS sweep_leads (
   analysis  JSONB NOT NULL,
   PRIMARY KEY (sweep_id, lead_id)
 );
+
+-- Monitoring źródeł: ustawienia i statystyki źródeł w jednym wierszu (trwałe między uruchomieniami).
+CREATE TABLE IF NOT EXISTS monitor_config (
+  id    TEXT PRIMARY KEY,
+  data  JSONB NOT NULL
+);
+
+-- Publikacje już przejrzane — kolejny przebieg ich nie ocenia ponownie.
+CREATE TABLE IF NOT EXISTS monitor_seen (
+  url      TEXT PRIMARY KEY,
+  seen_at  TIMESTAMPTZ NOT NULL
+);
+
+-- Trafienia monitoringu: jedno na autora w serwisie (dedupe_key), z opcjonalną analizą autora.
+CREATE TABLE IF NOT EXISTS monitor_hits (
+  id           TEXT PRIMARY KEY,
+  dedupe_key   TEXT NOT NULL UNIQUE,
+  detected_at  TIMESTAMPTZ NOT NULL,
+  data         JSONB NOT NULL,
+  analysis     JSONB
+);

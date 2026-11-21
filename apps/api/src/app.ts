@@ -14,6 +14,8 @@ import type { DossierView } from './dossier.ts';
 import { registerDossierRoutes } from './dossier-routes.ts';
 import { HttpError, IDENTIFIER_TYPES, TOOL_VERSION, idParams, identifierItems } from './http-common.ts';
 import type { AppDeps, RouteContext } from './http-common.ts';
+import { createMonitor } from './monitor.ts';
+import { registerMonitorRoutes } from './monitor-routes.ts';
 import { looksLikePersonName } from './persons.ts';
 import { renderReportHtml } from './report.ts';
 import type { ConnectorInfo } from './report.ts';
@@ -48,7 +50,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const now = deps.now ?? (() => new Date());
   const app = Fastify({ logger: deps.logger ?? false });
 
-  await app.register(cors, { origin: true, methods: ['GET', 'POST', 'DELETE'] });
+  await app.register(cors, { origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE'] });
 
   app.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown }, _request, reply) => {
     if (error.validation) {
@@ -397,6 +399,24 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     },
   );
 
+  // ---------- Cykliczny monitoring źródeł ----------
+
+  const monitor = createMonitor({
+    storage,
+    connectors,
+    monitorConnectors: deps.monitorConnectors,
+    chainProviders,
+    resolveActivity: deps.resolveActivity,
+    rules,
+    matchService: deps.matchService,
+    now,
+    timers: deps.monitorTimers,
+    log: (message, error) => (error ? app.log.error({ err: error }, message) : app.log.info(message)),
+  });
+  // Przed zamknięciem bazy: zatrzymanie harmonogramu i dokończenie trwającego przebiegu.
+  app.addHook('preClose', () => monitor.stop());
+  await monitor.start();
+
   const context: RouteContext = {
     storage,
     connectors,
@@ -411,9 +431,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     cleanIdentifiers,
     loadDossier,
     invalidateDossiers,
+    monitor,
   };
   registerDossierRoutes(app, context);
   registerSweepRoutes(app, context);
+  registerMonitorRoutes(app, context);
 
   return app;
 }

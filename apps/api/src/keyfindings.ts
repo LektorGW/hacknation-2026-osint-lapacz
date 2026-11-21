@@ -84,12 +84,14 @@ function serviceSentences(links: ServiceLink[]): KeyFinding[] {
   return result;
 }
 
-function addressSentence(best: Finding | undefined): KeyFinding[] {
+function addressSentence(best: (Finding & { subjectProbability?: number }) | undefined): KeyFinding[] {
   if (!best || best.evidence.length === 0) return [];
   const places = [...new Set(best.evidence.map((item) => `${PLACE[item.category]} ${item.service}`))];
   return [
     {
-      text: `Adres ${shortAddress(best.address)} opublikowano ${list(places.slice(0, 3))} (Wskaźnik Pewności ${best.confidence.score}% — ${best.confidence.tier}).`,
+      text:
+        `Adres ${shortAddress(best.address)} opublikowano ${list(places.slice(0, 3))} (Wskaźnik Pewności ${best.confidence.score}% — ${best.confidence.tier}` +
+        `${best.subjectProbability === undefined ? '' : `; łączne prawdopodobieństwo, że adres należy do osoby ze sprawy: ${best.subjectProbability}%`}).`,
       layer: 'calculation',
     },
   ];

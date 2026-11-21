@@ -76,6 +76,16 @@ test('osoby powiązane: wspólny adres, kontrahent z profilem, wspólny pośredn
   assert.equal(otherCase.strength, 40);
   // Ranking malejąco po sile powiązania.
   assert.deepEqual(dossier.relatedPersons.map((person) => person.strength), [70, 60, 40]);
+
+  // Wcześniejsza sprawa tego samego podmiotu (ten sam identyfikator albo te same adresy) nie jest osobą powiązaną.
+  const sameIdentifier = { caseId: 'sprawa-3', caseName: 'Jan K. (stara)', run: { ...otherRun, caseId: 'sprawa-3', query } };
+  const sameAddresses = {
+    caseId: 'sprawa-4',
+    caseName: 'Jan K. po adresie',
+    run: { ...run('run-adres', [{ ...finding(BTC_A, 85, [evidence('https://gitpub.example/krypto_janek')]), chain: result.findings[0]!.chain }]), caseId: 'sprawa-4', query: { identifiers: [{ type: 'full_name' as const, value: 'Jan Kowalski' }] } },
+  };
+  const repeated = dossierOf(result, query, { otherCases: [sameIdentifier, sameAddresses] });
+  assert.ok(repeated.relatedPersons.every((person) => !person.caseId));
 });
 
 test('graf: wszystkie rodzaje węzłów, krawędzie tylko między istniejącymi węzłami', async () => {
@@ -157,7 +167,16 @@ test('priorytet: jawne składniki; większe wypłaty nigdy nie obniżają priory
   const large = dossierOf((await scenario(900_000)).result, query);
   assert.ok(large.totals.priority > small.totals.priority);
   assert.equal(large.totals.priorityReasons.length, 6);
-  assert.match(large.totals.priorityReasons[0]!, /^Pewność najlepszego adresu: 90% × 0,35 = 31,5 pkt\./);
+  // Pewność łączy Wskaźnik Pewności (adres–autor) z prawdopodobieństwem, że adres należy do osoby ze sprawy.
+  const best = large.findings[0]!;
+  assert.equal(best.subjectProbability, Math.round((large.persons[0]!.probability * large.persons[0]!.addresses[0]!.probability) / 100));
+  assert.ok(best.subjectProbability < best.confidence.score);
+  assert.ok(
+    large.totals.priorityReasons[0]!.startsWith(
+      `Pewność najlepszego adresu: Wskaźnik Pewności 90% i prawdopodobieństwo, że adres należy do osoby ze sprawy, ${best.subjectProbability}% → średnia`,
+    ),
+  );
+  assert.ok(large.keyFindings.some((item) => item.text.includes(`łączne prawdopodobieństwo, że adres należy do osoby ze sprawy: ${best.subjectProbability}%`)));
   assert.deepEqual(large.totals.cashOutPlnByYear, { '2025': 900_000 });
 
   const base = { topScore: 80, independentSources: 2, serviceStrengths: [70], lastCashOutAt: '2025-03-14T10:22:00.000Z', now: FIXED_NOW() };
