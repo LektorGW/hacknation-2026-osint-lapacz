@@ -63,23 +63,28 @@ export interface GetOptions {
   publicOnly?: boolean;
   /** Ręczne śledzenie przekierowań z limitem; bez tej opcji przekierowania obsługuje `fetch`. */
   maxRedirects?: number;
+  /** Dłuższy niż domyślny odstęp między żądaniami do tego hosta (monitoring forów: 1 s, Reddit: 2 s). */
+  minIntervalMs?: number;
 }
 
 // ---------- Ogranicznik tempa ----------
 
 export interface RateLimiter {
-  wait(host: string, signal?: AbortSignal): Promise<void>;
+  /** `interval` wydłuża odstęp dla danego hosta (np. 2 s dla Reddita); krótszy niż domyślny jest ignorowany. */
+  wait(host: string, signal?: AbortSignal, interval?: number): Promise<void>;
 }
 
 /** Kolejne żądania do tego samego hosta dzieli co najmniej `minIntervalMs`. */
 export function createRateLimiter(minIntervalMs: number): RateLimiter {
   const nextSlot = new Map<string, number>();
   return {
-    async wait(host, signal) {
+    async wait(host, signal, interval) {
+      // Ogranicznik wyłączony (testy) pozostaje wyłączony także dla wydłużonych odstępów.
       if (minIntervalMs <= 0) return;
+      const gap = Math.max(minIntervalMs, interval ?? 0);
       const now = Date.now();
       const at = Math.max(now, nextSlot.get(host) ?? 0);
-      nextSlot.set(host, at + minIntervalMs);
+      nextSlot.set(host, at + gap);
       if (at > now) await sleep(at - now, undefined, { signal });
     },
   };
@@ -225,6 +230,8 @@ export interface SessionOptions {
   limit?: number;
   /** Treść wpisu przy 403/429 (np. wskazówka o tokenie). */
   refusalMessage?: (status: number) => string;
+  /** Wspólny dla wielu sesji zbiór hostów, które odmówiły (monitoring: jedna odmowa kończy kolejkę hosta w przebiegu). */
+  refusedHosts?: Set<string>;
 }
 
 export interface SessionGetOptions extends GetOptions {
@@ -278,7 +285,7 @@ export function createHttpClient(config: HttpClientConfig = {}): HttpClient {
         const problem = await publicHostProblem(target.hostname, config.lookup);
         if (problem) return rejected(current, 0, problem);
       }
-      await limiter.wait(target.host, signal);
+      await limiter.wait(target.host, signal, options.minIntervalMs);
       const response = await fetcher(current, {
         headers: { 'User-Agent': USER_AGENT, ...options.headers },
         signal,
@@ -312,7 +319,8 @@ export function createHttpClient(config: HttpClientConfig = {}): HttpClient {
 
   function session(context: ConnectorContext, options: SessionOptions): HttpSession {
     const limit = options.limit ?? DEFAULT_REQUEST_LIMIT;
-    const refusedHosts = new Set<string>();
+    const refusedHosts = options.refusedHosts ?? new Set<string>();
+    let refusedHere = false;
     let used = 0;
     let lastStatus = 0;
     let limitLogged = false;
@@ -322,7 +330,7 @@ export function createHttpClient(config: HttpClientConfig = {}): HttpClient {
         return lastStatus;
       },
       get refused() {
-        return refusedHosts.size > 0;
+        return refusedHere;
       },
       get used() {
         return used;
@@ -337,7 +345,10 @@ export function createHttpClient(config: HttpClientConfig = {}): HttpClient {
           return null;
         }
         // Po odmowie nie ponawiamy i nie próbujemy jej obchodzić.
-        if (refusedHosts.has(host)) return null;
+        if (refusedHosts.has(host)) {
+          refusedHere = true;
+          return null;
+        }
         if (used >= limit) {
           if (!limitLogged) context.log(`${options.label}: wyczerpano limit ${limit} żądań na identyfikator.`);
           limitLogged = true;
@@ -361,6 +372,7 @@ export function createHttpClient(config: HttpClientConfig = {}): HttpClient {
         }
         if (isRefusal(result.status)) {
           refusedHosts.add(host);
+          refusedHere = true;
           context.log(
             options.refusalMessage?.(result.status) ??
               `${options.label}: ${host} — odmowa lub limit żądań (kod ${result.status}); pomijam to źródło.`,

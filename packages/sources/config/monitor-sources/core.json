@@ -1,0 +1,277 @@
+[
+  {
+    "id": "btt-polski",
+    "engine": "html-list",
+    "label": "Bitcointalk — Polski",
+    "url": "https://bitcointalk.org/index.php?board=142.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "pl",
+    "region": "PL",
+    "category": "forum_post",
+    "enabled": true,
+    "note": "Kanał RSS forum jest wyłączony przez administrację (HTTP 400), dlatego lista wątków działu czytana z HTML; robots.txt nie zabrania."
+  },
+  {
+    "id": "btt-polski-ogloszenia",
+    "engine": "html-list",
+    "label": "Bitcointalk — Polski: Tablica ogłoszeń",
+    "url": "https://bitcointalk.org/index.php?board=163.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "pl",
+    "region": "PL",
+    "category": "sale_offer",
+    "enabled": true
+  },
+  {
+    "id": "btt-bitcoin-discussion",
+    "engine": "html-list",
+    "label": "Bitcointalk — Bitcoin Discussion",
+    "url": "https://bitcointalk.org/index.php?board=1.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "btt-marketplace",
+    "engine": "html-list",
+    "label": "Bitcointalk — Marketplace",
+    "url": "https://bitcointalk.org/index.php?board=5.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "sale_offer",
+    "enabled": true
+  },
+  {
+    "id": "btt-currency-exchange",
+    "engine": "html-list",
+    "label": "Bitcointalk — Currency exchange",
+    "url": "https://bitcointalk.org/index.php?board=53.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "sale_offer",
+    "enabled": true
+  },
+  {
+    "id": "btt-goods",
+    "engine": "html-list",
+    "label": "Bitcointalk — Goods",
+    "url": "https://bitcointalk.org/index.php?board=51.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "sale_offer",
+    "enabled": true
+  },
+  {
+    "id": "btt-services",
+    "engine": "html-list",
+    "label": "Bitcointalk — Services",
+    "url": "https://bitcointalk.org/index.php?board=52.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "sale_offer",
+    "enabled": true
+  },
+  {
+    "id": "btt-trading-discussion",
+    "engine": "html-list",
+    "label": "Bitcointalk — Trading Discussion",
+    "url": "https://bitcointalk.org/index.php?board=8.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "btt-scam-accusations",
+    "engine": "html-list",
+    "label": "Bitcointalk — Scam Accusations",
+    "url": "https://bitcointalk.org/index.php?board=83.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "btt-altcoin-discussion",
+    "engine": "html-list",
+    "label": "Bitcointalk — Altcoin Discussion",
+    "url": "https://bitcointalk.org/index.php?board=67.0",
+    "selectors": {
+      "item": "tr",
+      "link": "span a[href*=topic=]",
+      "author": "td.windowbg2 a[href*=action=profile][title]"
+    },
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "btt-rss-polski",
+    "engine": "rss",
+    "label": "Bitcointalk — Polski (kanał RSS)",
+    "url": "https://bitcointalk.org/index.php?type=rss;action=.xml;board=142",
+    "language": "pl",
+    "region": "PL",
+    "enabled": false,
+    "note": "Wyłączone: forum odpowiada HTTP 400 „action=.xml is disabled due to slowness\". Zastąpione wpisem btt-polski (html-list)."
+  },
+  {
+    "id": "se-bitcoin",
+    "engine": "stackexchange",
+    "label": "Bitcoin Stack Exchange",
+    "site": "bitcoin",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "se-ethereum",
+    "engine": "stackexchange",
+    "label": "Ethereum Stack Exchange",
+    "site": "ethereum",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "hn-bitcoin-address",
+    "engine": "hn",
+    "label": "Hacker News — „bitcoin address\"",
+    "query": "bitcoin address",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "hn-donate-btc",
+    "engine": "hn",
+    "label": "Hacker News — „donate BTC\"",
+    "query": "donate BTC",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "dsc-ethereum-magicians",
+    "engine": "discourse",
+    "label": "Ethereum Magicians (forum)",
+    "url": "https://ethereum-magicians.org",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "dsc-ethresearch",
+    "engine": "discourse",
+    "label": "Ethereum Research (ethresear.ch)",
+    "url": "https://ethresear.ch",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "dsc-delvingbitcoin",
+    "engine": "discourse",
+    "label": "Delving Bitcoin (forum)",
+    "url": "https://delvingbitcoin.org",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "masto-social-bitcoin",
+    "engine": "mastodon-tag",
+    "label": "Mastodon mastodon.social — #bitcoin",
+    "instance": "mastodon.social",
+    "tag": "bitcoin",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "masto-101010-kryptowaluty",
+    "engine": "mastodon-tag",
+    "label": "Mastodon 101010.pl — #kryptowaluty",
+    "instance": "101010.pl",
+    "tag": "kryptowaluty",
+    "language": "pl",
+    "region": "PL",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "lemmy-world-bitcoin",
+    "engine": "lemmy",
+    "label": "Lemmy lemmy.world — bitcoin",
+    "instance": "lemmy.world",
+    "community": "bitcoin",
+    "language": "en",
+    "region": "global",
+    "category": "forum_post",
+    "enabled": true
+  },
+  {
+    "id": "gh-donate-btc-pl",
+    "engine": "github-search",
+    "label": "GitHub — zgłoszenia: „donate BTC\" + polskie słowa",
+    "query": "\"BTC\" (wesprzyj OR darowizna OR \"postaw kawę\") in:body",
+    "language": "pl",
+    "region": "PL",
+    "category": "forum_post",
+    "enabled": false,
+    "note": "Wyłączone: wyszukiwarka GitHuba wymaga tokenu (GITHUB_TOKEN). Po ustawieniu tokenu zmień enabled na true."
+  }
+]

@@ -74,6 +74,51 @@ Uwagi:
 - Telegram: wiadomości z adresem kryptowalutowym z publicznych kanałów wymienionych w `config/telegram-channels.json` (`{ "channels": ["nazwa_kanalu"] }`, domyślnie pusta lista; najwyżej 10 kanałów, jedno żądanie na kanał).
 - Tor: strony z `config/onion-sources.json`, na których występują adresy; autorem jest host witryny.
 
+## Monitoring: rejestr źródeł i silniki
+
+Cykliczny monitoring korzysta z łączników tworzonych z **rejestru źródeł** — wszystkich plików `config/monitor-sources/*.json` (każdy to tablica wpisów; własne ręczne wpisy są w `core.json`, który ma pierwszeństwo przy powtórzeniach). Adapter obsługuje silnik, nie pojedynczą stronę: nowe źródło to jeden wpis, bez zmian w kodzie. Wpisy błędne oraz powtórzone po `id` lub po znormalizowanym adresie są pomijane z ostrzeżeniem.
+
+```json
+{ "id": "krotki-unikalny", "engine": "discourse", "label": "nazwa dla analityka", "url": "https://forum.example",
+  "language": "pl", "region": "PL", "category": "forum_post", "enabled": true, "note": "…", "verifiedAt": "2026-11-21", "verifiedItems": 20 }
+```
+
+| Silnik | Pola wpisu | Żądanie w `discover` | `search` (adres / nick) |
+|---|---|---|---|
+| `rss` | `url` | GET `url` (RSS 2.0 lub Atom) | — |
+| `discourse` | `url` (adres bazowy forum) | `{url}/posts.json`; gdy niedostępne — `{url}/latest.json` | `/search.json?q=`, `/u/<nick>.json` |
+| `reddit` | `sub` | `https://www.reddit.com/r/{sub}/new/.rss`; zapas: `old.reddit.com` | `/r/{sub}/search.json?restrict_sr=1` |
+| `mastodon-tag` | `instance`, `tag` | `https://{instance}/api/v1/timelines/tag/{tag}?limit=20` | — |
+| `telegram` | `channel` | `https://t.me/s/{channel}` | — |
+| `stackexchange` | `site` | `api.stackexchange.com/2.3/questions?order=desc&sort=creation&site={site}&filter=withbody&pagesize=20` | `/search/advanced`, `/users?inname=` |
+| `hn` | `query` | `hn.algolia.com/api/v1/search_by_date?query={query}&tags=comment&hitsPerPage=20` | fraza w cudzysłowie, `tags=author_<nick>` |
+| `lemmy` | `instance`, `community` | `https://{instance}/api/v3/post/list?community_name={community}&sort=New&limit=20` | — |
+| `html-list` | `url`, `selectors` (`item`, `link`, opcjonalnie `author`, `date`) | `robots.txt` (raz na 6 godzin na host), potem strona listy wątków | — |
+| `github-search` | `query` | `api.github.com/search/issues` — tylko z tokenem | — |
+
+Selektory `html-list` to mały podzbiór CSS: `tag`, `.klasa`, `tag.klasa`, `[atr]`, `[atr=…]`, `[atr*=…]`, `[atr^=…]`, `[atr$=…]` i spacja (potomek). Silnik czyta wyłącznie stronę listy (tytuł, autor, data) — treści wątków nie pobiera.
+
+Łączniki z rejestru mają id `mon-<id>`, `enabledByDefault: false` (nie spowalniają zwykłej analizy osoby) i metodę `discover`. Dokument z `discover` zawiera `author` (nick autora posta), `profile` (to, co ujawnia źródło: nazwa, awatar, adres profilu, lokalizacja), `publishedAt`, `title`, `text` bez cytatów innych osób (`<blockquote>`, bloki „quote”, wiersze `>` w Markdown), bezpośredni `url` posta i `discoveredIdentifiers`. Zwracane są wszystkie świeże posty do limitu; tani filtr wstępny włącza `onlyWithAddresses` we wpisie albo `monitorOnlyWithAddresses` w konfiguracji. Pamięć „widzianych” adresów należy do API.
+
+```ts
+import { createConnectors, listMonitorConnectors, loadMonitorSources, runMonitorPass, summarizeMonitorSources } from '@olcys/sources';
+
+const connectors = createConnectors({ enableLive: true });          // rejestr wczytywany z config/monitor-sources/
+const monitors = listMonitorConnectors(connectors);                 // tylko łączniki mon-*
+const pass = await runMonitorPass(connectors, { limit: 20, concurrency: 8, budgetMs: 10 * 60_000 });
+const numbers = summarizeMonitorSources(loadMonitorSources().sources); // { entries, enabledEntries, hosts, communities, byEngine, byLanguage, byRegion }
+```
+
+`runMonitorPass` to oszczędny przebieg po wszystkich źródłach: jedno żądanie na źródło (drugie tylko jako zapas dla Discourse i Reddita), kolejka na host, najwyżej `concurrency` hostów naraz, odstęp między żądaniami do hosta co najmniej 1 s (Reddit i t.me: 2 s), łączny budżet czasu. Odmowa hosta (403/429) kończy resztę jego kolejki w danym przebiegu; błędy 5xx i przekroczenia czasu dają pusty wynik z wpisem w wynikach — nigdy wyjątek.
+
+`summarizeMonitorSources` podaje trzy liczby: odrębne hosty i odrębne społeczności wśród wpisów włączonych oraz liczbę wpisów. Host to host strony (Reddit i Telegram — po jednym; Mastodon i Lemmy — instancja); społeczność to host forum, subreddit, kanał Telegram albo społeczność Lemmy na instancji.
+
+### Monitoring: sprawdzone źródła
+
+Aktualny stan rejestru i wynik ostatniej próby na żywo zapisuje `node scripts/monitor-check.ts` w pliku [`config/monitor-sources/STATUS.md`](config/monitor-sources/STATUS.md).
+
+<!-- MONITOR-STATUS -->
+
 ## Zasady wobec źródeł
 
 Wspólny klient HTTP (`src/http.ts`): nagłówek `User-Agent: OLCyS-research/0.1 (hackathon KAS; kontakt przez organizatora)`, limit czasu 10 s (Tor: 30 s), limit odpowiedzi 1 MB, najwyżej 4 żądania na identyfikator na łącznik, co najmniej 400 ms między żądaniami do tego samego hosta (łączniki live). Odpowiedzi 403, 404, 429 i przekroczenie czasu kończą się pustym wynikiem z wpisem w dzienniku analizy — bez ponawiania, obchodzenia i wyjątków. Łączniki nie logują się i wysyłają do źródła wyłącznie identyfikator potrzebny do zapytania (Gravatar: sam skrót e-maila).

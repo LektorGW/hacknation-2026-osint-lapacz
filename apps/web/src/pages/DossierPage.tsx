@@ -15,6 +15,7 @@ import { useToast } from '../components/Toast.tsx';
 import { fmtDateTime } from '../format.ts';
 import { GraphView } from '../graph/GraphView.tsx';
 import { UniverseView } from '../graph/UniverseView.tsx';
+import { LinkMap } from '../components/LinkMap.tsx';
 import { IDENTIFIER_LABEL } from '../labels.ts';
 import { DOSSIER_TABS, href, navigate } from '../router.ts';
 import type { DossierTab } from '../router.ts';
@@ -81,6 +82,36 @@ function Identifiers({ dossier }: { dossier: Dossier }) {
   );
 }
 
+/** Mapa powiązań w układzie kolumnowym; widok hubów usług dostępny pod przełącznikiem. */
+function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Dossier }) {
+  const [hubs, setHubs] = useState(false);
+  const query = {
+    identifiers: dossier.subject.identifiers.filter((item) => item.origin === 'analyst').map((item) => item.identifier),
+  };
+  return (
+    <section className="card">
+      <div className="section-head">
+        <h2>Mapa powiązań</h2>
+        <button type="button" className="button" aria-pressed={hubs} onClick={() => setHubs(!hubs)}>
+          {hubs ? 'Pokaż mapę kolumnową' : 'Pokaż widok usług'}
+        </button>
+      </div>
+      {hubs ? (
+        <UniverseView />
+      ) : (
+        <LinkMap
+          subjectName={dossier.subject.name}
+          query={query.identifiers.length > 0 ? query : summary.query}
+          findings={dossier.findings}
+          onSelectAddress={() => {
+            location.hash = `#/sprawa/${summary.id}/adresy`;
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
 function TabContent({ tab, summary, dossier, onChanged }: { tab: DossierTab; summary: CaseSummary; dossier: Dossier; onChanged: () => void }) {
   switch (tab) {
     case 'graf':
@@ -102,7 +133,7 @@ function TabContent({ tab, summary, dossier, onChanged }: { tab: DossierTab; sum
     default:
       return (
         <>
-          <UniverseView />
+          <LinksOverview summary={summary} dossier={dossier} />
           <h2>Karty usług</h2>
           <ServiceList />
         </>

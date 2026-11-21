@@ -1,0 +1,43 @@
+/* Mapa powiązań w układzie kolumnowym: podmiot → identyfikatory → źródła → adresy → kontrahenci. */
+.map-scroll { overflow-x: auto; }
+.link-map {
+  display: block;
+  width: 100%;
+  min-width: 940px;
+  height: auto;
+  font-family: inherit;
+}
+.map-column-label {
+  font-size: 12px;
+  font-weight: 700;
+  fill: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.map-edge { stroke: var(--border-strong); }
+.map-edge-excluded { stroke: var(--level-excluded); stroke-dasharray: 5 5; }
+.map-edge-scored.level-high { stroke: var(--level-high); }
+.map-edge-scored.level-likely { stroke: var(--level-likely); }
+.map-edge-scored.level-medium { stroke: var(--level-medium); }
+.map-edge-scored.level-low { stroke: var(--level-low); }
+
+.map-node rect { fill: var(--surface-alt); stroke: var(--border-strong); stroke-width: 1.2; }
+.map-node-title { font-size: 13px; font-weight: 600; fill: var(--text); }
+.map-node-subtitle { font-size: 11px; fill: var(--muted); }
+.map-column-0 rect { fill: var(--primary); stroke: var(--primary); }
+.map-column-0 text { fill: var(--on-primary); }
+.map-column-2 rect { fill: var(--fact-bg); stroke: var(--fact); }
+
+.map-address { cursor: pointer; }
+.map-address rect { fill: var(--surface); stroke-width: 2.5; }
+.map-address .map-node-title { font-family: var(--mono); font-size: 12px; }
+.map-address.level-high rect { stroke: var(--level-high); }
+.map-address.level-likely rect { stroke: var(--level-likely); }
+.map-address.level-medium rect { stroke: var(--level-medium); }
+.map-address.level-low rect { stroke: var(--level-low); }
+.map-address.level-excluded rect { fill: var(--surface-sunken); stroke: var(--level-excluded); stroke-dasharray: 5 4; stroke-width: 1.5; }
+.map-address.level-excluded text { fill: var(--muted); }
+.map-address:hover rect { fill: var(--surface-alt); }
+.map-address:focus-visible { outline: none; }
+.map-address:focus-visible rect { stroke: var(--focus); stroke-width: 4; stroke-dasharray: none; }
+.map-legend { font-size: 0.88rem; color: var(--muted); margin: 0.6rem 0 0; }

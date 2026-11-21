@@ -69,7 +69,9 @@ describe('createConnectors', () => {
   test('bez konfiguracji nie powstaje żaden łącznik; live i Tor tylko na życzenie', async () => {
     assert.deepEqual(createConnectors({}), []);
     const live = createConnectors({ enableLive: true });
-    assert.ok(live.length >= 2 && live.every((c) => c.id.startsWith('live-')));
+    // Łączniki stałe mają przedrostek „live-", źródła z rejestru monitoringu — „mon-".
+    assert.ok(live.length >= 2 && live.every((c) => c.id.startsWith('live-') || c.id.startsWith('mon-')));
+    assert.ok(live.filter((c) => c.id.startsWith('mon-')).every((c) => !c.enabledByDefault));
     for (const id of ['live-github', 'live-wayback']) assert.ok(live.some((c) => c.id === id), id);
 
     const [tor] = createConnectors({ torProxyUrl: 'http://127.0.0.1:9' });

@@ -58,6 +58,7 @@ function setup(routes: Record<string, Route | (() => never)>, config: Partial<So
     minRequestIntervalMs: 0,
     allowPrivateHosts: true,
     fediverseInstances: ['mastodon.example', 'pl.example'],
+    monitorSources: [],
     ...config,
   });
   const context = { log: (message: string) => void logs.push(message) };

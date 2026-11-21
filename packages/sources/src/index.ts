@@ -10,6 +10,8 @@ import { createGravatarConnector } from './gravatar.ts';
 import { createHttpClient } from './http.ts';
 import type { Fetcher } from './http.ts';
 import { createKeybaseConnector } from './keybase.ts';
+import { createMonitorConnectors, loadMonitorSources } from './monitor/index.ts';
+import type { MonitorSourceConfig } from './monitor/index.ts';
 import { createSandboxConnectors } from './sandbox.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
@@ -18,6 +20,30 @@ import { createWwwConnector } from './www.ts';
 
 export { htmlToText } from './html.ts';
 export type { Fetcher } from './http.ts';
+export {
+  listMonitorConnectors,
+  loadMonitorSources,
+  mergeMonitorSources,
+  monitorSourceCommunity,
+  monitorSourceHost,
+  runMonitorPass,
+  summarizeMonitorSources,
+  MONITOR_ENGINES,
+  MONITOR_PREFIX,
+} from './monitor/index.ts';
+export type {
+  HtmlListSelectors,
+  MonitorConnector,
+  MonitorDiscovery,
+  MonitorEngine,
+  MonitorPassOptions,
+  MonitorPassResult,
+  MonitorPassStatus,
+  MonitorPassSummary,
+  MonitorRegistry,
+  MonitorSourceConfig,
+  MonitorSourcesSummary,
+} from './monitor/index.ts';
 
 export interface SourcesConfig {
   /** Adres piaskownicy (apps/sandbox); gdy podany, powstają łączniki fikcyjnych serwisów. */
@@ -35,6 +61,15 @@ export interface SourcesConfig {
   fediverseInstances?: string[];
   /** Publiczne kanały Telegram przeglądane przy typowaniu; domyślnie config/telegram-channels.json (pusta lista). */
   telegramChannels?: string[];
+  /**
+   * Rejestr źródeł monitoringu; domyślnie (gdy `enableLive`) wszystkie pliki config/monitor-sources/*.json.
+   * Każdy włączony wpis daje łącznik `mon-<id>` z metodą `discover`, domyślnie wyłączony w analizie osoby.
+   */
+  monitorSources?: MonitorSourceConfig[];
+  /** Tani filtr wstępny monitoringu: `discover` zwraca tylko posty zawierające adres kryptowalutowy. */
+  monitorOnlyWithAddresses?: boolean;
+  /** Odbiorca komunikatów o błędach konfiguracji (np. niepoprawny wpis rejestru). */
+  log?: (message: string) => void;
   /** Wyłącza ochronę przed hostami prywatnymi w łącznikach pobierających podany adres (wyłącznie testy). */
   allowPrivateHosts?: boolean;
   /** Zamiennik `fetch` dla łączników live — w testach atrapa z zapisanymi odpowiedziami. */
@@ -63,7 +98,22 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createBitcointalkConnector(http),
     createWwwConnector(http, { skipHosts: instances }),
     createWaybackConnector(http),
+    ...monitorConnectors(config, http, github.token),
   ];
+}
+
+function monitorConnectors(config: SourcesConfig, http: ReturnType<typeof createHttpClient>, githubToken: string | undefined): SourceConnector[] {
+  let sources = config.monitorSources;
+  if (!sources) {
+    const registry = loadMonitorSources();
+    for (const warning of registry.warnings) config.log?.(`Monitoring: ${warning}`);
+    sources = registry.sources;
+  }
+  return createMonitorConnectors(http, sources, {
+    ...(githubToken ? { githubToken } : {}),
+    ...(config.monitorOnlyWithAddresses !== undefined ? { onlyWithAddresses: config.monitorOnlyWithAddresses } : {}),
+    ...(config.log ? { log: config.log } : {}),
+  });
 }
 
 export function createConnectors(config: SourcesConfig): SourceConnector[] {
