@@ -12,6 +12,7 @@ import { AddressesTab, DecisionsTab, FlowsTab, PeopleTab, ProfilesTab, TimelineT
 import { RunLauncher, RunsTab } from '../components/Runs.tsx';
 import { ProofTab } from '../components/ProofTab.tsx';
 import { IdentitiesTab } from '../components/IdentitiesTab.tsx';
+import { OrganizationsCard } from '../components/OrganizationCards.tsx';
 import { IndicatorsTab } from '../components/Indicators.tsx';
 import { DemoWatermark } from '../components/Mode.tsx';
 import { RELATION_TEXT, identityStatus, linkLabel } from '../identities.ts';
@@ -30,6 +31,7 @@ import { DOSSIER_SECTIONS, DOSSIER_TABS, href, navigate, sectionOf, tabLabel } f
 import type { DossierTab } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
 import { ExportPanel } from '../components/ExportPanel.tsx';
+import { CaseLifecycleActions, ClosedNotice } from '../components/CaseLifecycle.tsx';
 import { SearchInputChip } from '../components/SearchInput.tsx';
 import { Floating } from '../components/ui/Floating.tsx';
 import { Hint } from '../components/ui/Hint.tsx';
@@ -63,7 +65,15 @@ function StartScreen({ summary, onDone }: { summary: CaseSummary; onDone: () => 
   return (
     <>
       <Crumbs items={[{ label: 'Pulpit', href: href.dashboard() }, { label: summary.name }]} />
-      <h1>{summary.name}</h1>
+      <header className="page-head dossier-head">
+        <h1>{summary.name}</h1>
+        {(summary.status !== undefined || isDemo) && (
+          <div className="actions no-print">
+            <CaseLifecycleActions summary={summary} onChanged={onDone} />
+          </div>
+        )}
+      </header>
+      <ClosedNotice summary={summary} />
       <p className="muted">Sprawa utworzona {fmtDateTime(summary.createdAt)}. Nie ma jeszcze zakończonej analizy — wybierz źródła i uruchom ją.</p>
       <div className="two-columns">
         <section className="card" aria-labelledby="identyfikatory">
@@ -204,6 +214,7 @@ function PersonSection({ dossier, empty }: { dossier: Dossier; empty: boolean })
         </p>
         <Identifiers dossier={dossier} />
       </section>
+      <OrganizationsCard />
       {!empty && <OtherCandidates />}
     </>
   );
@@ -410,10 +421,13 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
               </>
             )}
             <ExportMenu caseId={summary.id} demoDossier={isDemo ? dossier : undefined} />
+            {/* Cykl życia sprawy — tylko gdy usługa podaje stan sprawy (starsza wersja go nie zna). */}
+            {(summary.status !== undefined || isDemo) && <CaseLifecycleActions summary={summary} onChanged={loaded.reload} />}
           </div>
         </header>
 
         <DemoWatermark />
+        <ClosedNotice summary={summary} />
         {loaded.error && <ErrorBox message={loaded.error} onRetry={loaded.reload} />}
         {dossier.partial && (
           <div className="status-box status-box-warn" role="alert">

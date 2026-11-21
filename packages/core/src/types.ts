@@ -299,9 +299,11 @@ export interface RelatedPerson {
  *   address    — portfel / adres kryptowalutowy,
  *   service    — usługa blockchain (giełda, bramka, kontrakt, organ),
  *   source     — źródło dowodowe (publikacja z adresem URL),
- *   person     — inna osoba powiązana (zgodność wsteczna).
+ *   person     — inna osoba powiązana (zgodność wsteczna); także osoba w roli z rejestru publicznego,
+ *   organization — organizacja: beneficjent zbiórki wskazany w kontekście cytowań adresu albo podmiot z rejestru
+ *                (hipoteza; organizacja nie jest właścicielem-osobą i nie jest kandydatem na osobę).
  */
-export type GraphNodeKind = 'subject' | 'operator' | 'persona' | 'identifier' | 'profile' | 'address' | 'service' | 'source' | 'person';
+export type GraphNodeKind = 'subject' | 'operator' | 'persona' | 'identifier' | 'profile' | 'address' | 'service' | 'source' | 'person' | 'organization';
 
 export interface GraphNode {
   id: string;
@@ -323,7 +325,24 @@ export interface GraphEdge {
   id: string;
   from: string;
   to: string;
-  kind: 'has_identifier' | 'found_profile' | 'links_to' | 'publishes' | 'transfer' | 'cash_out' | 'related' | 'operates' | 'declares' | 'documented_by' | 'same_operator';
+  kind:
+    | 'has_identifier'
+    | 'found_profile'
+    | 'links_to'
+    | 'publishes'
+    | 'transfer'
+    | 'cash_out'
+    | 'related'
+    | 'operates'
+    | 'declares'
+    | 'documented_by'
+    | 'same_operator'
+    /** Adres → organizacja: adres zbiórki / płatności organizacji (hipoteza z kontekstu cytowań). */
+    | 'beneficiary_of'
+    /** Osoba → organizacja: rola w rejestrze publicznym (nie własność adresu). */
+    | 'holds_role'
+    /** Organizacja → organizacja: jednostka dominująca / zależna albo wspólny członek zarządu. */
+    | 'org_relation';
   label?: string;
   /** Waga 0–100: siła dowodu albo względna wartość przepływu. */
   weight?: number;

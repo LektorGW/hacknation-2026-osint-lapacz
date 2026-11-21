@@ -4,6 +4,7 @@ import { App } from './App.tsx';
 import './styles.css';
 // Warstwa wyglądu i podpowiedzi — po styles.css, aby nadpisywać wyłącznie wygląd.
 import './ux.css';
+import './motion.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

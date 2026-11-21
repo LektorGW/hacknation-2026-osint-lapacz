@@ -6,6 +6,7 @@ import { HttpError, TOOL_VERSION } from './http-common.ts';
 import type { RouteContext } from './http-common.ts';
 import { CSV_FILES, buildCaseExport, buildPackage } from './export.ts';
 import type { CsvFileName } from './export.ts';
+import { internalHeaders } from './security.ts';
 
 const FILES = [...CSV_FILES, 'teczka.json', 'pakiet.zip'] as const;
 type ExportFile = (typeof FILES)[number];
@@ -55,7 +56,7 @@ export function registerExportRoutes(app: FastifyInstance, context: RouteContext
       if (file === 'teczka.json') return reply.type('application/json; charset=utf-8').send(content.json);
       if (file === 'pakiet.zip') {
         // Pełny zapis analizy z istniejącej trasy raportu — ten sam plik co „Pakiet JSON” analizy.
-        const analysis = await app.inject({ method: 'GET', url: `/api/runs/${encodeURIComponent(run.id)}/report.json` });
+        const analysis = await app.inject({ method: 'GET', url: `/api/runs/${encodeURIComponent(run.id)}/report.json`, headers: internalHeaders() });
         return reply.type('application/zip').send(buildPackage(content, analysis.statusCode === 200 ? analysis.body : undefined));
       }
       return reply.type('text/csv; charset=utf-8').send(content.csv[file as CsvFileName]);

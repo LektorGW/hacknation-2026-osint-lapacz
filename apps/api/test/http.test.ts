@@ -83,7 +83,7 @@ test('sprawa → analiza → raport HTML i pakiet JSON', async () => {
   const summary = (await app.inject(`/api/cases/${created.id}`)).json();
   assert.equal(summary.query.identifiers[0].value, 'krypto_janek');
   assert.deepEqual(summary.runs, [
-    { id: run.id, startedAt: '2026-11-21T10:00:00.000Z', status: 'completed', findingCount: 3, topScore: 75 },
+    { id: run.id, startedAt: '2026-11-21T10:00:00.000Z', status: 'completed', findingCount: 3, topScore: 75, dataMode: 'live' },
   ]);
   assert.ok((await app.inject('/api/cases')).json().some((item: { id: string }) => item.id === created.id));
 

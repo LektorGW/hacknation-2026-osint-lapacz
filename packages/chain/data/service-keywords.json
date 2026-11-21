@@ -10,7 +10,8 @@
     { "name": "Bitfinex", "category": "exchange", "keywords": ["bitfinex"] },
     { "name": "Gate", "category": "exchange", "keywords": ["gate.io", "gateio", "gate"] },
     { "name": "HTX (Huobi)", "category": "exchange", "keywords": ["htx", "huobi"] },
-    { "name": "Zonda (BitBay)", "category": "exchange", "keywords": ["zonda", "bitbay"] },
+    { "name": "Zonda (BitBay)", "category": "exchange", "keywords": ["zondacrypto", "zonda", "bitbay"] },
+    { "name": "FlyingAtom", "category": "exchange", "keywords": ["flyingatom", "flying atom"] },
     { "name": "Kanga", "category": "exchange", "keywords": ["kanga"] },
     { "name": "Revolut", "category": "exchange", "keywords": ["revolut"] },
     { "name": "Bitstamp", "category": "exchange", "keywords": ["bitstamp"] },
@@ -33,6 +34,7 @@
     { "name": "HodlHodl", "category": "p2p", "keywords": ["hodlhodl", "hodl hodl"] },
     { "name": "Bisq", "category": "p2p", "keywords": ["bisq"] },
     { "name": "Noones", "category": "p2p", "keywords": ["noones"] },
+    { "name": "LocalCoinSwap", "category": "p2p", "keywords": ["localcoinswap"] },
     { "name": "P2P (ogólnie)", "category": "p2p", "keywords": ["p2p"] },
 
     { "name": "BitPay", "category": "payment_gateway", "keywords": ["bitpay"] },

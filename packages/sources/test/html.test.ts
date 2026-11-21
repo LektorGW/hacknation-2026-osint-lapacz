@@ -25,6 +25,13 @@ test('htmlToText: sąsiednie elementy nie sklejają się z adresem, a formatowan
   assert.match(text, /bc1qabc/);
 });
 
+test('htmlToText: adres z pola „kopiuj” (input readonly value) zostaje w tekście, inne wartości pól nie', () => {
+  const address = 'bc1qtt04zfgjxg7lpqhk9vk8hnmnwf88ucwww5arsd';
+  const text = htmlToText(`<div><small>Bitcoin</small><input type="text" readonly value="${address}" /><input value="nie-adres-tylko-tekst-pola-formularza"></div>`);
+  assert.match(text, new RegExp(`\\[adres z pola: ${address}\\]`));
+  assert.doesNotMatch(text, /nie-adres/);
+});
+
 test('extractContent: wybiera <article>, potem <main>, na końcu całość', () => {
   assert.equal(extractContent('<nav>x</nav><main><article data-kind="post">treść</article><div>komentarz</div></main>'), 'treść');
   assert.equal(extractContent('<nav>x</nav><main>środek</main>'), 'środek');

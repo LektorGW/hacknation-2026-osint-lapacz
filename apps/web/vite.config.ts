@@ -11,8 +11,9 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // Port serwera deweloperskiego i port API można zmienić zmiennymi (np. przez `pnpm dev` z pliku .env).
+    port: Number(process.env.VITE_PORT ?? 5173),
     strictPort: true,
-    proxy: { '/api': 'http://localhost:4000' },
+    proxy: { '/api': `http://localhost:${process.env.API_PORT ?? 4000}` },
   },
 });

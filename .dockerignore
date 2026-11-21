@@ -1,0 +1,46 @@
+# Kontekst budowy obrazu: tylko kod i manifesty. Nigdy sekrety ani dane spraw.
+
+# Sekrety i konfiguracja lokalna
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+
+# Dane i migawki baz (dane spraw!)
+.data*
+**/.data*
+**/data/pg
+**/*.migawka.tar.gz*
+**/*.blokada
+**/kopie
+**/archiwa
+apps/identity-lab/data/state*
+packages/chain/data/cache
+
+# Zależności i wyniki budowy — powstają w obrazie
+**/node_modules
+**/dist
+**/build
+**/.vite
+
+# Repozytorium, edytory, dzienniki
+.git
+.gitattributes
+.idea
+.vscode
+**/*.log
+**/.venv
+**/__pycache__
+
+# Dokumentacja binarna i materiały prezentacji (niepotrzebne w obrazie)
+docs/zrzuty
+docs/prezentacja
+**/*.mp4
+**/*.pptx
+**/*.pdf
+
+# Wyniki pomiarów i próby ręczne
+scripts/benchmark-*.json
+scripts/wyniki*
+**/artifacts

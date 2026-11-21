@@ -12,10 +12,17 @@
 //                           albo wprowadził odpowiedź usługi z wypłatą na rachunek (`replyExits`).
 // Same dane blockchain nigdy nie dają ostatniego szczebla: wypłatę na rachunek potwierdza tylko usługa.
 // Przelewy PRZYCHODZĄCE z usługi to źródło środków, nie wyjście do fiat.
+//
+// Oznaki z publikacji kont podmiotu (Web2: oferty sprzedaży za PLN, BLIK, gotówka, karty krypto, nazwane
+// usługi) — osobna ocena `origin: 'web'` z `fiat-signals.ts`; także one dochodzą najwyżej do `cashout_signal`.
+// Każda ocena ma „Dlaczego to oznaka wypłaty” (`why`) i „Co potwierdzi wypłatę” (`confirm`).
 
 import { CASH_OUT_STAGE_LABEL, combineComponents } from '@olcys/core';
-import type { CashOutAssessment, CashOutIndicator, CashOutKind, CashOutStage, CashOutTrail, ClaimStatus, ComponentDraft, EvidenceRef, Finding, Transfer } from '@olcys/core';
-import { formatAmount, plural, roundPln, shortAddress } from './format.ts';
+import type { CashOutAssessment, CashOutIndicator, CashOutKind, CashOutStage, CashOutTrail, ClaimStatus, ComponentDraft, EvidenceRef, Finding, ServiceLink, Transfer } from '@olcys/core';
+import type { RegistryData } from '@olcys/sources';
+import { FIAT_WEB_RULES, buildWebCashOutAssessment, confirmationServices, offrampInfo, webServiceRefs } from './fiat-signals.ts';
+import type { FiatPublication } from './fiat-signals.ts';
+import { formatAmount, formatDate, plural, roundPln, shortAddress } from './format.ts';
 import { resolveService, serviceIdOf } from './services.ts';
 
 export interface CashOutStageInput {
@@ -23,6 +30,19 @@ export interface CashOutStageInput {
   findings: Finding[];
   /** Adresy liczone jako powiązane z podmiotem (`network:address`). */
   linkedKeys: Set<string>;
+  /** Chwila oceny — potrzebna regule „adres zamilkł po wpłacie”; bez niej reguły nie oceniamy. */
+  now?: Date;
+  /** Powiązania z usługami — gotowe wskazówki do zapytania w „Co potwierdzi wypłatę”. */
+  serviceLinks?: ServiceLink[];
+  /**
+   * Publikacje kont PRZYPISANYCH PODMIOTOWI z oznakami wyjścia do fiat (Web2). Wzmianek innych autorów
+   * wywołujący tu nie przekazuje. Dają osobną ocenę `origin: 'web'` i wzmacniają ocenę tej samej usługi z blockchaina.
+   */
+  publications?: FiatPublication[];
+  /** Migawki rejestrów (RDWW, MiCA) do rozpoznania nazw usług; brak — z pakietu źródeł; `null` — bez sprawdzania. */
+  registry?: RegistryData | null;
+  /** Klucz oceny z publikacji (np. identyfikator sprawy). */
+  webKey?: string;
   /** Adresy, dla których analityk potwierdził wyjście do fiat dokumentem spoza blockchaina (`network:address`). */
   documentedExits?: Set<string>;
   /**
@@ -64,6 +84,18 @@ export const CASH_OUT_RULES = {
     repeatedDeposits: 60,
     valuationAvailable: 5,
     documentedOffchain: 100,
+    /** Zamiana na stablecoin o wartości od `largeStablecoinPln`, potem wpłata stablecoina do usługi. */
+    stablecoinConversionLarge: 65,
+    /** Ostatnia aktywność adresu to wpłata do usługi, potem cisza (≥ `quietDays`) — typowy obraz sprzedaży. */
+    depositThenQuiet: 50,
+    /** Wpłaty do tej samej usługi wyjścia do fiat w co najmniej `offrampMonthsMin` różnych miesiącach. */
+    repeatedOfframp: 65,
+    /** Wartość wpłat w PLN (kurs z dnia) bliska okrągłym kwotom — przesłanka słaba. */
+    roundAmountsPln: 10,
+    /** Przelew na adres oznaczony jako wydawca karty zasilanej kryptowalutami (doładowanie karty). */
+    cryptoCardTopup: 55,
+    /** Oznaki z publikacji kont podmiotu (Web2) — szczegóły w `fiat-signals.ts`. */
+    web: FIAT_WEB_RULES.weights,
   },
   penalties: {
     inferredHop: 8,
@@ -83,6 +115,21 @@ export const CASH_OUT_RULES = {
   /** Poniżej tej pewności ścieżki (wzór modułu blockchain) ścieżka jest słabą podstawą. */
   lowTrailConfidence: 60,
   stablecoins: ['USDT', 'USDC', 'DAI'],
+  /** Próg ekspercki „znacznej wartości” zamiany na stablecoin (PLN, kurs z dnia transakcji) — edytowalny. */
+  largeStablecoinPln: 50_000,
+  /** Ile dni bez żadnej transakcji po wpłacie do usługi, by uznać, że adres zamilkł. */
+  quietDays: 30,
+  /** Saldo w walucie sieci nie większe niż taka część sumy wpływów = adres opróżniony. */
+  quietBalanceShare: 0.01,
+  /** Od tylu różnych miesięcy kalendarzowych z wpłatami mówimy o regularnym spieniężaniu. */
+  offrampMonthsMin: 3,
+  /** Kwota „okrągła”: wielokrotność tej kwoty w PLN… */
+  roundStepPln: 1000,
+  /** …z odchyleniem najwyżej tyle złotych i najwyżej `roundToleranceShare` wartości. */
+  roundTolerancePln: 50,
+  roundToleranceShare: 0.005,
+  /** Ile wpłat o okrągłej wartości (i co najmniej połowa wycenionych), by reguła zadziałała. */
+  roundMin: 2,
 } as const;
 
 /** Ograniczenie obowiązkowe dla każdej oceny poniżej szczebla „udokumentowane wyjście”. */
@@ -270,7 +317,25 @@ function documentedByReply(assessment: CashOutAssessment, replies: DocumentedExi
   };
 }
 
-function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boolean, key: string, replies: DocumentedExitSource[] = []): CashOutAssessment[] {
+/** Kontekst oceny wspólny dla wszystkich adresów: chwila oceny i usługi nazwane w publikacjach podmiotu. */
+interface AssessContext {
+  now?: Date;
+  web?: ReturnType<typeof webServiceRefs>;
+}
+
+const isRoundPln = (value: number): boolean => {
+  const step = CASH_OUT_RULES.roundStepPln;
+  return value >= step && Math.abs(value - Math.round(value / step) * step) <= Math.min(CASH_OUT_RULES.roundTolerancePln, value * CASH_OUT_RULES.roundToleranceShare);
+};
+
+function assessFinding(
+  finding: Finding,
+  ownKeys: Set<string>,
+  isDocumented: boolean,
+  key: string,
+  replies: DocumentedExitSource[] = [],
+  ctx: AssessContext = {},
+): CashOutAssessment[] {
   const chain = finding.chain;
   const drafts: Draft[] = [];
   const base = `cashout:${finding.network}:${finding.address}`;
@@ -469,6 +534,8 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
         weight: CASH_OUT_RULES.weights.directServiceTransfer[item.kind],
         direction: 'supports',
         source: SOURCE,
+        // Przy karcie ten sam przelew opisuje mocniejsza reguła doładowania karty — liczy się raz.
+        ...(item.kind === 'crypto_card' ? { originKey: `card:${id}` } : {}),
         evidence: [...txRefs(direct.flatMap((deposit) => deposit.txids)), ...labelRefs(direct)],
         explanation:
           `Bezpośredni przelew z badanego adresu na adres publicznie oznaczony jako ${kindName} „${direct[0]!.label ?? item.name}” (${przelew(direct.length)}). ` +
@@ -509,6 +576,7 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
 
     // Zamiana na stablecoin, po której stablecoin trafił do usługi.
     const swapEvidence: string[] = [];
+    const swapPairs: { swap: CashOutIndicator; deposit: Deposit }[] = [];
     for (const deposit of valid) {
       if (deposit.viaSwap) swapEvidence.push(...deposit.txids);
       if (!stable(deposit.asset)) continue;
@@ -517,8 +585,33 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
         const delay = at - Date.parse(swap.time);
         if (delay < 0 || delay > CASH_OUT_RULES.swapToDepositDays * DAY_MS) continue;
         matchedSwaps.add(swap);
+        swapPairs.push({ swap, deposit });
         swapEvidence.push(swap.txid, deposit.txid);
       }
+    }
+    // Wartość zamiany: wycena wydanej waluty, a bez niej — wycena wpłaconego stablecoina. Bez kursu progu nie oceniamy.
+    const pairValue = (pair: { swap: CashOutIndicator; deposit: Deposit }) => pair.swap.valuePln ?? pair.deposit.valuePln;
+    const largePairs = swapPairs.filter((pair) => (pairValue(pair) ?? 0) >= CASH_OUT_RULES.largeStablecoinPln);
+    if (largePairs.length > 0) {
+      const largest = Math.max(...largePairs.map((pair) => pairValue(pair)!));
+      components.push({
+        rule: 'cashout.stablecoin_conversion_large',
+        weight: CASH_OUT_RULES.weights.stablecoinConversionLarge,
+        direction: 'supports',
+        source: SOURCE,
+        // Ta sama zamiana co w regule ogólnej „zamiana na stablecoin” — liczy się raz (mocniejsza waga).
+        originKey: `swap:${id}`,
+        evidence: txRefs(largePairs.flatMap((pair) => [pair.swap.txid, pair.deposit.txid])),
+        explanation:
+          `Wymiana znacznej wartości na stablecoin: ${largePairs.length} ${plural(largePairs.length, 'zamiana', 'zamiany', 'zamian')} o szacunkowej wartości do ${roundPln(largest)} ` +
+          `(próg ${roundPln(CASH_OUT_RULES.largeStablecoinPln)}), po której stablecoin trafił do usługi ${item.name} w ciągu ${CASH_OUT_RULES.swapToDepositDays} dni.`,
+        limitations: [
+          'Wartość to szacunek po kursie rynkowym z dnia transakcji, nie kwota faktycznie uzyskana.',
+          'Związek zamiany z wpłatą wynika z kolejności i czasu transakcji; próg jest ekspercki i edytowalny (CASH_OUT_RULES.largeStablecoinPln).',
+        ],
+      });
+    } else if (swapPairs.length > 0 && swapPairs.every((pair) => pairValue(pair) === undefined)) {
+      limitations.push(`Brak kursu dla zamiany na stablecoin — reguły „wymiana znacznej wartości na stablecoin” (próg ${roundPln(CASH_OUT_RULES.largeStablecoinPln)}) nie oceniono.`);
     }
     if (swapEvidence.length > 0) {
       components.push({
@@ -526,6 +619,7 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
         weight: CASH_OUT_RULES.weights.stablecoinSwap,
         direction: 'supports',
         source: SOURCE,
+        originKey: `swap:${id}`,
         evidence: txRefs(swapEvidence),
         explanation: `Zamiana na stablecoin, po której stablecoin trafił do usługi ${item.name} (w ciągu ${CASH_OUT_RULES.swapToDepositDays} dni) — wzorzec typowy dla przygotowania wypłaty.`,
         limitations: ['Związek zamiany z późniejszą wpłatą wynika z kolejności i czasu transakcji, nie z ich treści; stablecoin mógł posłużyć do handlu w usłudze.'],
@@ -537,9 +631,107 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
         weight: CASH_OUT_RULES.weights.repeatedDeposits,
         direction: 'supports',
         source: SOURCE,
+        originKey: `repeat:${id}`,
         evidence: txRefs(valid.map((deposit) => deposit.txid)),
         explanation: `Powtarzalne wpłaty do tej samej usługi: ${valid.length} osobnych wpłat (próg ${CASH_OUT_RULES.repeatedMin}) między ${valid.map((deposit) => deposit.time).sort()[0]!.slice(0, 10)} a ${valid.map((deposit) => deposit.time).sort().at(-1)!.slice(0, 10)}.`,
         limitations: ['Regularne wpłaty wskazują na stałe korzystanie z konta w usłudze, nie na to, co się z nimi stało po wpłacie.'],
+      });
+    }
+    // Regularne spieniężanie: te same wpłaty rozłożone na wiele miesięcy (nie dotyczy bramki — to wydatki).
+    const months = [...new Set(valid.map((deposit) => deposit.time.slice(0, 7)))].sort();
+    const repeatedOfframp = item.kind !== 'payment_gateway' && valid.length >= CASH_OUT_RULES.repeatedMin && months.length >= CASH_OUT_RULES.offrampMonthsMin;
+    if (repeatedOfframp) {
+      components.push({
+        rule: 'cashout.repeated_offramp',
+        weight: CASH_OUT_RULES.weights.repeatedOfframp,
+        direction: 'supports',
+        source: SOURCE,
+        // Te same wpłaty co w regule „powtarzalne wpłaty” — liczą się raz.
+        originKey: `repeat:${id}`,
+        evidence: txRefs(valid.map((deposit) => deposit.txid)),
+        explanation:
+          `Wpłaty do tej samej usługi wyjścia do fiat ${item.name} powtarzają się przez wiele miesięcy: ${valid.length} ${plural(valid.length, 'wpłata', 'wpłaty', 'wpłat')} w ${months.length} różnych miesiącach ` +
+          `(${months[0]} – ${months.at(-1)}; próg ${CASH_OUT_RULES.offrampMonthsMin}) — wzorzec regularnego spieniężania.`,
+        limitations: ['Regularność wpłat nie mówi, czy środki sprzedano i wypłacono; mogły zostać w usłudze albo wrócić w kryptowalucie.'],
+      });
+    }
+    // Kwoty bliskie okrągłym w PLN (np. „sprzedaję za 10 000 zł”) — słaba przesłanka, tylko przy wycenie.
+    const valuedDeposits = valid.filter((deposit) => deposit.valuePln !== undefined);
+    const roundDeposits = valuedDeposits.filter((deposit) => isRoundPln(deposit.valuePln!));
+    if (roundDeposits.length >= CASH_OUT_RULES.roundMin && roundDeposits.length * 2 >= valuedDeposits.length) {
+      components.push({
+        rule: 'cashout.round_amounts_pln',
+        weight: CASH_OUT_RULES.weights.roundAmountsPln,
+        direction: 'supports',
+        source: SOURCE,
+        evidence: txRefs(roundDeposits.map((deposit) => deposit.txid)),
+        explanation:
+          `Wartość ${roundDeposits.length} z ${valuedDeposits.length} wycenionych wpłat jest bliska okrągłej kwocie w PLN (wielokrotność ${roundPln(CASH_OUT_RULES.roundStepPln)}, ` +
+          `odchylenie najwyżej ${roundPln(CASH_OUT_RULES.roundTolerancePln)}): ${roundDeposits.map((deposit) => roundPln(deposit.valuePln!)).join(', ')} — jak przy sprzedaży „za umówioną kwotę”.`,
+        limitations: ['Przesłanka słaba: wycena po kursie dziennym, nie po kursie faktycznej transakcji; zbieżność z okrągłą kwotą bywa przypadkowa.'],
+      });
+    } else if (valuedDeposits.length === 0 && valid.length >= CASH_OUT_RULES.roundMin) {
+      limitations.push('Brak kursu dla wpłat — reguły „kwoty bliskie okrągłym w PLN” nie oceniono.');
+    }
+    // Doładowanie karty zasilanej kryptowalutami: środki stają się wydawalne jak pieniądze.
+    const cardTopup = item.kind === 'crypto_card';
+    if (cardTopup) {
+      components.push({
+        rule: 'cashout.crypto_card_topup',
+        weight: CASH_OUT_RULES.weights.cryptoCardTopup,
+        direction: 'supports',
+        source: SOURCE,
+        originKey: `card:${id}`,
+        evidence: [...txRefs(valid.flatMap((deposit) => deposit.txids)), ...labelRefs(valid)],
+        explanation:
+          `Doładowanie karty zasilanej kryptowalutami: ${przelew(valid.length)} na adres oznaczony jako wydawca karty „${valid[0]!.label ?? item.name}”. ` +
+          `Karta pozwala płacić i wypłacać gotówkę w walucie tradycyjnej. Źródło etykiety: ${sources(valid)}.`,
+        limitations: ['Jakie płatności kartą i wypłaty z bankomatu nastąpiły, wie tylko wydawca karty.'],
+      });
+    }
+    // Wpłata do usługi, po której adres zamilkł: brak jakichkolwiek transakcji przez co najmniej `quietDays` dni.
+    let quiet = false;
+    const own = valid.filter((deposit) => !deposit.fromCluster && deposit.mode !== 'trail').sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+    const lastOwn = own[0];
+    if (ctx.now && lastOwn && chain) {
+      const lastAt = Date.parse(lastOwn.time);
+      const later = transfers.filter((transfer) => Date.parse(transfer.time) > lastAt);
+      const lastSeen = chain.profile.lastSeen ? Date.parse(chain.profile.lastSeen) : undefined;
+      const days = Math.floor((ctx.now.getTime() - lastAt) / DAY_MS);
+      const native = chain.profile.nativeAsset.toUpperCase() === lastOwn.asset.toUpperCase();
+      const emptied = native ? chain.profile.balance <= CASH_OUT_RULES.quietBalanceShare * Math.max(chain.profile.totalReceived, 0) : undefined;
+      if (later.length === 0 && (lastSeen === undefined || lastSeen <= lastAt + DAY_MS) && days >= CASH_OUT_RULES.quietDays && emptied !== false) {
+        quiet = true;
+        components.push({
+          rule: 'cashout.deposit_then_quiet',
+          weight: CASH_OUT_RULES.weights.depositThenQuiet,
+          direction: 'supports',
+          source: SOURCE,
+          evidence: txRefs(lastOwn.txids),
+          explanation:
+            `Ostatnia aktywność adresu to wpłata do usługi ${item.name} (${formatDate(lastOwn.time)}); od tego czasu — ${days} dni do dnia oceny — adres nie ma żadnych transakcji` +
+            `${emptied ? ', a jego saldo jest bliskie zeru' : ''}. Środki przeniesione do usługi wymiany i portfel, który zamilkł — typowy obraz sprzedaży.`,
+          limitations: [
+            'Brak późniejszych transakcji dotyczy pobranej historii adresu; podmiot mógł dalej działać z innych adresów.',
+            ...(emptied === undefined ? ['Wpłata w tokenie — saldo tokena nie jest znane; oceniono tylko brak transakcji.'] : []),
+          ],
+        });
+      }
+    }
+    // Ta sama usługa wymieniona w publikacjach kont podmiotu — niezależna podstawa (Web2) dla tej oceny.
+    const webRef = ctx.web?.get(serviceIdOf(item.name));
+    if (webRef) {
+      components.push({
+        rule: 'cashout.web.named_offramp',
+        weight: CASH_OUT_RULES.weights.web.named_offramp,
+        direction: 'supports',
+        source: 'publikacje kont podmiotu (Web2)',
+        originKey: webRef.originKey,
+        evidence: webRef.urls.map((value) => ({ kind: 'url' as const, value })),
+        explanation:
+          `Podmiot sam wymienia usługę ${webRef.name} w swoich publikacjach (${webRef.urls.length}); ` +
+          `${webRef.fiatContext ? 'publikacja mówi o wymianie na walutę tradycyjną' : 'to sama wzmianka'}. Cytat: „${webRef.excerpt}”.`,
+        limitations: ['Wzmianka w publikacji nie wskazuje konta ani wypłaty; potwierdza tylko, że podmiot zna lub używa tej usługi.'],
       });
     }
     if (total.valuePln !== undefined) {
@@ -656,7 +848,15 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
       });
     }
 
-    const signal = viaDeposit.length > 0 || viaTrail.length > 0 || swapEvidence.length > 0 || valid.length >= CASH_OUT_RULES.repeatedMin;
+    // Publikacja podmiotu o wymianie na fiat w tej samej usłudze też jest wzorcem wypłaty — ale wciąż nie jej dowodem.
+    const signal =
+      viaDeposit.length > 0 ||
+      viaTrail.length > 0 ||
+      swapEvidence.length > 0 ||
+      valid.length >= CASH_OUT_RULES.repeatedMin ||
+      cardTopup ||
+      quiet ||
+      webRef?.fiatContext === true;
     const stage: CashOutStage = signal ? 'cashout_signal' : 'service_interaction';
     const hypothesis = inferredDeposits.length > 0 || clustered.length > 0;
     const how = [
@@ -669,7 +869,10 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
         ? `Interakcja z usługą wymiany: z adresu ${shortAddress(finding.address)} przekazano${describeSum(total)} do usługi ${item.name} (${kindName}) — ${how}. ` +
           'To przekazanie środków do usługi; nie wynika z niego, że doszło do wymiany na waluty tradycyjne ani wypłaty na rachunek — potwierdzić może to tylko usługa.'
         : `Potencjalny sygnał wypłaty: z adresu ${shortAddress(finding.address)} przekazano${describeSum(total)} do usługi ${item.name} (${kindName}) — ${how}` +
-          `${swapEvidence.length > 0 ? '; wpłatę poprzedziła zamiana na stablecoin' : ''}${valid.length >= CASH_OUT_RULES.repeatedMin ? '; wpłaty są powtarzalne' : ''}. ` +
+          `${swapEvidence.length > 0 ? `; wpłatę poprzedziła zamiana na stablecoin${largePairs.length > 0 ? ' znacznej wartości' : ''}` : ''}` +
+          `${valid.length >= CASH_OUT_RULES.repeatedMin ? `; wpłaty są powtarzalne${repeatedOfframp ? ` (${months.length} różnych miesięcy)` : ''}` : ''}` +
+          `${cardTopup ? '; to doładowanie karty zasilanej kryptowalutami' : ''}${quiet ? '; po ostatniej wpłacie adres zamilkł' : ''}` +
+          `${webRef?.fiatContext ? '; podmiot sam pisze o wymianie na walutę tradycyjną w tej usłudze' : ''}. ` +
           `${hypothesis ? 'To hipoteza oparta na wnioskowaniu, do weryfikacji. ' : ''}` +
           'Wzorzec jest typowy dla przygotowania wypłaty, ale sama wypłata w walucie tradycyjnej nie jest widoczna w blockchainie — potwierdzić może ją tylko usługa.';
     drafts.push({
@@ -784,9 +987,59 @@ function assessFinding(finding: Finding, ownKeys: Set<string>, isDocumented: boo
   ];
 }
 
+/** „Dlaczego to oznaka wypłaty” — po jednym zdaniu na regułę wzorca. */
+const WHY_RULE: Record<string, string> = {
+  'cashout.deposit_address_inferred': 'środki trafiły na prawdopodobny indywidualny adres wpłat klienta w usłudze',
+  'cashout.trail_documented': 'udokumentowana ścieżka środków prowadzi do usługi wymiany',
+  'cashout.stablecoin_conversion_large': 'wymiana znacznej wartości na stablecoin, a potem wpłata do usługi',
+  'cashout.stablecoin_swap': 'wpłatę poprzedziła zamiana na stablecoin',
+  'cashout.repeated_offramp': 'wpłaty do tej samej usługi powtarzają się przez wiele miesięcy (regularne spieniężanie)',
+  'cashout.repeated_deposits': 'wpłaty do tej samej usługi powtarzają się',
+  'cashout.crypto_card_topup': 'doładowanie karty pozwala wydawać środki jak pieniądze i wypłacać gotówkę',
+  'cashout.deposit_then_quiet': 'po wpłacie do usługi adres zamilkł — typowy obraz sprzedaży',
+  'cashout.round_amounts_pln': 'kwoty w PLN bliskie okrągłym (przesłanka słaba)',
+  'cashout.web.named_offramp': 'podmiot sam wymienia tę usługę w swoich publikacjach',
+};
+
+/** Uzupełnia ocenę z blockchaina o „Dlaczego to oznaka wypłaty”, „Co potwierdzi wypłatę” i rodzaj usługi wyjścia do fiat. */
+function withGuidance(assessment: CashOutAssessment, links: ServiceLink[] | undefined, registry: RegistryData | null | undefined): CashOutAssessment {
+  const rules = new Set(assessment.indicator.components.filter((item) => item.direction === 'supports').map((item) => item.rule));
+  const reasons = Object.entries(WHY_RULE)
+    .filter(([rule]) => rules.has(rule))
+    .map(([, text]) => text);
+  const kindText = assessment.indicator.components.find((item) => item.rule === 'cashout.direct_service_transfer')?.explanation.match(/oznaczony jako ([^„]+) „/)?.[1]?.trim();
+  const why =
+    assessment.stage === 'documented_fiat_exit'
+      ? 'Wypłatę na rachunek potwierdza dokument spoza blockchaina (odpowiedź usługi albo dokumentacja przyjęta przez analityka).'
+      : assessment.stage === 'cashout_signal'
+        ? `Wzorzec typowy dla przygotowania wypłaty: ${reasons.join('; ')}.`
+        : assessment.stage === 'service_interaction'
+          ? `Środki trafiły do usługi${kindText ? ` (${kindText})` : ''}, w której zwykle zamienia się kryptowaluty na pieniądze${reasons.length > 0 ? `; ${reasons.join('; ')}` : ''}. Sam przelew nie dowodzi sprzedaży.`
+          : 'To nie jest oznaka wypłaty: adresy docelowe nie mają etykiety usługi wymiany albo środki z usługi tylko przychodziły.';
+  const services = assessment.serviceName && !assessment.serviceName.startsWith('Usługa bez nazwy') ? confirmationServices([assessment.serviceName], links) : [];
+  const confirm =
+    assessment.stage === 'documented_fiat_exit'
+      ? { text: 'Wypłata jest udokumentowana; dalsze zapytanie tylko wtedy, gdy trzeba ustalić rachunek bankowy lub zakres pozostałych wypłat.', services }
+      : services.length > 0
+        ? {
+            text:
+              `Ostatni szczebel daje tylko odpowiedź usługi ${services[0]!.name}: dane KYC właściciela konta, historia wpłat (transakcje poniżej), zlecenia sprzedaży i wypłaty na rachunek bankowy ` +
+              '(daty, kwoty, numer rachunku). Odpowiedź wprowadza analityk w zakładce odpowiedzi usług.',
+            services,
+          }
+        : {
+            text: 'Najpierw trzeba ustalić, do kogo należą adresy docelowe (etykieta usługi, dalsza ścieżka środków); dopiero usługa wymiany może potwierdzić wypłatę.',
+            services,
+          };
+  const offramp = assessment.stage === 'onchain_transfer' ? undefined : offrampInfo(assessment.serviceName, registry);
+  return { ...assessment, origin: 'chain', why, confirm, ...(offramp ? { offramp } : {}) };
+}
+
 export function buildCashOutAssessments(input: CashOutStageInput): CashOutAssessment[] {
   const result: CashOutAssessment[] = [];
   const seen = new Set<string>();
+  const publications = input.publications ?? [];
+  const ctx: AssessContext = { ...(input.now ? { now: input.now } : {}), ...(publications.length > 0 ? { web: webServiceRefs(publications) } : {}) };
   for (const finding of input.findings) {
     const key = `${finding.network}:${finding.address}`;
     if (seen.has(key) || !input.linkedKeys.has(key) || finding.confidence.excluded) continue;
@@ -794,8 +1047,20 @@ export function buildCashOutAssessments(input: CashOutStageInput): CashOutAssess
     // Adres giełdy, kontraktu, miksera, zbiórki lub instytucji nie jest portfelem prywatnym podmiotu — jego przepływy nie są „wyjściem” podmiotu.
     const addressClass = finding.chain?.profile.addressClass;
     if (addressClass !== undefined && addressClass !== 'private' && addressClass !== 'unknown') continue;
-    result.push(...assessFinding(finding, input.linkedKeys, input.documentedExits?.has(key) === true, key, input.replyExits?.get(key) ?? []));
+    result.push(
+      ...assessFinding(finding, input.linkedKeys, input.documentedExits?.has(key) === true, key, input.replyExits?.get(key) ?? [], ctx).map((item) =>
+        withGuidance(item, input.serviceLinks, input.registry),
+      ),
+    );
   }
+  // Oznaki z publikacji kont podmiotu: osobna ocena, najwyżej „potencjalny sygnał wypłaty” — nigdy ostatni szczebel.
+  const web = buildWebCashOutAssessment({
+    publications,
+    ...(input.serviceLinks ? { serviceLinks: input.serviceLinks } : {}),
+    ...(input.registry !== undefined ? { registry: input.registry } : {}),
+    ...(input.webKey ? { key: input.webKey } : {}),
+  });
+  if (web) result.push(web);
   return result.sort(
     (a, b) =>
       STAGE_RANK[b.stage] - STAGE_RANK[a.stage] || b.indicator.score - a.indicator.score || (b.valuePln ?? 0) - (a.valuePln ?? 0) || a.id.localeCompare(b.id),

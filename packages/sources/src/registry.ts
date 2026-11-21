@@ -222,6 +222,8 @@ export function createVatWhitelistConnector(http: HttpClient): SourceConnector {
             representatives.length > 0 && `Reprezentanci: ${representatives.join('; ')}`,
             partners.length > 0 && `Wspólnicy: ${partners.join('; ')}`,
             `Rachunki zgłoszone do wykazu: ${accounts.length}${subject.hasVirtualAccounts ? ' (podmiot używa też rachunków wirtualnych)' : ''}`,
+            // Numery rachunków są jawną częścią wykazu — potrzebne do porównania z wypłatami z odpowiedzi usług (wskaźnik D).
+            accounts.length > 0 && `Numery rachunków w wykazie: ${accounts.slice(0, 10).join(', ')}`,
             number.kind === 'bank_account' && `Sprawdzany rachunek ${number.value}: ${accounts.includes(number.value) ? 'figuruje w wykazie jako rachunek tego podmiotu' : 'wskazany przez wykaz jako powiązany z tym podmiotem (rachunek wirtualny lub maska)'}.`,
             body?.result?.requestId && `Identyfikator zapytania w wykazie: ${body.result.requestId}${body.result.requestDateTime ? ` (${body.result.requestDateTime})` : ''}`,
             'Uwaga: wpis dotyczy podmiotu zarejestrowanego pod tym numerem; nie dowodzi, kto faktycznie posługiwał się numerem w publikacji.',
@@ -263,6 +265,7 @@ interface KrsResponse {
     dane?: {
       dzial1?: {
         danePodmiotu?: { nazwa?: string; formaPrawna?: string; identyfikatory?: { nip?: string; regon?: string } };
+        kapital?: { wysokoscKapitaluZakladowego?: { wartosc?: string; waluta?: string } };
         siedzibaIAdres?: {
           siedziba?: { miejscowosc?: string; wojewodztwo?: string };
           adres?: { ulica?: string; nrDomu?: string; nrLokalu?: string; miejscowosc?: string; kodPocztowy?: string };
@@ -273,9 +276,23 @@ interface KrsResponse {
       dzial2?: {
         reprezentacja?: { nazwaOrganu?: string; nazwaOrgan?: string; sposobReprezentacji?: string; sklad?: KrsMember[] };
       };
+      dzial3?: {
+        przedmiotDzialalnosci?: { przedmiotPrzewazajacejDzialalnosci?: KrsPkd[]; przedmiotPozostalejDzialalnosci?: KrsPkd[] };
+      };
     };
   };
 }
+
+interface KrsPkd {
+  opis?: string;
+  kodDzial?: string;
+  kodKlasa?: string;
+  kodPodklasa?: string;
+}
+
+/** Kod PKD z odpisu KRS w zapisie „47.91.Z — opis”. */
+const pkdLine = (item: KrsPkd): string | undefined =>
+  item.kodDzial ? `${item.kodDzial}${item.kodKlasa ? `.${item.kodKlasa}` : ''}${item.kodPodklasa ? `.${item.kodPodklasa}` : ''}${item.opis ? ` — ${item.opis}` : ''}` : undefined;
 
 /** Członek organu tak, jak podaje go rejestr (imię i nazwisko są przez API maskowane gwiazdkami). */
 const memberLine = (member: KrsMember): string => {
@@ -322,6 +339,12 @@ export function createKrsConnector(http: HttpClient): SourceConnector {
       const board = body!.odpis!.dane!.dzial2?.reprezentacja;
       const nip = entity.identyfikatory?.nip;
       const header = body!.odpis!.naglowekA;
+      const capital = section?.kapital?.wysokoscKapitaluZakladowego;
+      const activity = body!.odpis!.dane!.dzial3?.przedmiotDzialalnosci;
+      const pkd = [...(activity?.przedmiotPrzewazajacejDzialalnosci ?? []), ...(activity?.przedmiotPozostalejDzialalnosci ?? [])]
+        .map(pkdLine)
+        .filter((line): line is string => Boolean(line))
+        .slice(0, 12);
 
       const discovered: Identifier[] = [];
       if (website) discovered.push({ type: 'profile_url', value: website });
@@ -349,6 +372,8 @@ export function createKrsConnector(http: HttpClient): SourceConnector {
             ? `${board.nazwaOrganu ?? board.nazwaOrgan ?? 'Organ reprezentacji'} (dane osobowe zamaskowane przez rejestr):\n${board.sklad.slice(0, 15).map(memberLine).join('\n')}`
             : undefined,
           board?.sposobReprezentacji && `Sposób reprezentacji: ${board.sposobReprezentacji}`,
+          capital?.wartosc && `Kapitał zakładowy: ${capital.wartosc} ${capital.waluta ?? 'PLN'}`,
+          pkd.length > 0 && `PKD: ${pkd.join('; ')}`,
         ]
           .filter(Boolean)
           .join('\n'),

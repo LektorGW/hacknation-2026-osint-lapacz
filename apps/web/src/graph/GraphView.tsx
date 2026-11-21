@@ -50,6 +50,8 @@ import {
 import type { EvidencePath, LayerView } from './investigation.ts';
 import { KIND_ORDER, edgeGeometry, flowLayout, layeredLayout, neighbourhood, pointOnEdge, radialLayout } from './layout.ts';
 import type { Point } from './layout.ts';
+import { ExpandPanel, NetworkTools, useNetwork } from './ExpandPanel.tsx';
+import { PATH_LEVEL_TEXT, freshNodeIds, pathStrength, riskBadgeOf, riskPathNote, strongestEvidencePath, viewGraph } from './network.ts';
 
 const hexagon = (r: number) =>
   Array.from({ length: 6 }, (_, index) => {
@@ -251,6 +253,20 @@ interface PanelActions {
   toggleSources?: () => void;
 }
 
+/** Siła ścieżki: liczba kroków, najsłabsze ogniwo i uczciwy opis (hipoteza na drodze = ścieżka poszlakowa). */
+function PathStrengthLine({ path }: { path: EvidencePath }) {
+  const strength = pathStrength(
+    path.steps.map((step) => step.edge),
+    path.nodes,
+  );
+  const namesake = riskPathNote(path);
+  return (
+    <p className={`path-strength level-${strength.level}`}>
+      <strong>{strength.summary}</strong> · {namesake ?? PATH_LEVEL_TEXT[strength.level]} · siła {Math.round(strength.strength * 100)}/100
+    </p>
+  );
+}
+
 function PathSection({ path, ends, label, onClear }: { path: EvidencePath | null; ends: { from: string; to: string }; label: (id: string) => string; onClear: () => void }) {
   return (
     <section className="path-panel" aria-label="Ścieżka dowodowa">
@@ -269,6 +285,7 @@ function PathSection({ path, ends, label, onClear }: { path: EvidencePath | null
         </p>
       ) : (
         <>
+          <PathStrengthLine path={path} />
           {path.hypotheses > 0 ? (
             <p className="notice notice-inline">
               Ścieżka zawiera {path.hypotheses} {path.hypotheses === 1 ? 'krok oparty' : 'kroki oparte'} na hipotezie — nie jest ciągiem faktów. Nie istnieje
@@ -487,13 +504,23 @@ function useFullscreen(target: RefObject<HTMLElement | null>) {
   return { on: native || fallback, fallback, toggle };
 }
 
-export function GraphView() {
-  const { dossier } = useDossier();
-  const all = dossier.graph;
+/**
+ * `layer` — warstwa narzucona z zewnątrz (mosty w podsumowaniu sprawy); `embedded` — graf osadzony
+ * w podsumowaniu: bez własnego nagłówka sekcji i bez przełącznika warstw (steruje nim most).
+ */
+export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: LayerView; embedded?: boolean } = {}) {
+  const { dossier, summary, simplified } = useDossier();
+  // Sieć sprawy: graf teczki + rozwinięcia na żądanie („Rozwiń”); bez usługi sieci — sam graf teczki.
+  const net = useNetwork(summary.id, !simplified);
+  const [hideExpansions, setHideExpansions] = useState(false);
+  const [lastExpansion, setLastExpansion] = useState<string | null>(null);
+  const all = useMemo(() => viewGraph(dossier.graph, net.network, hideExpansions), [dossier.graph, net.network, hideExpansions]);
+  const fresh = useMemo(() => freshNodeIds(net.network, lastExpansion), [net.network, lastExpansion]);
   const stage = useRef<HTMLDivElement>(null);
   const full = useFullscreen(stage);
   // Most z podsumowania sprawy otwiera graf od razu w wybranej warstwie (`?warstwa=osint|blockchain`).
-  const requestedLayer = graphLayerFromHash(useHash());
+  const hashLayer = graphLayerFromHash(useHash());
+  const requestedLayer = forcedLayer ?? hashLayer;
   const [layer, setLayer] = useState<LayerView>(requestedLayer ?? 'both');
   useEffect(() => {
     if (requestedLayer) setLayer(requestedLayer);
@@ -508,7 +535,8 @@ export function GraphView() {
   const [sourcesShown, setSourcesShown] = useState<ReadonlySet<string>>(new Set());
   const [active, setActive] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
-  const [pathEnds, setPathEnds] = useState<{ from: string; to: string } | null>(null);
+  // `strongest`: ścieżka o największej sile (iloczyn, zanik na hipotezach) — „Ścieżka do podmiotu z listy sankcyjnej”.
+  const [pathEnds, setPathEnds] = useState<{ from: string; to: string; strongest?: boolean } | null>(null);
   const [picking, setPicking] = useState(false);
   const [query, setQuery] = useState('');
   const [centre, setCentre] = useState<CanvasCentre | null>(null);
@@ -529,7 +557,11 @@ export function GraphView() {
   const sources = useMemo(() => sourceCounts(viewed.nodes, viewed.edges), [viewed]);
   const kindOf = useMemo(() => new Map(all.nodes.map((node) => [node.id, node.kind])), [all.nodes]);
   const branchSize = (id: string) => (children.get(id) ?? []).filter((child) => kindOf.get(child) !== 'source').length;
-  const path = useMemo(() => (pathEnds ? findEvidencePath(graph.edges, pathEnds.from, pathEnds.to) : null), [graph.edges, pathEnds]);
+  const path = useMemo(
+    () => (pathEnds ? (pathEnds.strongest ? strongestEvidencePath(graph.edges, pathEnds.from, pathEnds.to) : findEvidencePath(graph.edges, pathEnds.from, pathEnds.to)) : null),
+    [graph.edges, pathEnds],
+  );
+  const riskLists = (dossier as { riskLists?: Parameters<typeof riskBadgeOf>[1] }).riskLists;
   const pathEdges = useMemo(() => new Set(path?.steps.map((step) => step.edge.id)), [path]);
   const pathNodes = useMemo(() => new Set(path?.nodes), [path]);
   const subject = all.nodes.find((node) => node.kind === 'subject');
@@ -631,26 +663,35 @@ export function GraphView() {
   const maxWeight = Math.max(1, ...graph.edges.filter((edge) => edgeLayer(edge) === 'chain').map((edge) => edge.weight ?? 0));
 
   return (
-    <section aria-labelledby="graf-powiazan" className="graph-section">
-      <header className="section-head">
-        <div>
-          <h2 id="graf-powiazan">Graf śledczy</h2>
-          <p className="muted small">
-            Widać {graph.nodes.length} z {all.nodes.length} węzłów i {graph.edges.length} z {all.edges.length} relacji. Linia przerywana to{' '}
-            <Term id="hipoteza">hipoteza</Term> — nie ustalenie. Kliknij węzeł, aby skupić widok na jego otoczeniu.
-          </p>
-        </div>
-      </header>
+    <section aria-labelledby={embedded ? undefined : 'graf-powiazan'} className={`graph-section ${embedded ? 'is-embedded' : ''}`}>
+      {embedded ? (
+        <p className="muted small graph-embedded-note">
+          Widać {graph.nodes.length} z {all.nodes.length} węzłów i {graph.edges.length} z {all.edges.length} relacji. Linia przerywana to{' '}
+          <Term id="hipoteza">hipoteza</Term> — nie ustalenie.
+        </p>
+      ) : (
+        <header className="section-head">
+          <div>
+            <h2 id="graf-powiazan">Graf śledczy</h2>
+            <p className="muted small">
+              Widać {graph.nodes.length} z {all.nodes.length} węzłów i {graph.edges.length} z {all.edges.length} relacji. Linia przerywana to{' '}
+              <Term id="hipoteza">hipoteza</Term> — nie ustalenie. Kliknij węzeł, aby skupić widok na jego otoczeniu.
+            </p>
+          </div>
+        </header>
+      )}
 
       <div className="graph-toolbar" role="toolbar" aria-label="Widok grafu">
-        <div className="segmented" role="group" aria-label="Warstwa grafu">
-          {LAYER_OPTIONS.map((option) => (
-            <button key={option.id} type="button" aria-pressed={layer === option.id} onClick={() => setLayer(option.id)}>
-              {option.label}
-              {option.id === 'chain' && ` (${chainEdges})`}
-            </button>
-          ))}
-        </div>
+        {!embedded && (
+          <div className="segmented" role="group" aria-label="Warstwa grafu">
+            {LAYER_OPTIONS.map((option) => (
+              <button key={option.id} type="button" aria-pressed={layer === option.id} onClick={() => setLayer(option.id)}>
+                {option.label}
+                {option.id === 'chain' && ` (${chainEdges})`}
+              </button>
+            ))}
+          </div>
+        )}
         {!flow && (
           <div className="segmented" role="group" aria-label="Układ grafu">
             <button type="button" aria-pressed={!radial} onClick={() => setRadial(false)}>
@@ -746,6 +787,21 @@ export function GraphView() {
         </fieldset>
       </Disclosure>
 
+      {net.network && (
+        <NetworkTools
+          caseId={summary.id}
+          network={net.network}
+          nodes={all.nodes}
+          label={label}
+          subjectId={subject?.id}
+          onPath={(from, to) => setPathEnds({ from, to })}
+          onRiskPath={(from, to) => setPathEnds({ from, to, strongest: true })}
+          onChanged={() => void net.reload()}
+          hidden={hideExpansions}
+          onToggleHidden={() => setHideExpansions(!hideExpansions)}
+        />
+      )}
+
       {picking && (
         <p className="status-box" role="status">
           <span>Wskaż na grafie drugi węzeł ścieżki dowodowej.</span>
@@ -838,15 +894,19 @@ export function GraphView() {
               const shown = sourcesShown.has(node.id);
               const isInput = inputs.has(node.id);
               const statusCaption = status === 'hypothesis' ? 'hipoteza' : status === 'confirmed' ? '✓ potwierdzone' : status === 'rejected' ? 'odrzucone' : null;
-              const caption = isInput ? (statusCaption ? `wejście · ${statusCaption}` : 'wejście') : statusCaption;
-              const description = `${isInput ? 'Wejście wyszukiwania — ' : ''}${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}`;
+              const isNew = fresh.has(node.id);
+              const baseCaption = isInput ? (statusCaption ? `wejście · ${statusCaption}` : 'wejście') : statusCaption;
+              const risk = riskBadgeOf(node, riskLists);
+              const marked = risk ? (baseCaption ? `${risk.badge} · ${baseCaption}` : risk.badge) : baseCaption;
+              const caption = isNew ? (marked ? `nowe · ${marked}` : 'nowe') : marked;
+              const description = `${isInput ? 'Wejście wyszukiwania — ' : ''}${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}${risk ? ` — ${risk.badge} (${risk.status === 'source_fact' ? 'fakt o liście' : 'hipoteza: zgodność nazwy'}): ${risk.tooltip}` : ''}`;
               const dim = (near && !focus && !near.has(node.id)) || (path && !pathNodes.has(node.id)) || (focus !== null && !focus.has(node.id));
               const serviceBox = flow && node.kind === 'service';
               return (
                 <g
                   key={node.id}
                   data-node
-                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''}`}
+                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''} ${isNew ? 'is-new' : ''} ${risk ? (risk.status === 'source_fact' ? 'risk-fact' : 'risk-hypothesis') : ''}`}
                   transform={`translate(${point.x},${point.y})`}
                   tabIndex={0}
                   role="button"
@@ -962,6 +1022,21 @@ export function GraphView() {
             <aside className="side-panel graph-drawer" aria-label="Szczegóły elementu grafu">
               {pathEnds && <PathSection path={path} ends={pathEnds} label={label} onClear={() => setPathEnds(null)} />}
               {panel}
+              {selectedNode && (
+                <ExpandPanel
+                  node={selectedNode}
+                  caseId={summary.id}
+                  network={net.network}
+                  label={label}
+                  subjectId={subject?.id}
+                  onExpanded={(record) => {
+                    setLastExpansion(record.id);
+                    setHideExpansions(false);
+                    void net.reload();
+                  }}
+                  onPath={(from, to) => setPathEnds({ from, to })}
+                />
+              )}
             </aside>
           )}
         </div>

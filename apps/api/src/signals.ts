@@ -151,6 +151,15 @@ export function tradeOfferAt(doc: SignalInput): { quote: string; index: number }
 
 export const tradeOffer = (doc: SignalInput): string | undefined => tradeOfferAt(doc)?.quote;
 
+/** Cytat pierwszego trafienia jednej z list fraz `data/signals.json` (np. przyjmowanie płatności w krypto) — dla wskaźnika D. */
+export function signalPhrase(
+  key: 'cryptoPayments' | 'regularActivity' | 'depositAddressRequest' | 'cashOrInPerson' | 'payoutToAccount' | 'noKyc' | 'cryptoExchange' | 'blik',
+  doc: SignalInput,
+): string | undefined {
+  const original = bodyOf(doc);
+  return find(PATTERNS[key], original, fold(original));
+}
+
 /** Czy podana nazwa aktywa (np. z odczytu modelu) jest kryptowalutą z listy — „karta graficzna” nią nie jest. */
 export const isCryptoAsset = (asset: string | undefined): boolean => asset !== undefined && PATTERNS.cryptoTerm.test(fold(asset.normalize('NFC')));
 

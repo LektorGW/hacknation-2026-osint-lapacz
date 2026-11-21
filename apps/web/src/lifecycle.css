@@ -1,0 +1,62 @@
+/* Cykl życia sprawy: znaczek stanu, okna zamknięcia i usunięcia, wyciszone zamknięte sprawy, ekran bezpieczeństwa. */
+
+.case-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.case-status-open { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+.case-status-closed { border-color: var(--border-strong); color: var(--muted); }
+.case-status-archived { border-color: var(--calc); color: var(--calc); background: var(--calc-bg); }
+
+.button.button-danger { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
+.button.button-danger:hover:not(:disabled) { background: var(--danger); color: var(--surface); }
+.button.button-danger:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.notice.case-closed-notice { border-left: 4px solid var(--border-strong); }
+.case-closed-notice p { margin: 0 0 var(--s1); }
+.case-hash { font-family: var(--mono); font-size: 0.78rem; overflow-wrap: anywhere; }
+
+.case-dialog form { display: grid; gap: var(--s3); }
+.case-dialog h2 { margin: 0; }
+.case-dialog p { margin: 0; }
+.case-dialog textarea,
+.case-dialog input[type='text'],
+.case-dialog input[type='password'] {
+  width: 100%;
+  padding: var(--s2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.case-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); }
+.case-dialog-error { color: var(--danger); font-weight: 600; }
+
+.case-links { margin: var(--s2) 0; padding-left: 1.1rem; }
+.case-links > li { margin-bottom: var(--s2); }
+.case-links > li.is-blocking > a { font-weight: 700; }
+.case-links ul { margin: var(--s1) 0 0; padding-left: 1.1rem; font-size: 0.88rem; }
+.case-link-values { font-family: var(--mono); font-size: 0.78rem; overflow-wrap: anywhere; }
+
+/* Historia spraw: zamknięte i zarchiwizowane wyciszone. */
+.history-table tr.is-closed > * { color: var(--muted); }
+.history-table tr.is-closed a { color: var(--muted); }
+.history-filter { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s3); font-size: 0.9rem; }
+.history-filter select { padding: 0.2rem var(--s2); border: 1px solid var(--border-strong); border-radius: var(--radius-small); background: var(--surface); color: var(--text); font: inherit; }
+
+/* Ekran „Bezpieczeństwo i retencja”. */
+.security-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: var(--s3); margin: 0; }
+.security-grid > div { padding: var(--s3); border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
+.security-grid dt { font-size: 0.82rem; color: var(--muted); }
+.security-grid dd { margin: var(--s1) 0 0; font-weight: 700; }
+.security-on { color: var(--ok); }
+.security-off { color: var(--muted); }
+.audit-details { font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }

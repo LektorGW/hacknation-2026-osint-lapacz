@@ -6,7 +6,11 @@
 import type { Identifier, IdentityMatch, ProfileAttributes, SourceCategory } from '@olcys/core';
 import type { IdentityAssessment } from './identity.ts';
 import type { PivotLead } from './pivot.ts';
+import type { BeneficiaryAttribution } from './beneficiary.ts';
+import type { OrganizationNetwork } from './org-network.ts';
 import type { ServiceMention } from './services.ts';
+import type { FiatSignalHit } from './fiat-signals.ts';
+import type { BusinessTextSignals } from './business.ts';
 
 export type SightingRole =
   /** Dokument przypisany badanemu podmiotowi (z oceną tożsamości). */
@@ -40,6 +44,10 @@ export interface Sighting {
   role: SightingRole;
   /** Wzmianki o giełdach, portfelach i innych usługach w treści dokumentu podmiotu. */
   serviceMentions?: ServiceMention[];
+  /** Sygnały działalności gospodarczej z pełnej treści (wskaźnik D); dla dokumentów rejestrów — dane podmiotu. */
+  businessText?: BusinessTextSignals;
+  /** Oznaki wyjścia do walut tradycyjnych w treści dokumentu podmiotu (wskaźnik C, Web2) — tylko dla roli `subject`. */
+  fiatSignals?: FiatSignalHit[];
 }
 
 /** Wpis „ścieżki dojścia”: który profil wskazał który identyfikator. */
@@ -221,6 +229,13 @@ export interface RunIntel {
   expansion?: ExpansionReport;
   /** Źródła i dostawcy danych, którzy nie odpowiedzieli (pole obecne tylko, gdy coś zawiodło). */
   sourceErrors?: SourceError[];
+  /**
+   * Beneficjenci adresów cytowanych przez wielu autorów (czyj to adres zbiórki lub płatności), z oceną i wynikiem
+   * sprawdzenia strony organizacji. Brak pola = analiza sprzed tego etapu (teczka liczy wtedy z cytatów przy adresach).
+   */
+  beneficiaries?: BeneficiaryAttribution[];
+  /** Sieć organizacji z rejestrów publicznych (osoby w rolach, podmioty powiązane) — tylko gdy wskazano organizację. */
+  organizationNetwork?: OrganizationNetwork;
 }
 
 export const sightingKey = (item: { url: string; archivedAt?: string }): string => `${item.url}|${item.archivedAt ?? ''}`;

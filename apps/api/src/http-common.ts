@@ -56,6 +56,12 @@ export interface AppDeps {
   fetch?: typeof fetch;
   /** Włącza log serwera (domyślnie wyłączony, żeby nie zaśmiecać testów). */
   logger?: boolean;
+  /** Rozwijanie sieci na żądanie: dostawcy RDAP, rejestrów organizacji i list sankcyjnych (testy); domyślnie z konfiguracji usługi. */
+  network?: import('./network/routes.ts').NetworkDeps;
+  /** Token API, dozwolone adresy interfejsu (CORS) i limit kosztownych żądań; domyślnie bez tokenu. */
+  security?: import('./security.ts').SecurityOptions;
+  /** Retencja zamkniętych spraw (domyślnie wyłączona) i katalog archiwów. */
+  lifecycle?: import('./lifecycle-routes.ts').LifecycleOptions;
 }
 
 export const TOOL_VERSION: string = (

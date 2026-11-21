@@ -143,7 +143,7 @@ Drabina dowodowa — każdy szczebel wymaga więcej niż poprzedni:
 |---|---|
 | `onchain_transfer` | sam przelew w blockchainie na adres bez etykiety usługi |
 | `service_interaction` | przelew na adres publicznie oznaczony jako usługa wymiany |
-| `cashout_signal` | wzorzec typowy dla wypłaty: udokumentowana ścieżka do usługi, adres wpłat, zamiana na stablecoin i wpłata, powtarzalne wpłaty |
+| `cashout_signal` | wzorzec typowy dla wypłaty: udokumentowana ścieżka do usługi, adres wpłat, zamiana na stablecoin i wpłata, powtarzalne wpłaty, doładowanie karty, adres zamilkł po wpłacie — albo deklaracja wymiany na fiat w publikacjach podmiotu |
 | `documented_fiat_exit` | wyjście udokumentowane **poza** blockchainem i przyjęte przez analityka |
 
 Dane blockchain nigdy same nie osiągają ostatniego szczebla. Wypłatę na rachunek bankowy potwierdza
@@ -154,6 +154,155 @@ Kwoty i wyceny pochodzą wyłącznie z danych sieci i kursów; gdy kursu brak, w
 Adres kontrahenta, giełdy ani kontraktu nie jest przypisywany badanej osobie. Dwa portfele
 korzystające z tej samej giełdy nie są przez to powiązane — powiązaniem (i to tylko hipotezą) jest
 dopiero wspólny indywidualny adres wpłat.
+
+### Wzorce w blockchainie (`apps/api/src/cashout-stage.ts`, `CASH_OUT_RULES`)
+
+| Reguła | Waga | Kiedy |
+|---|---|---|
+| `cashout.onchain_transfer` | 5 | przelewy na adresy bez etykiety usługi (szczebel 1) |
+| `cashout.stablecoin_swap_only` | 15 | zamiana na stablecoin bez wpłaty do usługi (szczebel 1) |
+| `cashout.direct_service_transfer` | 40 / 45 / 45 / 30 | przelew na oznaczony adres: giełda / P2P / karta / bramka (szczebel 2) |
+| `cashout.deposit_address_inferred` | 55 | przez prawdopodobny indywidualny adres wpłat (wnioskowanie) |
+| `cashout.trail_documented` | 50 | ścieżka przez adresy pośrednie |
+| `cashout.stablecoin_swap` | 60 | zamiana na stablecoin, potem wpłata stablecoina do usługi w ciągu 7 dni |
+| `cashout.stablecoin_conversion_large` | 65 | jak wyżej, ale wartość zamiany ≥ 50 000 zł (kurs z dnia; próg ekspercki `largeStablecoinPln`); bez kursu reguły nie ocenia się — ograniczenie to mówi |
+| `cashout.repeated_deposits` | 60 | ≥ 3 osobne wpłaty do tej samej usługi |
+| `cashout.repeated_offramp` | 65 | ≥ 3 wpłaty w ≥ 3 różnych miesiącach (regularne spieniężanie; nie dotyczy bramki) |
+| `cashout.deposit_then_quiet` | 50 | ostatnia aktywność adresu to wpłata do usługi, potem ≥ 30 dni bez żadnej transakcji (do daty oceny), saldo w walucie sieci ≤ 1% wpływów; bez daty oceny reguła nie działa |
+| `cashout.crypto_card_topup` | 55 | przelew na adres oznaczony jako wydawca karty zasilanej kryptowalutami |
+| `cashout.round_amounts_pln` | 10 | ≥ 2 wpłaty (i ≥ połowa wycenionych) o wartości w PLN bliskiej wielokrotności 1 000 zł (odchylenie ≤ 50 zł i ≤ 0,5%) — przesłanka słaba; bez kursu nie ocenia się |
+| `cashout.valuation_available` | 5 | jest kurs z dnia transakcji |
+
+Te same fakty opisane dwiema regułami liczą się raz (wspólny klucz pochodzenia): zamiana dużej wartości
+i zamiana ogólna, wpłaty powtarzalne i regularne spieniężanie, przelew na kartę i doładowanie karty.
+Kontrskładniki (`inferred_hop`, `cluster_origin`, `label_heuristic`, `low_trail_confidence`,
+`service_also_non_custodial`, `payment_gateway_spend`, `withdrawals_back`, `incoming_only`,
+`unverified_asset`) — bez zmian.
+
+### Oznaki w publikacjach podmiotu — Web2 (`apps/api/src/fiat-signals.ts`, `FIAT_WEB_RULES`)
+
+Zadanie KAS wymienia: interakcje z usługami P2P, bramkami płatniczymi, kartami krypto-fiat i wymianę
+znacznych wartości na stablecoiny. W publikacjach szukamy:
+
+| Reguła | Waga | Przykład |
+|---|---|---|
+| `cashout.web.p2p_offer_pln` | 45 | „sprzedam USDT za gotówkę”, „wymiana BTC na PLN” (kupno kryptowaluty się nie liczy) |
+| `cashout.web.cash_meeting` | 40 | „odbiór osobisty”, „gotówka do ręki”, „spotkanie” — w zdaniu o kryptowalutach albo w publikacji z ofertą |
+| `cashout.web.bank_or_blik` | 35 | „BLIK”, „przelew na konto”, „wypłata na konto” — w tym samym kontekście |
+| `cashout.web.crypto_card` | 35 | karta zasilana kryptowalutami (Binance Card, Crypto.com, karta Zonda, Revolut krypto, Wirex…) |
+| `cashout.web.named_offramp` | 25 | nazwana usługa wyjścia do fiat: giełda/kantor z wypłatą (Zonda, Kanga, Egera, FlyingAtom, Revolut, Bitpanda…), bitomat, platforma P2P (Binance P2P, LocalCoinSwap, Bisq, HodlHodl…) |
+| `cashout.web.payment_gateway` | 25 | bramka (BitPay, CoinGate, NOWPayments…; Przelewy24 i Tpay tylko w zdaniu o kryptowalutach) |
+
+Zasady:
+
+- **tylko konta podmiotu** — analiza zapisuje oznaki wyłącznie dla dokumentów z rolą `subject`, a teczka
+  bierze publikacje kont kandydata głównego; wzmianki i cytaty innych autorów się nie liczą;
+- **kopie liczą się raz** — publikacje grupuje `provenanceGroups` (ta sama treść, przedruk, kopia
+  archiwalna); kilka oznak z jednej oferty ma ten sam klucz pochodzenia i nie sumuje się;
+- zdania z ostrzeżeniem lub zaprzeczeniem („uwaga na oszustów”, „nie sprzedaję”) są pomijane;
+- ocena z publikacji jest osobną pozycją (`origin: 'web'`, status `hypothesis`): `cashout_signal`, gdy jest
+  deklaracja wymiany (oferta, gotówka, BLIK/przelew, karta), w przeciwnym razie `service_interaction`;
+  **nigdy** `documented_fiat_exit`;
+- gdy podmiot w publikacji nazywa usługę, do której są przelewy w blockchainie, ocena tej usługi dostaje
+  składnik `cashout.web.named_offramp`; publikacja mówiąca o wymianie na fiat podnosi ją do `cashout_signal`.
+
+### Rodzaje usług wyjścia do fiat i rejestry
+
+Lista nazw `packages/chain/data/fiat-offramps.json` (bez adresów) klasyfikuje usługę: `exchange_with_pln`,
+`crypto_atm_operator`, `crypto_card_issuer`, `payment_gateway`, `p2p_escrow`. Dla nazw z polem `registry`
+narzędzie szuka dokładnej nazwy podmiotu w migawkach Rejestru działalności w zakresie walut wirtualnych
+(IAS Katowice) i rejestru MiCA (ESMA) i podaje numer wpisu lub organ z migawki — to zgodność nazwy, nie
+tożsamości. Adresu usługi nie oznacza się bez publicznego źródła wymieniającego dokładny adres (pole
+`offrampKind` w zbiorze etykiet wymaga `source`); dla polskich usług takiego źródła nie znaleziono, więc
+nie oznaczono żadnego adresu.
+
+### „Dlaczego to oznaka wypłaty” i „Co potwierdzi wypłatę”
+
+Każda ocena ma pole `why` (zdanie z reguł, które zadziałały) i `confirm` (do kogo skierować zapytanie,
+z gotowymi wskazówkami z powiązań z usługami: transakcje, adresy wpłat, nazwy kont). Przy ofertach
+rozliczanych przelewem lub BLIK-iem wskazany jest też bank albo operator płatności — w trybie właściwych
+przepisów. Ostatni szczebel daje wyłącznie odpowiedź usługi przyjęta przez analityka.
+
+## D. Sygnały możliwej niezgłoszonej działalności gospodarczej
+
+Pytanie KAS: czy osoba zarabia na obrocie (kryptowalutami albo towarami i usługami za kryptowaluty)
+w sposób zorganizowany i ciągły, a może tego nie zgłaszać. Narzędzie **nie zna statusu podatkowego**:
+pokazuje sygnały w źródłach publicznych i w blockchainie oraz listę sprawdzeń, które może wykonać tylko
+KAS (`whatToVerify`). Ocena jest zawsze hipotezą (`status: 'hypothesis'`). Kod:
+`apps/api/src/business.ts` (reguły w `BUSINESS_RULES`), teczka: `indicators.businessActivity`.
+
+Wskaźnik ma **dwie ścieżki**, liczone osobno (każda przez `combineComponents`):
+
+### Ścieżka 1 — działalność możliwie niezgłoszona (`track: 'unregistered'`)
+
+| Reguła | Waga | Źródło | Kiedy |
+|---|---|---|---|
+| `business.repeated_offers` | 40 / 50 (+5) | publikacje | ≥ 2 / ≥ 3 odrębne oferty; +5 przy co najmniej dwóch serwisach |
+| `business.price_list_or_service_ad` | 35 | publikacje | cennik („40 zł/szt.”, „cennik”) albo ogłoszenie usług |
+| `business.accepts_crypto_payments` | 35 | publikacje | „przyjmuję płatność w BTC” (frazy z `data/signals.json`) |
+| `business.p2p_trading` | 45 | publikacje | „sprzedam BTC”, kantor, skup, kurs dnia — nazwa waluty tuż po formie ofertowej |
+| `business.website_shop` | 40 | publikacje | własna strona ze sklepem / koszykiem i instrukcją płatności |
+| `business.contact_for_orders` | 20 | publikacje | „zamówienia: pisz na priv / telegram” |
+| `business.polish_nexus` | 10 | `signals.ts` | związek z Polską ≥ 40 (PLN, BLIK, miasta, +48) przy ofercie |
+| `business.many_payers` | 30 / 40 / 50 | blockchain | ≥ 5 / 10 / 25 różnych nadawców (wypłaty z giełd liczone osobno) |
+| `business.regular_inflows` | 30 / 40 | blockchain | wpływy w ≥ 3 / ≥ 6 miesiącach przy pokryciu okresu ≥ 50% |
+| `business.retail_amounts` | 20 | blockchain | ≥ 60% wycenionych wpływów w przedziale 20–5000 zł |
+| `business.turnover` | 10 / 20 / 30 | blockchain | obrót w roku ≥ 5 / 20 / 100 tys. zł — **obrót (wpływy), nie dochód** |
+| `business.cashout_to_exchange` | 15 | wskaźnik C | środki z adresów podmiotu trafiały do usług wymiany |
+| `business.registry_none_found` | 10 / 5 | rejestry | szukano po numerze lub domenie / wyłącznie po nazwie — brak wpisu (słaby sygnał) |
+
+Kontrdowody: `business.charity_address` (40, **twardy** — adres zbiórki organizacji: wpłaty to darowizny,
+wpływów nie liczy się), `business.donation_context` (20 — prośba o wsparcie bez oferty),
+`business.one_off_sale` (15 — jedna oferta, bez wielu wpłacających i regularności),
+`business.virtual_currency_register` (30 przy dopasowaniu po numerze/domenie, 10 po nazwie — wpis w
+rejestrze działalności w zakresie walut wirtualnych / MiCA), `business.registry_found` (10 — działalność
+jest zarejestrowana; pytanie brzmi wtedy, czy obrót jest zadeklarowany — i otwiera się ścieżka 2).
+
+- **Kopie liczą się raz.** Oferty dzieli się na odrębne: kopia to ta sama strona (także w archiwum), ta
+  sama treść (SHA-256) albo ta sama / niemal ta sama treść (Jaccard ≥ 0,8) w odstępie < 14 dni. Ta sama
+  treść wystawiona ponownie po tygodniach jest kolejną ofertą. Składniki oparte na jednej publikacji
+  dzielą klucz pochodzenia — drugi nie jest doliczany.
+- **Wyłącznie adresy podmiotu** (przypisane osobie głównej, jak we wskaźniku C). Adresy giełd,
+  kontraktów, mikserów i zbiórek są wyłączone; przelewy między własnymi adresami nie są wpływami.
+- **Wycena** — kurs z istniejących wycen tego samego aktywa (wypłaty, ścieżki) najwyżej 45 dni od
+  wpływu; bez kursu wpływ nie jest wyceniony (nie jest zerem). Kurs przykładowy jest oznaczony.
+  Rok podatkowy według czasu polskiego.
+- **Rejestry** — tylko łączniki użyte w analizie: `live-ceidg` (wymaga tokenu `CEIDG_API_TOKEN`),
+  `live-krs`, `live-vat-whitelist`, `rejestry-publiczne` (migawki lokalne). Każdy dostaje wynik
+  `found` / `not_found` / `not_checked` / `unavailable` z podstawą wyszukiwania. Wyszukiwanie po nazwie
+  jest zawodne — osoba może działać pod inną zarejestrowaną nazwą.
+
+### Ścieżka 2 — podmiot zarejestrowany: zgodność obrotu i ryzyko prania pieniędzy (`registered`)
+
+Gdy wykaz VAT, KRS albo CEIDG zwrócił wpis (bez dopasowań po samej nazwie), wpis nie jest wyłącznie
+kontrdowodem — otwiera osobną ocenę **sygnałów do weryfikacji** na danych zwróconych przez rejestr
+(status VAT z datami, rachunki z wykazu, PKD, data rejestracji, kapitał, organy):
+
+| Reguła | Waga | Kiedy |
+|---|---|---|
+| `business.registered.crypto_flows_vs_pkd` | 40 | obrót kryptowalutowy, a PKD nie dotyczą handlu (46, 47), IT (62, 63) ani finansów (64, 66) |
+| `business.registered.recent_registration` | 20 | rejestracja ≤ 365 dni przed pierwszą aktywnością (albo po niej) |
+| `business.registered.vat_status_inactive_or_removed` | 35 | wpływy przy statusie VAT innym niż „Czynny” albo po wykreśleniu |
+| `business.registered.payout_to_whitelist_account` | 60 | wypłata z odpowiedzi usługi (`fiatPayouts[].bankAccountMasked`) na rachunek o tej samej końcówce co rachunek z wykazu VAT — **porównanie wyłącznie 4 ostatnich cyfr** |
+| `business.registered.personal_and_company_mixing` | 30 | ten sam adres w publikacji z numerem firmy (lub jako adres organizacji z rejestru) i w publikacji prywatnej |
+| `business.registered.shared_officer_network` | 15 | wspólni członkowie organów z innymi podmiotami sieci organizacji |
+| `business.registered.sanctions_or_knf_warning` | 40 / 15 | `checkNetworkNodes` (listy sankcyjne, ostrzeżenia KNF) albo wpis KNF z łącznika rejestrów — mocne / sama nazwa |
+
+Język: „sygnał do weryfikacji”, np. „możliwe wprowadzanie środków z kryptowalut do obrotu firmy —
+sprawdź JPK_V7, księgi, źródło środków”. Narzędzie nigdy nie stwierdza prania pieniędzy. Lista
+sprawdzeń: JPK_V7, CIT-8 / PIT-36(L) podmiotu, źródło pochodzenia środków, beneficjent rzeczywisty —
+CRBR jest rejestrem jawnym, ale narzędzie z niego nie korzysta: przed użyciem sprawdź podstawę prawną.
+
+### Siatka
+
+Dla powiązanych tożsamości i organizacji z sieci organizacji teczka liczy wskaźnik D osobno; węzły od
+40 pkt dostają w grafie odznakę „sygnały działalności”, a ocena podmiotu — listę `network` ze ścieżką do
+podmiotu (`strongestPath`: siła z zanikiem na hipotezach, najsłabsze ogniwo). Powiązanie w siatce nie
+przenosi sygnałów na podmiot. Rozwijanie sieci na żądanie może liczyć wskaźnik dla dowolnego bytu
+funkcją `businessSignalsFor(entity, data)` (czysta, bez zapytań do źródeł).
+
+Zdanie w kluczowych ustaleniach (warstwa wniosków) pojawia się od 40 pkt; linia w podsumowaniu sprawy
+— od 60 pkt („istotne przesłanki”).
 
 ## Odpowiedź usługi
 

@@ -57,6 +57,24 @@ const entries = {
     short: 'Ocena 0–100, którą sprawą zająć się najpierw. Łączy pewność ustaleń z szacowaną kwotą wypłat.',
     group: 'wynik',
   },
+  beneficjent: {
+    term: 'Beneficjent zbiórki',
+    short: 'Organizacja, na rzecz której zbierane są wpłaty na adres — wskazana przez treść wokół adresu w publikacjach (np. „Donation to Tor”, pole autora obok pola zbiórki), a nie przez autora publikacji.',
+    why: 'To hipoteza z jawnym wskaźnikiem 0–100; najmocniejsza przesłanka to oficjalna strona organizacji publikująca ten sam adres. Dla osoby adres zbiórki ma 0%.',
+    group: 'wynik',
+  },
+  'osoba-w-roli': {
+    term: 'Osoba w roli (rejestr)',
+    short: 'Osoba pełniąca funkcję w organizacji według rejestru publicznego (zarząd, prokurent, założyciel, dyrektor).',
+    why: 'To osoba odpowiedzialna za organizację — nie właściciel adresu i nie kandydat na osobę ze sprawy.',
+    group: 'zrodla',
+  },
+  'siatka-adresu': {
+    term: 'Siatka adresu',
+    short: 'Zbiorcze zestawienie, kto wpłacał na adres i dokąd wypływały środki: liczby nadawców i odbiorców, najwięksi kontrahenci i usługi (punkty zapytania).',
+    why: 'Wpłacający to darczyńcy lub klienci — nie są kontami właściciela, dlatego nie powstają dla nich osoby. Nadawców zna usługa, z której wysłano środki.',
+    group: 'pieniadze',
+  },
   hipoteza: {
     term: 'Hipoteza',
     short: 'Przypuszczenie programu oparte na przesłankach. Nie jest ustaleniem — wymaga sprawdzenia i decyzji analityka.',
@@ -179,6 +197,30 @@ const entries = {
     why: 'To podstawa zapytania do giełdy o dane właściciela konta.',
     group: 'pieniadze',
   },
+  'off-ramp': {
+    term: 'Off-ramp (wyjście do fiat)',
+    short: 'Usługa, w której kryptowaluty zamienia się na waluty tradycyjne: giełda lub kantor z wypłatą na rachunek, bitomat, karta krypto, bramka płatnicza albo platforma P2P.',
+    why: 'Wyjście do fiat potwierdza tylko ta usługa (dane KYC i historia wypłat) — sam blockchain pokazuje wyłącznie przekazanie środków.',
+    group: 'pieniadze',
+  },
+  bitomat: {
+    term: 'Bitomat',
+    short: 'Automat (kryptomat) do kupna i sprzedaży kryptowalut za gotówkę. Przy sprzedaży wypłaca banknoty.',
+    why: 'Wypłata gotówki z bitomatu nie zostawia śladu w banku; operator automatu może mieć nagrania i dane z weryfikacji klienta.',
+    group: 'pieniadze',
+  },
+  'karta-krypto': {
+    term: 'Karta krypto',
+    short: 'Karta płatnicza zasilana kryptowalutami (np. wydawana przez giełdę): przy płatności lub wypłacie z bankomatu kryptowaluta jest zamieniana na złotówki.',
+    why: 'Doładowanie karty to praktyczne wyjście do fiat — zestawienie płatności i wypłat ma wydawca karty.',
+    group: 'pieniadze',
+  },
+  p2p: {
+    term: 'P2P (wymiana bezpośrednia)',
+    short: 'Sprzedaż kryptowalut innej osobie za przelew, BLIK albo gotówkę — przez ogłoszenie, komunikator albo platformę z depozytem (np. Binance P2P).',
+    why: 'Pieniądze trafiają wprost na rachunek lub do ręki sprzedającego; potwierdzić je może bank albo platforma P2P.',
+    group: 'pieniadze',
+  },
   'adres-wplat': {
     term: 'Adres wpłat (depozytowy)',
     short: 'Adres, który giełda przydziela jednemu klientowi do wpłat. Przelew na taki adres wskazuje konkretne konto w giełdzie.',
@@ -205,6 +247,18 @@ const entries = {
     term: 'Odpowiedź usługi (dokument spoza OSINT)',
     short: 'Pismo z giełdy lub innej usługi wprowadzone do sprawy przez analityka. Nie pochodzi ze źródeł publicznych.',
     why: 'Program nie sprawdza autentyczności takiego dokumentu — dlatego ma osobny, fioletowy znacznik.',
+    group: 'pieniadze',
+  },
+  'dzialalnosc-sygnaly': {
+    term: 'Działalność gospodarcza (sygnały)',
+    short: 'Wskaźnik D: oznaki, że osoba zarabia w sposób zorganizowany i ciągły — powtarzalne oferty, wielu wpłacających, regularne wpływy, cennik, przyjmowanie płatności w krypto.',
+    why: 'To hipoteza do sprawdzenia, nie ustalenie: czy działalność jest zgłoszona i czy przychód zadeklarowano, wiedzą tylko systemy KAS (CEIDG, zeznania, JPK). Wpis w rejestrze otwiera drugą ścieżkę — weryfikację zgodności obrotu firmy.',
+    group: 'pieniadze',
+  },
+  'obrot-a-dochod': {
+    term: 'Obrót a dochód',
+    short: 'Obrót to suma wpływów na adresy osoby (po kursie z dnia). Dochód to przychód pomniejszony o koszty — z blockchaina go nie widać.',
+    why: 'Wpływ może być zwrotem, pożyczką albo przelewem z własnego portfela. Kwota obrotu to skala do sprawdzenia, nie podstawa opodatkowania.',
     group: 'pieniadze',
   },
   kontrahent: {

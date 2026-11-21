@@ -4,7 +4,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { AddressClass, CashOutKind, Network } from '@olcys/core';
+import type { AddressClass, CashOutKind, Network, OfframpKind } from '@olcys/core';
+import { OFFRAMP_KINDS } from './offramps.ts';
 
 export interface LabelEntry {
   address: string;
@@ -25,6 +26,11 @@ export interface LabelEntry {
   source?: string;
   /** Data sprawdzenia źródła (RRRR-MM-DD). */
   checkedAt?: string;
+  /**
+   * Rodzaj usługi wyjścia do walut tradycyjnych (giełda z wypłatą w PLN, operator bitomatów, wydawca karty,
+   * bramka, platforma P2P). Wpis z tym polem MUSI mieć `source` — publiczne źródło wymieniające dokładny adres.
+   */
+  offrampKind?: OfframpKind;
 }
 
 export type LabelCategory = 'law_enforcement' | 'incident';
@@ -74,6 +80,9 @@ export function loadLabelFile(path: string): { name: string; entries: LabelEntry
     if (raw.category !== undefined && !CATEGORIES.includes(raw.category)) throw new Error(`${where}: nieznana kategoria "${raw.category}".`);
     // Etykieta organu państwa lub incydentu bez wskazania źródła jest bezwartościowa dowodowo.
     if (raw.category !== undefined && (typeof raw.source !== 'string' || raw.source === '')) throw new Error(`${where}: kategoria "${raw.category}" wymaga pola "source".`);
+    if (raw.offrampKind !== undefined && !OFFRAMP_KINDS.includes(raw.offrampKind)) throw new Error(`${where}: nieznany rodzaj usługi wyjścia do fiat "${raw.offrampKind}".`);
+    // Adres usługi wyjścia do fiat oznaczamy tylko z publicznym źródłem wymieniającym dokładny adres.
+    if (raw.offrampKind !== undefined && (typeof raw.source !== 'string' || raw.source === '')) throw new Error(`${where}: rodzaj "${raw.offrampKind}" wymaga pola "source".`);
     return raw as LabelEntry;
   });
   return { name: typeof parsed.name === 'string' ? parsed.name : path, entries };

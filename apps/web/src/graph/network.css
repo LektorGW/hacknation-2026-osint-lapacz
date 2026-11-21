@@ -1,0 +1,41 @@
+/* Rozwijanie sieci na żądanie: panel „Rozwiń”, historia, ścieżki, nowe węzły i wpisy list sankcyjnych. */
+
+.expand-panel { border-top: 1px solid var(--border); margin-top: 0.75rem; padding-top: 0.75rem; display: grid; gap: 0.5rem; }
+.expand-panel h4 { margin: 0.25rem 0 0; }
+.expand-groups { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.expand-groups .is-disabled { opacity: 0.55; }
+.expand-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.expand-basis li { margin-bottom: 0.4rem; }
+.expand-result { background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-small); padding: 0.5rem 0.65rem; }
+
+.network-link { background: var(--surface-alt); border-radius: var(--radius-small); padding: 0.45rem 0.6rem; border-left: 4px solid var(--border-strong); }
+.network-link.level-documented { border-left-color: var(--ok); }
+.network-link.level-distant { border-left-color: var(--calc); }
+.network-link.level-circumstantial, .network-link.level-none { border-left-color: var(--inference); }
+.network-link p { margin: 0.15rem 0; }
+.chip-calc { background: var(--calc-bg); border-color: var(--calc); color: var(--calc); }
+
+.sanctions-banner { border-left: 4px solid var(--danger); }
+.sanctions-banner.is-synthetic::after { content: ' [DANE SYNTETYCZNE]'; font-weight: 700; color: var(--inference); }
+
+.path-strength { margin: 0.25rem 0 0.5rem; padding: 0.35rem 0.5rem; border-radius: var(--radius-small); background: var(--surface-alt); }
+.path-strength.level-documented { box-shadow: inset 3px 0 0 var(--ok); }
+.path-strength.level-distant { box-shadow: inset 3px 0 0 var(--calc); }
+.path-strength.level-circumstantial { box-shadow: inset 3px 0 0 var(--inference); }
+
+.network-tools { display: grid; gap: 0.35rem; margin: 0.35rem 0; }
+.network-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin: 0; }
+.path-search-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.path-search-form select { max-width: min(22rem, 100%); }
+.button.button-danger { border-color: var(--danger); color: var(--danger); }
+
+/* Nowe węzły z ostatniego rozwinięcia: łagodne pojawienie się i obwódka. */
+.gnode.is-new > :first-child { animation: network-node-in 0.7s ease-out both; }
+.gnode.is-new { filter: drop-shadow(0 0 4px color-mix(in srgb, var(--primary) 55%, transparent)); }
+.gnode.is-new .gnode-caption { fill: var(--primary); font-weight: 700; }
+/* Odznaka „lista sankcyjna”: pełna czerwona obwódka = fakt o liście (identyfikator), przerywana = zgodność nazwy (hipoteza). */
+.gnode.risk-fact > :first-child { stroke: var(--danger); stroke-width: 3; stroke-dasharray: none; }
+.gnode.risk-hypothesis > :first-child { stroke: var(--danger); stroke-width: 2.5; stroke-dasharray: 4 3; }
+.gnode.risk-fact .gnode-caption, .gnode.risk-hypothesis .gnode-caption { fill: var(--danger); font-weight: 700; }
+@keyframes network-node-in { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .gnode.is-new > :first-child { animation: none; } }

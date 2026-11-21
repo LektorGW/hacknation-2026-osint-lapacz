@@ -34,6 +34,68 @@ export function resolveMode(demoBackend: boolean, health: unknown): ModeInfo {
   return MODE_INFO.unknown;
 }
 
+// ---------- Tryb danych analiz (przełącznik usługi: GET/PUT /api/settings/data-mode) ----------
+
+/** Tryb danych nowych analiz: dane syntetyczne, prawdziwe źródła publiczne albo oba naraz. Niezależny od DEMO. */
+export type DataMode = 'synthetic' | 'live' | 'both';
+
+export const DATA_MODES: readonly DataMode[] = ['synthetic', 'live', 'both'];
+
+export const DATA_MODE_SHORT: Record<DataMode, string> = { synthetic: 'Syntetyczne', live: 'Prawdziwe', both: 'Oba' };
+
+export const DATA_MODE_DESCRIPTION: Record<DataMode, string> = {
+  synthetic: 'dane syntetyczne z piaskownicy i laboratorium — bez zapytań do prawdziwych serwisów',
+  live: 'prawdziwe źródła publiczne w internecie',
+  both: 'prawdziwe źródła publiczne oraz dane syntetyczne (oznaczone)',
+};
+
+/** Dlaczego tryb jest niedostępny — co ustawić przy uruchomieniu serwera. */
+export const DATA_MODE_UNAVAILABLE: Record<DataMode, string> = {
+  synthetic: 'Niedostępne: uruchom serwer z piaskownicą (SANDBOX_URL) albo laboratorium (LAB_URL).',
+  live: 'Niedostępne: uruchom serwer z ENABLE_LIVE=1.',
+  both: 'Niedostępne: wymaga piaskownicy (SANDBOX_URL) i ENABLE_LIVE=1 jednocześnie.',
+};
+
+/** Ostrzeżenie przed włączeniem prawdziwych źródeł. */
+export const LIVE_CONFIRMATION = 'Nowe analizy będą odpytywać publiczne źródła w internecie.';
+
+export interface DataModeStatus {
+  current: DataMode;
+  available: Record<DataMode, boolean>;
+}
+
+export const parseDataMode = (value: unknown): DataMode | undefined =>
+  typeof value === 'string' && (DATA_MODES as readonly string[]).includes(value) ? (value as DataMode) : undefined;
+
+/** Stan przełącznika z `GET /api/health` (`dataMode`, `dataModesAvailable`); starsza usługa go nie podaje — `null`. */
+export function dataModeStatus(health: unknown): DataModeStatus | null {
+  const body = (health ?? {}) as { dataMode?: unknown; dataModesAvailable?: Record<string, unknown> };
+  const current = parseDataMode(body.dataMode);
+  if (!current) return null;
+  const flags = body.dataModesAvailable ?? {};
+  const available = Object.fromEntries(DATA_MODES.map((mode) => [mode, flags[mode] === true || mode === current])) as Record<DataMode, boolean>;
+  return { current, available };
+}
+
+/** Czy zmiana trybu włącza prawdziwe źródła, których dotąd nie było — wtedy interfejs prosi o potwierdzenie. */
+export const needsLiveConfirmation = (from: DataMode, to: DataMode): boolean => from === 'synthetic' && to !== 'synthetic';
+
+/** Znacznik analizy na listach: SANDBOX (dane syntetyczne) albo LIVE; brak dla analiz sprzed przełącznika. */
+export function runDataModeTag(run: { dataMode?: unknown } | undefined): 'SANDBOX' | 'LIVE' | undefined {
+  const mode = parseDataMode(run?.dataMode);
+  return mode ? (mode === 'synthetic' ? 'SANDBOX' : 'LIVE') : undefined;
+}
+
+/** Łączniki działające bez sieci (indeks własny, migawki rejestrów) — należą do każdego trybu, jak w usłudze. */
+const LOCAL_CONNECTORS = new Set(['corpus', 'rejestry-publiczne', 'listy-sankcyjne']);
+
+/** Czy łącznik weźmie udział w analizie w danym trybie (ta sama reguła co w usłudze: apps/api/src/data-mode.ts). */
+export function connectorInDataMode(id: string, mode: DataMode): boolean {
+  if (mode === 'both' || LOCAL_CONNECTORS.has(id)) return true;
+  const synthetic = SYNTHETIC_CONNECTOR_PREFIXES.some((prefix) => id.startsWith(prefix));
+  return mode === 'synthetic' ? synthetic : !synthetic;
+}
+
 /** Przedrostki identyfikatorów łączników piaskownicy i laboratorium (packages/sources: sandbox.ts, lab.ts). */
 const SYNTHETIC_CONNECTOR_PREFIXES = ['sandbox-', 'lab-'];
 /** Końcówki nazw usług syntetycznych: `<serwis>.sandbox`, `<portal>.lab.test`. */

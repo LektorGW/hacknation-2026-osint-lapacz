@@ -235,13 +235,16 @@ function renderCashOutAssessment(item: CashOutAssessment): string {
   const position = STAGES.indexOf(item.stage) + 1;
   const txids = item.txids ?? [];
   return `<div class="zrodlo">
-    <h4><span class="mono">${esc(item.address)}</span>${item.serviceName ? ` → ${esc(item.serviceName)}` : ''}</h4>
+    <h4>${item.origin === 'web' ? 'Publikacje kont podmiotu (Web2)' : `<span class="mono">${esc(item.address)}</span>`}${item.serviceName ? ` → ${esc(item.serviceName)}` : ''}</h4>
     ${indicatorHead(item.indicator)}
     <p><strong>Szczebel drabiny dowodowej:</strong> ${position > 0 ? `${position} z ${STAGES.length} — ` : ''}${esc(STAGE_LABEL[item.stage] ?? item.stage)}.
-      Status: ${esc(CLAIM_LABEL[item.status] ?? item.status)}. Sieć: ${esc(item.network)}.${
+      Status: ${esc(CLAIM_LABEL[item.status] ?? item.status)}.${item.origin === 'web' ? '' : ` Sieć: ${esc(item.network)}.`}${
         item.amount !== undefined ? ` Kwota: ${esc(formatAmount(item.amount))} ${esc(item.asset ?? '')}${item.valuePln !== undefined ? ` (szacunkowo ${esc(formatPln(item.valuePln))})` : ''}.` : ''
       }</p>
     <p>${esc(item.statement)}</p>
+    ${item.why ? `<p><strong>Dlaczego to oznaka wypłaty:</strong> ${esc(item.why)}</p>` : ''}
+    ${item.confirm ? `<p><strong>Co potwierdzi wypłatę:</strong> ${esc(item.confirm.text)}</p>` : ''}
+    ${item.offramp ? `<p class="meta">Rodzaj usługi: ${esc(item.offramp.label)}${item.offramp.registry.length > 0 ? `; ${esc(item.offramp.registry.join('; '))}` : ''}.</p>` : ''}
     ${
       txids.length > 0
         ? `<p class="meta">Transakcje: ${txids.slice(0, MAX_TXIDS).map((txid) => `<span class="mono">${esc(txid)}</span>`).join(', ')}${txids.length > MAX_TXIDS ? ` oraz ${txids.length - MAX_TXIDS} dalszych (pełna lista w pakiecie report.json)` : ''}.</p>`

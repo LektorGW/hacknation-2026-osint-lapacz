@@ -1,5 +1,6 @@
 // Sekcje teczki: profile, adresy, przepływy, oś czasu, osoby powiązane i rejestr decyzji.
 import { useMemo, useState } from 'react';
+import { AddressNetworkCard } from './OrganizationCards.tsx';
 import type { ProfileCard, RelatedPerson, TimelineEvent } from '@olcys/core';
 import { api } from '../api.ts';
 import { BarChart, SankeyChart } from '../charts/Charts.tsx';
@@ -164,6 +165,7 @@ export function AddressesTab() {
           <FindingCard key={finding.address} finding={finding} index={index} />
         ))}
       </section>
+      <AddressNetworkCard />
       {rejected.length > 0 && (
         <section aria-labelledby="odrzucone" className="rejected-section">
           <Disclosure title={<span id="odrzucone">Adresy odrzucone ({rejected.length})</span>} meta="nie wchodzą do szacunku wypłat">

@@ -7,6 +7,8 @@ import { DashboardPage } from './pages/DashboardPage.tsx';
 import { DossierPage } from './pages/DossierPage.tsx';
 import { MonitoringPage } from './pages/MonitoringPage.tsx';
 import { RulesPage } from './pages/RulesPage.tsx';
+import { SecurityPage } from './pages/SecurityPage.tsx';
+import { TokenPrompt } from './components/TokenPrompt.tsx';
 import { StatsPage } from './pages/StatsPage.tsx';
 import { SweepPage } from './pages/SweepPage.tsx';
 import { href, navigate, parseRoute, useHash } from './router.ts';
@@ -32,6 +34,8 @@ function Page({ route }: { route: Route }) {
       return <MonitoringPage />;
     case 'rules':
       return <RulesPage />;
+    case 'security':
+      return <SecurityPage />;
     default:
       return <DashboardPage />;
   }
@@ -119,8 +123,11 @@ export function App() {
       <div className="shell">
         <header className={`sidebar ${menuOpen ? 'is-open' : ''}`} onKeyDown={(event) => event.key === 'Escape' && setMenuOpen(false)}>
           <a className="brand" href={href.dashboard()}>
-            <span className="brand-short">OŁCyŚ</span>
-            <span className="brand-long">OSINTowy Łapacz Cyfrowych Śladów</span>
+            <img className="brand-logo" src="/favicon.svg" alt="" width="44" height="44" />
+            <span className="brand-text">
+              <span className="brand-short">OŁCyŚ</span>
+              <span className="brand-long">OSINTowy Łapacz Cyfrowych Śladów</span>
+            </span>
           </a>
           <button type="button" className="menu-button" aria-expanded={menuOpen} aria-controls="menu-glowne" onClick={() => setMenuOpen(!menuOpen)}>
             <span aria-hidden="true">{menuOpen ? '✕' : '☰'}</span> Menu
@@ -150,6 +157,9 @@ export function App() {
             <button type="button" className="sidebar-button" onClick={() => openGlossary()}>
               ≡ Słownik pojęć
             </button>
+            <a className="sidebar-button" href={href.security()} aria-current={route.page === 'security' ? 'page' : undefined} onClick={() => setMenuOpen(false)}>
+              ⚿ Bezpieczeństwo i retencja
+            </a>
             <button type="button" className="sidebar-button" data-tour="help" onClick={() => help.current?.showModal()}>
               ? Pomoc i skróty
             </button>
@@ -161,7 +171,13 @@ export function App() {
             <Page route={route} />
           </main>
           <footer className="app-footer">
-            Narzędzie wspiera analityka. Wynik jest wskazówką wymagającą weryfikacji, a nie rozstrzygnięciem. Wyłącznie źródła publiczne.
+            <p>Narzędzie wspiera analityka. Wynik jest wskazówką wymagającą weryfikacji, a nie rozstrzygnięciem. Wyłącznie źródła publiczne.</p>
+            <p className="app-footer-credit">
+              <img src="/favicon.svg" alt="" width="18" height="18" />
+              <span>
+                © 2026 zespół <strong>KryptoTrop</strong> · HackNation 2026 · rozwiązanie zadania „OSINTowy Łapacz Cyfrowych Śladów”
+              </span>
+            </p>
           </footer>
         </div>
       </div>
@@ -195,6 +211,9 @@ export function App() {
           <button type="button" className="button" onClick={resetHints}>
             Przywróć ukryte wskazówki
           </button>
+          <a className="button" href={href.security()} onClick={() => help.current?.close()}>
+            Bezpieczeństwo i retencja
+          </a>
         </div>
         <details>
           <summary>Skróty klawiaturowe</summary>
@@ -216,6 +235,7 @@ export function App() {
         </form>
       </dialog>
       <GlossaryDrawer />
+      <TokenPrompt />
     </ToastProvider>
     </ModeProvider>
   );

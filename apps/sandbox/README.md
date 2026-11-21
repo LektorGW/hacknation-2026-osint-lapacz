@@ -113,6 +113,27 @@ Dane w `data/proofs.ts`; wyniki wcześniejszych części pozostają bez zmian (n
 
 Nowe dane wymagają restartu piaskownicy. Podpisy i oczekiwane wyniki sprawdzają testy `packages/sources/test/sandbox.test.ts` (część „dowody i ich podróbki").
 
+### Działalność gospodarcza — wskaźnik D
+
+Dane w `data/business.ts` (osoby i sklepy zmyślone; wcześniejsze części bez zmian). Wskaźnik D pokazuje zakładka „Więcej → Wskaźniki” (karta D), a od 60 pkt także linia w podsumowaniu sprawy. Rejestry na żywo (CEIDG, KRS, wykaz VAT) są w piaskownicy wyłączone — sprawdzany jest tylko lokalny rejestr walut wirtualnych po nicku, więc „brak wpisu” jest tu słabym sygnałem (5 pkt).
+
+| Przypadek | Identyfikator do wpisania | Oczekiwany wynik |
+|---|---|---|
+| **Bartosz Lipa** — sprzedawca akcesoriów GSM, Kraków | nick `lipa_gsm` | Trzy oferty na Targu (`/targ/oferta/7001`, `7044`, `7102`), cennik na forum, strona sklepu `/www/lipa-gsm` z instrukcją płatności, wpis w Społeczności skopiowany z oferty 7001 tego samego dnia (kopia liczona raz: 6 publikacji → 5 ofert w 4 serwisach). Adres `bc1q8g50…5nyf`: 25 wpłat od 25 adresów w 10 miesiącach 2025, kwoty detaliczne, co miesiąc wpłata na giełdę. **D ≈ 70 — istotne przesłanki**: `business.repeated_offers` 55 + premie za wpłacających i sklep; obrót 2025 ok. 28 tys. zł (kurs przykładowy — wpływy, nie dochód); zdanie w kluczowych ustaleniach, odznaka „sygnały działalności” na węźle podmiotu. |
+| **Ewa Sosna** — jednorazowa sprzedaż roweru, Poznań | nick `ewa_sosna` | Jedno ogłoszenie „Sprzedam rower… płatność w BTC” (`/targ/oferta/7210`) i jedna wpłata na `1Esyc…EV1Tr`. **D ≈ 23 — słabe przesłanki**: `business.accepts_crypto_payments` 35 i kontrdowód `business.one_off_sale` −15; brak zdania w kluczowych ustaleniach. |
+
+Ścieżkę „podmiot zarejestrowany” (wykaz VAT, KRS, odpowiedź usługi z wypłatą na rachunek z wykazu) pokazują testy `apps/api/test/business.test.ts` — w piaskownicy rejestry na żywo są wyłączone.
+
+### Wyjście do walut tradycyjnych — wskaźnik C
+
+Dane w `data/fiat.ts` (osoba i „Giełda Wisła” zmyślone; wcześniejsze części bez zmian). Wynik w zakładce „Więcej → Wskaźniki” (karta C: oznaki pogrupowane „W publikacjach” / „W blockchainie”) i w podsumowaniu sprawy (kafelek „Dokąd trafiły pieniądze”: „oznaki wypłaty na PLN”).
+
+| Przypadek | Identyfikator do wpisania | Oczekiwany wynik |
+|---|---|---|
+| **Teodor Kaliszuk** — sprzedaje USDT za gotówkę, Warszawa | nick `teo_usdt_waw` | Web2: ogłoszenie `/targ/oferta/4101` „Sprzedam USDT za gotówkę, Warszawa, BLIK…” i jego kopia `/forum/watek/41/post/1` (kopia liczona raz), profil `/spolecznosc/u/teo_usdt_waw` („płacę kartą krypto, gotówkę wypłacam w bitomacie”); odpowiedź `obserwator_waw` pod postem się nie liczy. **Ocena z publikacji ≈ 60, `cashout_signal`, hipoteza**: `cashout.web.p2p_offer_pln` 45 + `cash_meeting`, `crypto_card` (BLIK i bitomat jako zależne). Blockchain (`0x3563…a584`): 12 ETH → 27 700 USDT przez „WymianaSwap” (ok. 99,6 tys. zł), cztery wpłaty USDT na „Giełda Wisła” w 02, 04, 06 i 08.2026 (każda ok. 20 lub 30 tys. zł), potem cisza. **Ocena giełdy ≈ 80, `cashout_signal`**: `stablecoin_conversion_large` 65, `repeated_offramp`, `deposit_then_quiet`, `round_amounts_pln`. Żadna ocena nie osiąga „udokumentowanego wyjścia” — to daje dopiero odpowiedź usługi. „Oznaki wypłaty na PLN”: 11 (5 w publikacjach, 6 w blockchainie). |
+
+Nowe dane wymagają restartu piaskownicy.
+
 ### Podmiana adresu między analizami
 
 Strona `/_demo` przełącza fazę scenariusza Dominika:

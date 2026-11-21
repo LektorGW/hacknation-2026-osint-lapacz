@@ -18,7 +18,7 @@ export interface GraphLayout {
 }
 
 /** Kolejność kolumn (i pierścieni): od podmiotu przez hipotezy operatora, persony i konta do kontrahentów. */
-export const KIND_ORDER: GraphNodeKind[] = ['subject', 'operator', 'persona', 'identifier', 'profile', 'source', 'address', 'service', 'person'];
+export const KIND_ORDER: GraphNodeKind[] = ['subject', 'operator', 'persona', 'identifier', 'profile', 'source', 'address', 'service', 'organization', 'person'];
 
 type Adjacency = Map<string, string[]>;
 

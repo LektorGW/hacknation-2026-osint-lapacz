@@ -66,14 +66,14 @@ describe('createConnectors', () => {
     assert.equal(new Set(sandbox.map((connector) => connector.id)).size, 7);
     assert.equal(new Set(sandbox.map((connector) => connector.service)).size, 7);
     assert.ok(sandbox.every((connector) => connector.enabledByDefault));
-    assert.deepEqual(connectors.filter((connector) => !connector.id.startsWith('sandbox-')).map((connector) => connector.id), ['rejestry-publiczne']);
+    assert.deepEqual(connectors.filter((connector) => !connector.id.startsWith('sandbox-')).map((connector) => connector.id), ['rejestry-publiczne', 'listy-sankcyjne']);
   });
 
   test('bez konfiguracji powstaje tylko lokalny łącznik rejestrów; live i Tor tylko na życzenie', async () => {
-    assert.deepEqual(createConnectors({}).map((c) => c.id), ['rejestry-publiczne']);
+    assert.deepEqual(createConnectors({}).map((c) => c.id), ['rejestry-publiczne', 'listy-sankcyjne']);
     const live = createConnectors({ enableLive: true });
     // Łączniki stałe mają przedrostek „live-", źródła z rejestru monitoringu — „mon-"; dalej łączniki katalogu search/.
-    const searchIds = ['deep-search', 'rejestry-publiczne', 'web-search'];
+    const searchIds = ['deep-search', 'rejestry-publiczne', 'web-search', 'listy-sankcyjne'];
     assert.ok(live.length >= 2 && live.every((c) => c.id.startsWith('live-') || c.id.startsWith('mon-') || searchIds.includes(c.id)));
     assert.ok(live.filter((c) => c.id.startsWith('mon-')).every((c) => !c.enabledByDefault));
     for (const id of ['live-github', 'live-wayback']) assert.ok(live.some((c) => c.id === id), id);

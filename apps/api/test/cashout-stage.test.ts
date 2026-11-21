@@ -221,7 +221,10 @@ test('szczebel 3 — sygnał wypłaty z samych faktów: zamiana na stablecoin i 
   ];
   const [repeated] = assess([subject(BTC_A, { transfers: deposits, cashOuts: [cashOut(deposits[0]!, 30_000), cashOut(deposits[1]!, 60_000)] })]);
   assert.deepEqual([repeated!.stage, repeated!.status, repeated!.serviceName], ['cashout_signal', 'computed', 'Binance']);
-  assert.deepEqual(rules(repeated!), ['cashout.repeated_deposits', 'cashout.direct_service_transfer', 'cashout.valuation_available']);
+  // Trzy różne miesiące → także regularne spieniężanie (to samo pochodzenie co wpłaty powtarzalne — liczone raz);
+  // obie wycenione wpłaty (30 i 60 tys. zł) są okrągłe w PLN — przesłanka słaba.
+  assert.deepEqual(rules(repeated!), ['cashout.repeated_offramp', 'cashout.repeated_deposits', 'cashout.direct_service_transfer', 'cashout.round_amounts_pln', 'cashout.valuation_available']);
+  assert.equal(component(repeated!, 'cashout.repeated_deposits').independence, 'dependent');
   assert.deepEqual([repeated!.amount, repeated!.valuePln, repeated!.txids.length], [0.6, 90_000, 3]);
   assert.ok(repeated!.indicator.limitations.includes('Wartość w PLN obejmuje 2 z 3 wpłat; dla pozostałych brak kursu.'));
   // Dwie wpłaty to jeszcze nie wzorzec.

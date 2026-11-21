@@ -12,11 +12,16 @@ import { href } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
 import { EmptyState, ErrorBox, Loading, ScoreBadge } from './common.tsx';
 import { DiffView } from './DiffView.tsx';
+import { RunModeTag, useMode } from './Mode.tsx';
+import { DATA_MODE_SHORT, connectorInDataMode, runDataModeTag } from '../mode.ts';
 import { useToast } from './Toast.tsx';
 
 /** Wybór źródeł (parametry wyszukiwania) i uruchomienie analizy. */
 export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { caseId: string; onDone: () => void; title?: string }) {
   const connectors = useAsync(() => api.listConnectors(), 'connectors');
+  const { dataMode } = useMode();
+  // Źródło spoza bieżącego trybu danych usługa pomija — pokazujemy to przy liście.
+  const inMode = (id: string) => !dataMode || connectorInDataMode(id, dataMode.current);
   const toast = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
@@ -25,8 +30,8 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
   const [progress, setProgress] = useState<RunProgress>();
 
   useEffect(() => {
-    if (connectors.data) setSelected(new Set(connectors.data.filter((item) => item.enabledByDefault).map((item) => item.id)));
-  }, [connectors.data]);
+    if (connectors.data) setSelected(new Set(connectors.data.filter((item) => item.enabledByDefault && (!dataMode || connectorInDataMode(item.id, dataMode.current))).map((item) => item.id)));
+  }, [connectors.data, dataMode?.current]);
 
   function toggle(connector: ConnectorInfo) {
     setSelected((current) => {
@@ -61,10 +66,11 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
         <fieldset className="connectors" disabled={running}>
           <legend className="visually-hidden">Źródła do przeszukania</legend>
           {connectors.data.map((connector) => (
-            <label key={connector.id} className="connector">
-              <input type="checkbox" checked={selected.has(connector.id)} onChange={() => toggle(connector)} />
+            <label key={connector.id} className={`connector ${inMode(connector.id) ? '' : 'is-out-of-mode'}`}>
+              <input type="checkbox" checked={selected.has(connector.id)} onChange={() => toggle(connector)} disabled={!inMode(connector.id)} />
               <span>
                 <strong>{connector.label}</strong> <span className="muted">({connector.service})</span>
+                {!inMode(connector.id) && <span className="chip chip-quiet">poza trybem danych „{DATA_MODE_SHORT[dataMode!.current]}”</span>}
                 <span className="connector-description">{connector.description}</span>
                 <span className="connector-accepts">
                   Szuka po: {connector.accepts.map((type) => (IDENTIFIER_LABEL[type] ?? type).toLowerCase()).join(', ')}
@@ -180,7 +186,9 @@ function RunHistory({ summary }: { summary: CaseSummary }) {
                       <input type="radio" name="diff-to" checked={to === run.id} onChange={() => setTo(run.id)} aria-label={`Analiza z ${when} jako późniejsza`} />
                     </td>
                   )}
-                  <td>{when}</td>
+                  <td>
+                    {when} <RunModeTag tag={runDataModeTag(run)} />
+                  </td>
                   <td>{STATUS_LABEL[run.status] ?? run.status}</td>
                   <td className="num">{run.findingCount}</td>
                   <td className="num">

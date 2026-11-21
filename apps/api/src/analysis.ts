@@ -6,6 +6,10 @@ import { createHash } from 'node:crypto';
 import { computeConfidence, DEFAULT_RULES, detectOwnershipDeclaration, extractAddresses, TEXT_OWNERSHIP_RULE, validateAddress } from '@olcys/core';
 import type { OwnershipBasis, OwnershipDeclaration } from '@olcys/core';
 import { AI_RULES } from './ai-rules.ts';
+import { BENEFICIARY_RULES, OFFICIAL_SITE_CONNECTOR, attributeBeneficiary, beneficiaryNote, charityClass, collectBeneficiaryMentions, officialSiteUrl } from './beneficiary.ts';
+import type { BeneficiaryAttribution, OfficialSiteCheck } from './beneficiary.ts';
+import { buildOrganizationNetwork, krsNumbersIn } from './org-network.ts';
+import type { OrganizationNetwork, OrgSeed } from './org-network.ts';
 import type { InsightEvidence } from './ai-rules.ts';
 import { createLimiter } from './concurrency.ts';
 import { unlabeledCounterparties } from './counterparties.ts';
@@ -14,6 +18,8 @@ import { assessIdentity, assessLinkedProfile, isUniqueType, matchRank, normalize
 import type { IdentityAssessment } from './identity.ts';
 import { addressKey, sightingKey } from './intel.ts';
 import { mentionsInDocument } from './services.ts';
+import { detectFiatSignals } from './fiat-signals.ts';
+import { businessTextOf } from './business.ts';
 import type { AuthorComparison, DiscoveryStep, ExpansionStop, MentionSummary, QueryTiming, RunIntel, Sighting, SightingRole, SourceError, StageTiming, StopReason } from './intel.ts';
 import { comparablePairs } from './persons.ts';
 import { PIVOT_LIMITS, runPivot } from './pivot.ts';
@@ -121,6 +127,13 @@ export interface AnalysisParams {
   maxAiPublications?: number;
   /** Odbiorca postępu — do pokazania analitykowi w trakcie długiej analizy. */
   onProgress?: (progress: AnalysisProgress) => void;
+  /**
+   * Sieć organizacji z rejestrów publicznych (KRS, Wikidata, GLEIF, ProPublica) dla organizacji wskazanych w analizie.
+   * Domyślnie włączona tylko przy źródłach na żywo (łączniki `live-*`); `false` wyłącza; `fetch` — atrapa w testach.
+   */
+  registries?: false | { fetch?: typeof fetch };
+  /** Analiza w trybie głębokim (krok 2 sieci organizacji: inne podmioty osób w rejestrze). */
+  deep?: boolean;
 }
 
 export type AnalysisStage = 'search' | 'occurrences' | 'chain' | 'counterparties' | 'pivot' | 'ai' | 'scoring';
@@ -267,7 +280,7 @@ export const EXPANSION_RELIABILITY: { lowReliabilityCategories: SourceCategory[]
 /** Komunikaty, którymi łącznik sam zgłasza niedostępność źródła, zwracając to, co zdążył pobrać. */
 const REPORTED_FAILURE = /błąd podczas|nie udało się pobrać|kod (?:5\d\d|429)(?!\d)/i;
 /** Stała kolejność etapów w wykazie powodów zatrzymania i błędów źródeł. */
-const STAGE_ORDER = ['search', 'occurrences', 'chain', 'counterparties', 'pivot', 'ai', 'scoring'];
+const STAGE_ORDER = ['search', 'occurrences', 'chain', 'counterparties', 'pivot', 'organizations', 'ai', 'scoring'];
 const stageRank = (stage: string) => STAGE_ORDER.indexOf(stage) + 1 || STAGE_ORDER.length + 1;
 const REASON_ORDER: StopReason[] = ['aborted', 'time_limit', 'request_budget', 'depth_limit', 'identifier_limit', 'query_limit', 'counterparty_limit', 'chain_address_limit', 'low_reliability', 'source_error', 'no_new_leads'];
 export const DEFAULT_WIDELY_CITED_AUTHORS = 10;
@@ -290,6 +303,15 @@ const OCCURRENCE_TIME_SHARE = 0.8;
 const MAX_AUTHOR_COMPARISONS = 10;
 
 export const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/** Sygnały działalności gospodarczej (wskaźnik D) zapisywane przy widzianym dokumencie; pusty obiekt, gdy brak sygnałów. */
+/** Oznaki wyjścia do fiat (wskaźnik C, Web2) z treści i opisu profilu dokumentu podmiotu. */
+const fiatSignalsOf = (doc: SourceDocument) => detectFiatSignals([doc.text, doc.profile?.bio ?? ''].join('\n'));
+
+const withBusinessText = (doc: SourceDocument): { businessText?: NonNullable<Sighting['businessText']> } => {
+  const businessText = businessTextOf(doc);
+  return businessText ? { businessText } : {};
+};
 
 const identifierKey = (identifier: Identifier) => `${identifier.type}:${identifier.value.trim().toLowerCase()}`;
 
@@ -517,7 +539,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         addresses: [...addresses],
         role,
         // Wzmianek o usługach szukamy tylko w treściach samego podmiotu.
-        ...(role === 'subject' ? { serviceMentions: mentionsInDocument(doc) } : {}),
+        ...(role === 'subject' ? { serviceMentions: mentionsInDocument(doc), fiatSignals: fiatSignalsOf(doc) } : {}),
+        // Sygnały działalności gospodarczej (wskaźnik D) z pełnej treści — teczka nie ma treści dokumentów.
+        ...withBusinessText(doc),
       });
       return;
     }
@@ -525,7 +549,10 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     // Dokument przypisany podmiotowi nie wraca do roli „inna osoba”.
     if (role !== 'subject') return;
     if (existing.role !== 'subject' || matchRank(identity.match) > matchRank(existing.identity.match)) {
-      if (existing.role !== 'subject') existing.serviceMentions = mentionsInDocument(doc);
+      if (existing.role !== 'subject') {
+        existing.serviceMentions = mentionsInDocument(doc);
+        existing.fiatSignals = fiatSignalsOf(doc);
+      }
       existing.role = 'subject';
       existing.identity = identity;
       existing.matchedIdentifier = doc.matchedIdentifier;
@@ -1397,6 +1424,100 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     if (pivotLeads.length > 0) log(`Rozszerzanie: tropów ${pivotLeads.length}, adresów powiązanych tożsamości ${linkedGroups.length}.`);
   }
 
+  // ---------- Beneficjent adresu cytowanego przez wielu: czyj to adres zbiórki lub płatności ----------
+
+  const beneficiaries = new Map<string, BeneficiaryAttribution>();
+  for (const group of groups.values()) {
+    if (group.unrelatedAuthors.size < BENEFICIARY_RULES.minCitingAuthors) continue;
+    const key = addressKey(group);
+    const docs = [...documents.values()].filter((doc) => extract(doc.text).some((item) => addressKey(item) === key));
+    const { mentions: found, warnings } = collectBeneficiaryMentions(docs, group.address);
+    let attribution = attributeBeneficiary({ address: group.address, network: group.network, mentions: found, warnings });
+    if (!attribution) continue;
+    // Strona organizacji (odnośnik zbiórki z kontekstu albo domena): jedna strona, łącznik „Strona WWW” (robots.txt, bez podążania za odnośnikami).
+    const site = !attribution.reason || /pochodzenie publikacji/.test(attribution.reason) ? officialSiteUrl(attribution) : undefined;
+    const www = params.connectors.find((connector) => connector.id === OFFICIAL_SITE_CONNECTOR && connector.accepts.includes('profile_url'));
+    if (site && www && !expired('sprawdzenie strony organizacji', OCCURRENCE_TIME_SHARE) && reserveRequest('connectors', 'occurrences')) {
+      const checkedAt = now().toISOString();
+      let official: OfficialSiteCheck;
+      try {
+        const pages = await withTimeout(
+          (signal) => www.search({ type: 'profile_url', value: site }, { signal, log: (message) => log(`[${www.id}] ${message}`) }),
+          timeoutMs,
+          params.signal,
+        );
+        const page = pages[0];
+        const publishes = page !== undefined && extract(page.text).some((item) => addressKey(item) === key);
+        if (page) capture(page, sha256Hex(page.text));
+        official = {
+          url: page?.url ?? site,
+          publishesAddress: publishes,
+          checkedAt,
+          note: !page
+            ? 'Strony nie pobrano (robots.txt, brak odpowiedzi albo strona bez treści tekstowej) — potwierdzenia brak.'
+            : publishes
+              ? `Strona organizacji publikuje ten sam adres — kopia strony zapisana (${checkedAt}).`
+              : 'Strona pobrana, ale nie zawiera tego adresu (może być na podstronie albo w treści ładowanej skryptem) — potwierdzenia brak.',
+        };
+      } catch (error) {
+        official = { url: site, publishesAddress: false, checkedAt, note: `Błąd pobrania strony organizacji: ${errorText(error)} — potwierdzenia brak.` };
+      }
+      log(`Adres ${group.address}: strona organizacji ${official.url} — ${official.note}`);
+      attribution = attributeBeneficiary({ address: group.address, network: group.network, mentions: found, warnings, officialSite: official }) ?? attribution;
+    }
+    beneficiaries.set(key, attribution);
+    log(
+      attribution.attributed
+        ? `Adres ${group.address}: adres zbiórki / płatności organizacji „${attribution.name}” (hipoteza, wskaźnik ${attribution.score}/100, niezależnych pochodzeń ${attribution.origins}) — autorzy cytujący nie są właścicielami.`
+        : `Adres ${group.address}: beneficjenta nie przypisano — ${attribution.reason}`,
+    );
+  }
+
+  // ---------- Sieć organizacji z rejestrów publicznych (organizacja → osoby w rolach → podmioty powiązane) ----------
+
+  let organizationNetwork: OrganizationNetwork | undefined;
+  const registriesEnabled = params.registries !== false && (params.registries?.fetch !== undefined || params.connectors.some((connector) => connector.id.startsWith('live-')));
+  if (registriesEnabled && !expired('sieć organizacji z rejestrów', PIVOT_LIMITS.timeShare)) {
+    const seeds: OrgSeed[] = [];
+    for (const attribution of beneficiaries.values()) {
+      if (!attribution.attributed) continue;
+      const krs = krsNumbersIn(attribution.evidence.map((item) => item.quote).join('\n'))[0];
+      seeds.push({ name: attribution.name, ...(attribution.domain ? { domain: attribution.domain } : {}), ...(krs ? { krs } : {}), addresses: [attribution.address], origin: `beneficjent zbiórki adresu ${attribution.address}` });
+    }
+    for (const sighting of sightings.values()) {
+      const krs = sighting.profile?.registryEntries?.map((entry) => /^KRS (\d{10})$/.exec(entry)?.[1]).find(Boolean);
+      if (sighting.role !== 'subject' || !krs || seeds.some((seed) => seed.krs === krs)) continue;
+      seeds.push({ name: sighting.profile?.organization ?? `KRS ${krs}`, krs, addresses: [], origin: `wpis KRS ${krs} znaleziony w analizie` });
+    }
+    if (seeds.length > 0) {
+      const github = params.connectors.find((connector) => connector.id === 'live-github');
+      organizationNetwork = await buildOrganizationNetwork({
+        seeds: seeds.slice(0, 3),
+        ...(params.registries && params.registries.fetch ? { fetch: params.registries.fetch } : {}),
+        deep: params.deep === true,
+        now,
+        log,
+        ...(params.signal ? { signal: params.signal } : {}),
+        reserve: () => reserveRequest('connectors', 'organizations'),
+        // Profile publiczne osoby w roli: wyłącznie z loginu opublikowanego przez rejestr, tylko łącznik GitHub; nie są śladami adresu.
+        ...(github
+          ? {
+              lookupProfile: async (identifier: { type: 'login'; value: string }) => {
+                try {
+                  const docs = await withTimeout((signal) => github.search(identifier, { signal, log: (message) => log(`[${github.id}] ${message}`) }), timeoutMs, params.signal);
+                  return docs.slice(0, 3).map((doc) => ({ url: doc.url, service: doc.service, title: doc.title }));
+                } catch (error) {
+                  log(`[${github.id}] BŁĄD profilu osoby z rejestru „${identifier.value}”: ${errorText(error)}.`);
+                  return [];
+                }
+              },
+            }
+          : {}),
+      });
+      for (const stop of organizationNetwork.stops) addStop(stop.stage, stop.reason, stop.detail, stop.skipped);
+    }
+  }
+
   // ---------- Wskaźnik Pewności ----------
 
   report('scoring');
@@ -1406,8 +1527,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const evidence = [...group.evidence.values()];
     const unrelatedPublishers = group.unrelatedAuthors.size;
     const counted = effectiveUnrelatedPublishers(evidence, unrelatedPublishers);
-    let confidence = computeConfidence({ evidence, addressClass: group.chain?.profile.addressClass ?? 'unknown', unrelatedPublishers: counted }, rules);
+    const beneficiary = beneficiaries.get(addressKey(group));
+    const subjectOfCase = subjectAddresses.has(group.address.toLowerCase());
+    // Adres zbiórki organizacji (klasa „charity”): nie przypisuje się go osobie. Adres podany przez analityka
+    // pozostaje przedmiotem sprawy (łańcuch, sumy) — dostaje tylko adnotację.
+    const addressClass = charityClass(group.chain?.profile.addressClass, beneficiary, subjectOfCase);
+    let confidence = computeConfidence({ evidence, addressClass, unrelatedPublishers: counted }, rules);
     const notes: string[] = [...group.notes];
+    if (beneficiary?.attributed) notes.push(beneficiaryNote(beneficiary));
     if (counted !== unrelatedPublishers && unrelatedPublishers >= rules.sharedAddressThreshold) {
       notes.push(
         `Adres wymienia także ${unrelatedPublishers} innych autorów; własność potwierdza dowód kryptograficzny lub potwierdzona tożsamość profilu, ` +
@@ -1415,7 +1542,6 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       );
     }
     const widelyCited = counted >= widelyCitedFrom;
-    const subjectOfCase = subjectAddresses.has(group.address.toLowerCase());
     if (subjectOfCase) {
       notes.push(
         `Zakres historii blockchain: pełna historia adresu (adres podany przez analityka jest przedmiotem sprawy)` +
@@ -1613,6 +1739,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       timings,
       slowestQueries,
       ...(mentions.length > 0 ? { mentions } : {}),
+      // Zawsze obecne (także puste): teczka odróżnia „sprawdzono, brak beneficjenta” od starszej analizy bez tego etapu.
+      beneficiaries: [...beneficiaries.values()],
+      ...(organizationNetwork ? { organizationNetwork } : {}),
       expansion: {
         limits: {
           discoveryDepth: depth,

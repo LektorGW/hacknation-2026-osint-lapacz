@@ -1,6 +1,7 @@
 // Dowód spieniężenia i postęp analizy: lokalne rozszerzenia kontraktu oraz czysta logika widoków.
 import type { FundingSource, Mention, RelatedAddress, Seizure } from './funds.ts';
 import type { LinkedIdentity } from './identities.ts';
+import type { AddressNetwork, DossierOrganization, OrganizationNetwork } from './organizations.ts';
 import type { ServiceReplyRef, ServiceReplyView } from './service-reply.ts';
 import type { CashOutTrail, Dossier, Finding, Identifier, Network, StoredEvidence, TextInsight } from '@olcys/core';
 
@@ -62,6 +63,12 @@ export interface DossierExtras {
   linkedIdentities?: LinkedIdentity[];
   /** Odpowiedzi usług wprowadzone przez analityka — dokumenty spoza OSINT; brak pola = usługa analizy bez tej funkcji. */
   serviceReplies?: ServiceReplyView[];
+  /** Organizacje wskazane przez kontekst cytowań adresu (beneficjent zbiórki) — hipotezy; brak pola = starsza usługa. */
+  organizations?: DossierOrganization[];
+  /** Sieć organizacji z rejestrów publicznych: osoby w rolach (nie właściciele adresu), podmioty powiązane. */
+  organizationNetwork?: OrganizationNetwork;
+  /** Siatka adresu: wpływy i wypływy zbiorczo, punkty zapytania. */
+  addressNetwork?: AddressNetwork[];
 }
 
 export type FullDossier = Dossier & DossierExtras;

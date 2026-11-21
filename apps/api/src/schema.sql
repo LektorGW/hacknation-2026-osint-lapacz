@@ -145,3 +145,63 @@ CREATE TABLE IF NOT EXISTS corpus_addresses (
 );
 
 CREATE INDEX IF NOT EXISTS corpus_addresses_address_idx ON corpus_addresses (address);
+
+-- Rozwinięcia sieci na żądanie („Rozwiń” w grafie): kto, kiedy, jaki węzeł i jakie grupy relacji, wynik z dowodami,
+-- powody zatrzymania i błędy źródeł. Wycofanie nie usuwa wpisu (ślad audytowy), jak przy decyzjach analityka.
+CREATE TABLE IF NOT EXISTS network_expansions (
+  id             TEXT PRIMARY KEY,
+  seq            SERIAL,
+  case_id        TEXT NOT NULL REFERENCES cases (id) ON DELETE CASCADE,
+  node_id        TEXT NOT NULL,
+  relations      JSONB NOT NULL,
+  depth          INTEGER NOT NULL DEFAULT 1,
+  started_at     TIMESTAMPTZ NOT NULL,
+  finished_at    TIMESTAMPTZ NOT NULL,
+  requested_by   TEXT NOT NULL,
+  results        JSONB NOT NULL,
+  stops          JSONB NOT NULL,
+  source_errors  JSONB NOT NULL,
+  budget         JSONB NOT NULL,
+  run_id         TEXT,
+  withdrawn_at   TIMESTAMPTZ,
+  withdrawn_by   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS network_expansions_case_idx ON network_expansions (case_id, seq);
+
+-- Cykl życia sprawy: otwarta → zamknięta (tylko do odczytu) → zarchiwizowana. Istniejące sprawy są otwarte.
+-- W bazie zostaje wyłącznie skrót SHA-256 i metadane archiwum, nie sam plik.
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS closed_reason TEXT;
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS archive_sha256 TEXT;
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS archive_meta JSONB;
+
+-- Dziennik audytu: tylko dopisywanie. Bez danych osobowych — w szczegółach są identyfikatory techniczne,
+-- rodzaje i liczby. Bez klucza obcego do spraw: wpisy zostają po usunięciu sprawy.
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq      SERIAL PRIMARY KEY,
+  at       TIMESTAMPTZ NOT NULL,
+  actor    TEXT NOT NULL,
+  action   TEXT NOT NULL,
+  case_id  TEXT,
+  target   TEXT,
+  details  JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS audit_log_case_idx ON audit_log (case_id, seq);
+
+-- Ślad po usuniętej sprawie: identyfikator, czas, skrót archiwum i liczby usuniętych wierszy — bez nazw i identyfikatorów osób.
+CREATE TABLE IF NOT EXISTS case_tombstones (
+  id              TEXT PRIMARY KEY,
+  deleted_at      TIMESTAMPTZ NOT NULL,
+  archive_sha256  TEXT,
+  mode            TEXT NOT NULL,
+  counts          JSONB NOT NULL
+);

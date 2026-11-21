@@ -9,6 +9,11 @@ import { DEFAULT_RULES, validateAddress } from '@olcys/core';
 import type { AnalysisRun, Identifier, IdentifierType, SourceConnector } from '@olcys/core';
 import { anonymizeFacts, trackAi } from './ai-rules.ts';
 import { DEFAULT_CORPUS_MAX_ROWS, DEFAULT_CORPUS_RETENTION_DAYS, createCorpusConnector } from './corpus.ts';
+import { registerLifecycleRoutes } from './lifecycle-routes.ts';
+import { DEFAULT_WEB_ORIGINS, isAuthorized, registerSecurity } from './security.ts';
+import { createDataModeState, dataModeTag, filterByDataMode, inDataMode } from './data-mode.ts';
+import type { DataMode } from './data-mode.ts';
+import { registerDataModeRoutes } from './data-mode-routes.ts';
 import { detectReplacements, diffCashOuts, diffRuns } from './diff.ts';
 import { buildDossier } from './dossier.ts';
 import type { DossierView } from './dossier.ts';
@@ -80,9 +85,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     ...dossier.relatedPersons.map((person) => ({ kind: 'NICK' as const, value: person.handle })),
     ...dossier.findings.map((finding) => ({ kind: 'ADRES' as const, value: finding.address })),
   ];
-  const app = Fastify({ logger: deps.logger ?? false });
+  // Limit treści żądania podany jawnie: 2 MiB mieści odpowiedź usługi z dokumentem (500 000 znaków UTF-8), nic więcej.
+  const app = Fastify({ logger: deps.logger ?? false, bodyLimit: 2 * 1024 * 1024 });
 
-  await app.register(cors, { origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE'] });
+  // CORS wyłącznie dla skonfigurowanego interfejsu (wcześniej: każda strona) + token, CSRF, limit żądań, nagłówki.
+  const security = { corsOrigins: DEFAULT_WEB_ORIGINS, ...(deps.security ?? {}) };
+  await app.register(cors, { origin: security.corsOrigins, methods: ['GET', 'POST', 'PUT', 'DELETE'] });
+  registerSecurity(app, security);
 
   app.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown }, _request, reply) => {
     if (error.validation) {
@@ -130,10 +139,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
    */
   const needsNameSearch = (identifiers: Identifier[]): boolean => identifiers.some((item) => item.type === 'full_name');
 
-  const selectConnectors = (connectorIds?: string[], depth: RunDepth = 'standard', nameSearch = false): SourceConnector[] => {
+  // Tryb danych (syntetyczne / prawdziwe / oba): zapisany w bazie, przełączany bez restartu (data-mode.ts).
+  const dataModes = await createDataModeState({ storage, ids: [...connectors, ...chainProviders, ...(deps.deepChainProviders ?? [])].map((item) => item.id), now });
+
+  /** Łączniki analizy; poza trybem danych (`mode`, domyślnie bieżący) nie wychodzi żaden — także wskazany wprost. */
+  const selectConnectors = (connectorIds?: string[], depth: RunDepth = 'standard', nameSearch = false, mode: DataMode = dataModes.current()): SourceConnector[] => {
     const unknown = (connectorIds ?? []).filter((id) => !connectors.some((connector) => connector.id === id));
     if (unknown.length > 0) throw new HttpError(400, `Nieznane łączniki: ${unknown.join(', ')}.`);
-    return connectors.filter(
+    if (connectorIds && connectorIds.length > 0 && !connectorIds.some((id) => inDataMode(id, mode))) {
+      throw new HttpError(400, `Żaden ze wskazanych łączników nie należy do trybu danych „${mode}”. Zmień tryb danych albo wybierz inne źródła.`);
+    }
+    return filterByDataMode(connectors, mode).filter(
       (connector) =>
         (connectorIds ? connectorIds.includes(connector.id) : connector.enabledByDefault) || ((depth === 'deep' || (nameSearch && !connectorIds)) && isDeepSource(connector)),
     );
@@ -211,8 +227,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook('preClose', () => runs.stop());
 
   /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
-  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard', period?: RunPeriod, limits?: RunLimitOverrides): Promise<AnalysisRun> =>
-    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth, needsNameSearch(caseSummary.query.identifiers)), depth, period, limits });
+  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard', period?: RunPeriod, limits?: RunLimitOverrides, requestedMode?: DataMode): Promise<AnalysisRun> => {
+    const dataMode = dataModes.resolve(requestedMode);
+    return runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth, needsNameSearch(caseSummary.query.identifiers), dataMode), depth, period, limits, dataMode });
+  };
 
   /** Limity rozszerzania z żądania: kontrola głębokości, liczby identyfikatorów i budżetu zapytań jednej analizy. */
   const limitsSchema = {
@@ -226,6 +244,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       maxChainAddresses: { type: 'integer', minimum: 0, maximum: 100 },
     },
   } as const;
+  const dataModeSchema = { type: 'string', enum: ['synthetic', 'live', 'both'] } as const;
 
   // ---------- Tryb danych: źródła demonstracyjne czy prawdziwe publiczne ----------
 
@@ -236,19 +255,26 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const sourceKind = (id: string): 'sandbox' | 'lab' | 'internal' | 'public' =>
     id.startsWith('sandbox-') ? 'sandbox' : id.startsWith('lab-') ? 'lab' : id === 'corpus' ? 'internal' : 'public';
   const dataMode = () => {
+    // Bieżący tryb danych decyduje, które źródła biorą udział w nowych analizach; wyłączone mają `active: false`.
+    const current = dataModes.current();
+    const inactive = (id: string) => (inDataMode(id, current) ? {} : { active: false as const });
     const sources = connectors.map((connector) => {
       const { id, label, enabledByDefault } = connector;
       const kind = sourceKind(id);
-      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab', enabledByDefault, ...sourceKeyInfo(connector, deps.configuredKeys) };
+      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab', enabledByDefault, ...inactive(id), ...sourceKeyInfo(connector, deps.configuredKeys) };
     });
     const chain = [...new Map([...chainProviders, ...(deps.deepChainProviders ?? [])].map((provider) => [provider.id, provider])).values()].map(({ id, label }) => {
       const kind = sourceKind(id);
-      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab' };
+      return { id, label, kind, demo: kind === 'sandbox' || kind === 'lab', ...inactive(id) };
     });
-    // Tryb „live”: zarejestrowano choć jedno prawdziwe źródło publiczne albo publicznego dostawcę danych blockchain.
-    const live = sources.some((item) => item.kind === 'public') || chain.some((item) => item.kind === 'public');
-    const demo = sources.some((item) => item.demo) || chain.some((item) => item.demo);
+    // Tryb „live”: nowe analizy pytają prawdziwe źródła (tryb prawdziwy albo oba); „sandbox”: tylko dane syntetyczne.
+    const live = current !== 'synthetic';
+    const demo = current !== 'live' && (sources.some((item) => item.demo) || chain.some((item) => item.demo));
+    const available = dataModes.available();
     return {
+      dataMode: current,
+      dataModeTag: dataModeTag(current),
+      dataModesAvailable: { synthetic: available.synthetic, live: available.live, both: available.synthetic && available.live },
       mode: live ? ('live' as const) : ('sandbox' as const),
       modeLabel: live
         ? demo
@@ -284,8 +310,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     // Za każdym razem bieżąca postać sprawy: analityk mógł w międzyczasie dopisać identyfikatory.
     startRun: async (caseId, depth) => {
       const caseSummary = await storage.getCase(caseId);
-      if (!caseSummary) return null;
-      const { run } = await runs.start(caseSummary, { connectors: selectConnectors(undefined, depth, needsNameSearch(caseSummary.query.identifiers)), depth });
+      // Zamknięta sprawa jest tylko do odczytu — obserwacja wygasa, tak jak dla usuniętej.
+      if (!caseSummary || caseSummary.status !== 'open') return null;
+      const dataMode = dataModes.current();
+      const { run } = await runs.start(caseSummary, { connectors: selectConnectors(undefined, depth, needsNameSearch(caseSummary.query.identifiers), dataMode), depth, dataMode });
       return { id: run.id, status: run.status };
     },
     isRunning: (runId) => runs.progress(runId)?.status === 'running',
@@ -301,9 +329,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // ---------- Trasy ----------
 
-  app.get('/api/health', async () => {
+  app.get('/api/health', async (request) => {
     const database = (await storage.ping()) ? 'ok' : 'error';
-    return { status: database === 'ok' ? 'ok' : 'degraded', version: TOOL_VERSION, time: now().toISOString(), database, ...dataMode() };
+    const status = database === 'ok' ? 'ok' : 'degraded';
+    // Przy włączonym tokenie bez uwierzytelnienia: sam stan, bez wersji, źródeł i konfiguracji.
+    if (security.apiToken && !isAuthorized(request, security.apiToken)) return { status, authRequired: true };
+    return { status, version: TOOL_VERSION, time: now().toISOString(), database, ...dataMode(), ...(security.apiToken ? { authRequired: true } : {}) };
   });
 
   // Lista źródeł z informacją o kluczu API (wymagany / ustawiony) — bez wartości kluczy.
@@ -348,7 +379,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     withSchedule(await requireCase(request.params.id)),
   );
 
-  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean; period?: RunPeriod; limits?: RunLimitOverrides } }>(
+  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean; period?: RunPeriod; limits?: RunLimitOverrides; dataMode?: DataMode } }>(
     '/api/cases/:id/runs',
     {
       schema: {
@@ -362,6 +393,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             async: { type: 'boolean' },
             period: periodSchema,
             limits: limitsSchema,
+            // Tryb danych tylko dla tej analizy; bez pola obowiązuje ustawienie bieżące.
+            dataMode: dataModeSchema,
           },
         },
       },
@@ -373,10 +406,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const limits = request.body?.limits;
       if (request.body?.async) {
         // Analiza liczy się w tle; postęp pod /api/runs/:id/progress, wynik pod /api/runs/:id.
-        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth), depth, period, limits });
+        const dataMode = dataModes.resolve(request.body.dataMode);
+        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth, false, dataMode), depth, period, limits, dataMode });
         return reply.code(202).send({ id: run.id, status: run.status });
       }
-      const run = await executeRun(caseSummary, request.body?.connectors, depth, period, limits);
+      const run = await executeRun(caseSummary, request.body?.connectors, depth, period, limits, request.body?.dataMode);
       return reply.code(201).send(run);
     },
   );
@@ -558,7 +592,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // ---------- Jedno wywołanie: identyfikator → sprawa → analiza → teczka ----------
 
-  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean; period?: RunPeriod; limits?: RunLimitOverrides } }>(
+  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean; period?: RunPeriod; limits?: RunLimitOverrides; dataMode?: DataMode } }>(
     '/api/quick',
     {
       schema: {
@@ -573,6 +607,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             async: { type: 'boolean' },
             period: periodSchema,
             limits: limitsSchema,
+            dataMode: dataModeSchema,
           },
         },
       },
@@ -582,13 +617,15 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       if (!value) throw new HttpError(400, 'Identyfikator nie może być pusty.');
       const identifiers = cleanIdentifiers([{ type: request.body.type ?? detectIdentifierType(value), value }]);
       const period = cleanPeriod(request.body.period);
+      // Tryb sprawdzany przed założeniem sprawy: niedostępny tryb nie zostawia pustej sprawy.
+      const dataMode = dataModes.resolve(request.body.dataMode);
       const created = await storage.createCase(value, { identifiers }, now().toISOString());
       const depth = request.body.depth ?? 'standard';
       if (request.body.async) {
-        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth), depth, period, limits: request.body.limits });
+        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth, false, dataMode), depth, period, limits: request.body.limits, dataMode });
         return reply.code(202).send({ case: created, run: { id: run.id, status: run.status } });
       }
-      const run = await executeRun(created, undefined, depth, period, request.body.limits);
+      const run = await executeRun(created, undefined, depth, period, request.body.limits, dataMode);
       return reply.code(201).send({ case: withSchedule(await requireCase(created.id)), dossier: await loadDossier(run) });
     },
   );
@@ -638,7 +675,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerServiceReplyRoutes(app, context);
   registerSweepRoutes(app, context);
   registerMonitorRoutes(app, context);
+  registerDataModeRoutes(app, dataModes, storage);
   (await import('./export-routes.ts')).registerExportRoutes(app, context);
+  // Rozwijanie sieci na żądanie („Rozwiń” w grafie śledczym).
+  (await import('./network/routes.ts')).registerNetworkRoutes(app, context);
+  // Cykl życia sprawy (zamknięcie, archiwum, usunięcie), audyt, retencja i stan zabezpieczeń.
+  registerLifecycleRoutes(app, context, { watch, security, options: deps.lifecycle ?? {} });
 
   return app;
 }

@@ -15,6 +15,7 @@ import type {
   Sweep,
   WatchHit,
 } from '@olcys/core';
+import { authHeaders, requestToken } from './auth.ts';
 import { dossierFromRun } from './dossier.ts';
 import type { AiStatus, CorpusStats, Depth, FullDossier, Period, RunProgress } from './proof.ts';
 import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './identify.ts';
@@ -22,6 +23,8 @@ import type { RecheckResult } from './monitor.ts';
 import { serviceLinksFromFindings } from './services.ts';
 import type { ServiceReply, ServiceReplyBody, ServiceReplySample } from './service-reply.ts';
 import type { CaseStat, StatsSummary } from './stats.ts';
+import type { ExpandRequest, ExpandResult, NetworkPlan, NetworkView } from './graph/network.ts';
+import type { DataMode } from './mode.ts';
 
 /**
  * Tryb analiz uruchamianych z interfejsu: domyślnie głęboki. Usługa analizy bez podanego trybu
@@ -49,6 +52,8 @@ export interface RunSummary {
   status: string;
   findingCount: number;
   topScore: number;
+  /** Tryb danych analizy (znacznik SANDBOX/LIVE); analizy sprzed przełącznika go nie mają. */
+  dataMode?: DataMode;
 }
 
 export interface CaseSummary {
@@ -59,6 +64,78 @@ export interface CaseSummary {
   runs: RunSummary[];
   /** Sprawa obserwowana („Monitoruj”): analiza ponawiana automatycznie. */
   schedule?: { everyMinutes: number; nextRunAt: string };
+  /** Stan sprawy; brak pola = starsza usługa (sprawa otwarta). */
+  status?: CaseStatus;
+  closedAt?: string;
+  closedReason?: string;
+  archivedAt?: string;
+  archiveSha256?: string;
+}
+
+/** Stan sprawy: otwarta, zamknięta (tylko do odczytu), zarchiwizowana. */
+export type CaseStatus = 'open' | 'closed' | 'archived';
+
+/** Powiązanie sprawy z inną sprawą — blokuje usunięcie, gdy druga sprawa jest otwarta. */
+export interface CaseLink {
+  caseId: string;
+  caseName: string;
+  status: CaseStatus;
+  blocking: boolean;
+  reasons: { kind: string; label: string; values: string[] }[];
+}
+
+export interface CaseLinks {
+  caseId: string;
+  status: CaseStatus;
+  links: CaseLink[];
+  blocking: boolean;
+  deletable: boolean;
+  message?: string;
+}
+
+export interface AuditEntry {
+  seq?: number;
+  at: string;
+  actor: string;
+  action: string;
+  caseId?: string;
+  target?: string;
+  details: Record<string, unknown>;
+}
+
+export interface RetentionItem {
+  caseId: string;
+  caseName: string;
+  status: CaseStatus;
+  closedAt?: string;
+  archivedAt?: string;
+  ageDays?: number;
+  eligible: boolean;
+  reasons: string[];
+  blockingLinks: { caseId: string; caseName: string; kinds: string[] }[];
+}
+
+export interface RetentionPreview {
+  enabled: boolean;
+  days?: number;
+  generatedAt: string;
+  items: RetentionItem[];
+}
+
+export interface SecurityStatus {
+  tokenRequired: boolean;
+  snapshotEncrypted: boolean;
+  retention: { enabled: boolean; days?: number };
+  archiveStoredOnServer: boolean;
+  corsOrigins: string[];
+  rateLimitPerMinute: number | null;
+}
+
+/** Pobrane archiwum sprawy (ZIP) ze skrótem SHA-256 zapisanym w bazie. */
+export interface CaseArchive {
+  blob: Blob;
+  fileName: string;
+  sha256: string;
 }
 
 /** Przelew do giełdy lub usługi, którego nie było w poprzedniej analizie. */
@@ -160,6 +237,20 @@ export interface MonitorSettings {
 export interface RunOptions {
   depth?: Depth;
   period?: Period;
+  /** Tryb danych tylko dla tej analizy; bez pola obowiązuje ustawienie usługi. */
+  dataMode?: DataMode;
+}
+
+/** Stan przełącznika trybu danych (`GET /api/settings/data-mode`). */
+export interface DataModeSetting {
+  dataMode: DataMode;
+  tag: 'SANDBOX' | 'LIVE';
+  label: string;
+  defaultMode: DataMode;
+  modes: Record<DataMode, { available: boolean; label: string; reason?: string }>;
+  updatedAt?: string;
+  storedDataMode?: DataMode;
+  note?: string;
 }
 
 export interface RunHandle {
@@ -227,14 +318,45 @@ export interface Backend {
   listWatched(): Promise<WatchList | null>;
   /** „Odśwież teraz”: analiza obserwowanej sprawy od razu, w tle. */
   refreshWatched(caseId: string): Promise<RunHandle>;
+  /** Sieć sprawy (teczka + rozwinięcia) i historia rozwinięć; `null`, gdy usługa nie zna tej trasy albo sprawa nie ma analizy. */
+  getNetwork(caseId: string): Promise<NetworkView | null>;
+  /** Dostępne drogi rozwinięcia węzła (grupy relacji, koszt, podstawa prawna); `null` bez tej trasy. */
+  getNetworkPlan(caseId: string, nodeId: string): Promise<NetworkPlan | null>;
+  /** „Rozwiń”: uruchamia ekspandery dla węzła i zapisuje rozwinięcie. */
+  expandNetwork(caseId: string, request: ExpandRequest): Promise<ExpandResult>;
+  /** Wycofuje rozwinięcie — wpis zostaje w historii (audyt). */
+  withdrawExpansion(caseId: string, expansionId: string): Promise<void>;
+  /** Zamyka sprawę z powodem — sprawa staje się tylko do odczytu. */
+  closeCase(caseId: string, reason: string): Promise<CaseSummary>;
+  /** Przywraca zamkniętą lub zarchiwizowaną sprawę. */
+  reopenCase(caseId: string): Promise<CaseSummary>;
+  /** Tworzy archiwum zamkniętej sprawy (ZIP z manifestem) do pobrania. */
+  archiveCase(caseId: string): Promise<CaseArchive>;
+  /** Powiązania sprawy z innymi sprawami (czy można ją usunąć). */
+  getCaseLinks(caseId: string): Promise<CaseLinks>;
+  /** Usuwa zamkniętą, niepowiązaną sprawę; `confirm` = dokładna nazwa sprawy. */
+  deleteCase(caseId: string, confirm: string): Promise<void>;
+  /** Stan zabezpieczeń usługi; `null`, gdy usługa nie zna tej trasy. */
+  getSecurityStatus(): Promise<SecurityStatus | null>;
+  /** Podgląd retencji (co zostałoby usunięte i dlaczego); `null` bez tej trasy. */
+  getRetentionPreview(): Promise<RetentionPreview | null>;
+  /** Dziennik audytu (całość albo jednej sprawy); `null` bez tej trasy. */
+  listAudit(caseId?: string): Promise<AuditEntry[] | null>;
+  /** Tryb danych nowych analiz; `null`, gdy usługa nie ma przełącznika (starsza wersja, tryb DEMO). */
+  getDataMode(): Promise<DataModeSetting | null>;
+  /** Przełącza tryb danych bez restartu usługi — od następnej analizy. */
+  setDataMode(mode: DataMode): Promise<DataModeSetting>;
 }
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /** Pełna treść odpowiedzi z błędem (np. lista powiązanych spraw przy odmowie usunięcia). */
+  readonly body?: unknown;
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -258,12 +380,14 @@ function errorFromBody(body: unknown, status: number): string {
 async function send(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
   let response: Response;
   try {
-    response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...init?.headers } });
+    response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...authHeaders(), ...init?.headers } });
   } catch {
     throw new ApiError(UNAVAILABLE, 0);
   }
   const body: unknown = await response.json().catch(() => null);
-  if (!response.ok) throw new ApiError(errorFromBody(body, response.status), response.status);
+  // Usługa z włączonym tokenem: okno logowania prosi o token.
+  if (response.status === 401) requestToken();
+  if (!response.ok) throw new ApiError(errorFromBody(body, response.status), response.status, body);
   return { status: response.status, body };
 }
 
@@ -323,6 +447,24 @@ async function overviewFromCases(): Promise<Overview> {
   };
 }
 
+/** Archiwum sprawy: odpowiedź binarna (ZIP), nazwa pliku i skrót SHA-256 z nagłówków. */
+async function downloadArchive(caseId: string): Promise<CaseArchive> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/cases/${enc(caseId)}/archive`, { method: 'POST', headers: { Accept: 'application/zip', ...authHeaders() } });
+  } catch {
+    throw new ApiError(UNAVAILABLE, 0);
+  }
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    if (response.status === 401) requestToken();
+    throw new ApiError(errorFromBody(body, response.status), response.status, body);
+  }
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const fileName = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `olcys-archiwum-${caseId}.zip`;
+  return { blob: await response.blob(), fileName, sha256: response.headers.get('X-Olcys-Archive-Sha256') ?? '' };
+}
+
 const httpBackend: Backend = {
   listConnectors: () => request('/api/connectors'),
   getRules: () => request('/api/rules'),
@@ -333,7 +475,7 @@ const httpBackend: Backend = {
   addIdentifiers: (caseId, identifiers) =>
     feature('Dopisanie identyfikatorów', post(`/api/cases/${enc(caseId)}/identifiers`, { identifiers })),
   startRun: (caseId, connectors, options = {}) =>
-    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth: options.depth ?? DEFAULT_DEPTH, ...(options.period ? { period: options.period } : {}), async: true }),
+    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth: options.depth ?? DEFAULT_DEPTH, ...(options.period ? { period: options.period } : {}), ...(options.dataMode ? { dataMode: options.dataMode } : {}), async: true }),
   getProgress: (runId) => optional(request<RunProgress>(`/api/runs/${enc(runId)}/progress`), null),
   getAi: () => optional(request<AiStatus>('/api/ai'), null),
   getCorpusStats: () => optional(request<CorpusStats>('/api/corpus/stats'), null),
@@ -365,7 +507,7 @@ const httpBackend: Backend = {
   dismissHit: (hitId) => feature('Odrzucenie trafienia', post(`/api/monitor/hits/${enc(hitId)}/dismiss`, {})),
   createCaseFromHit: (hitId) => feature('Założenie sprawy z trafienia', post(`/api/monitor/hits/${enc(hitId)}/case`, {})),
   quick: (value, type, options = {}) =>
-    optional(post<QuickResult>('/api/quick', { value, type, depth: options.depth ?? DEFAULT_DEPTH, ...(options.period ? { period: options.period } : {}), async: true }), null),
+    optional(post<QuickResult>('/api/quick', { value, type, depth: options.depth ?? DEFAULT_DEPTH, ...(options.period ? { period: options.period } : {}), ...(options.dataMode ? { dataMode: options.dataMode } : {}), async: true }), null),
   hasServiceRequest: async (runId, serviceId) => {
     try {
       const response = await fetch(serviceRequestUrl(runId, serviceId), { method: 'HEAD' });
@@ -390,7 +532,45 @@ const httpBackend: Backend = {
     ),
   listWatched: () => optional(request<WatchList>('/api/watch'), null),
   refreshWatched: (caseId) => feature('Odświeżenie obserwowanej sprawy', post(`/api/cases/${enc(caseId)}/schedule/run`, {})),
+  getNetwork: (caseId) => withoutAnalysis(optional(request<NetworkView>(`/api/cases/${enc(caseId)}/network`), null)),
+  getNetworkPlan: (caseId, nodeId) => withoutAnalysis(optional(request<NetworkPlan>(`/api/cases/${enc(caseId)}/network/plan?nodeId=${enc(nodeId)}`), null)),
+  expandNetwork: (caseId, body) => feature('Rozwijanie sieci', post(`/api/cases/${enc(caseId)}/network/expand`, body)),
+  withdrawExpansion: async (caseId, expansionId) => {
+    await feature('Rozwijanie sieci', send(`/api/cases/${enc(caseId)}/network/expand/${enc(expansionId)}`, { method: 'DELETE' }));
+  },
+  closeCase: (caseId, reason) => feature('Zamknięcie sprawy', post(`/api/cases/${enc(caseId)}/close`, { reason })),
+  reopenCase: (caseId) => feature('Przywrócenie sprawy', post(`/api/cases/${enc(caseId)}/reopen`, {})),
+  archiveCase: (caseId) => feature('Archiwum sprawy', downloadArchive(caseId)),
+  getCaseLinks: (caseId) => feature('Powiązania sprawy', request(`/api/cases/${enc(caseId)}/links`)),
+  deleteCase: async (caseId, confirm) => {
+    await feature(
+      'Usunięcie sprawy',
+      send(`/api/cases/${enc(caseId)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm }) }),
+    );
+  },
+  getSecurityStatus: () => optional(request<SecurityStatus>('/api/security/status'), null),
+  getRetentionPreview: () => optional(request<RetentionPreview>('/api/retention/preview'), null),
+  listAudit: async (caseId) => {
+    const result = await optional(request<{ entries: AuditEntry[] }>(`/api/audit${caseId ? `?caseId=${enc(caseId)}` : ''}`), null);
+    return result ? result.entries : null;
+  },
+  getDataMode: () => optional(request<DataModeSetting>('/api/settings/data-mode'), null),
+  setDataMode: (mode) =>
+    feature(
+      'Przełączanie trybu danych',
+      request<DataModeSetting>('/api/settings/data-mode', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataMode: mode }) }),
+    ),
 };
+
+/** Sprawa bez zakończonej analizy (409) nie ma jeszcze sieci — to stan, nie błąd. */
+async function withoutAnalysis<T>(promise: Promise<T | null>): Promise<T | null> {
+  try {
+    return await promise;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) return null;
+    throw error;
+  }
+}
 
 // Dane demo ładowane są leniwie, żeby nie trafiały do głównej paczki.
 const backend: Promise<Backend> = isDemo

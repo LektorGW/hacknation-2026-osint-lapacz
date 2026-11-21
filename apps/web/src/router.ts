@@ -59,7 +59,8 @@ export type Route =
   | { page: 'sweep'; sweepId?: string }
   | { page: 'stats' }
   | { page: 'monitor' }
-  | { page: 'rules' };
+  | { page: 'rules' }
+  | { page: 'security' };
 
 function decode(part: string | undefined): string | undefined {
   if (!part) return undefined;
@@ -83,6 +84,7 @@ export function parseRoute(hash: string): Route {
   if (first === 'statystyki') return { page: 'stats' };
   if (first === 'monitoring') return { page: 'monitor' };
   if (first === 'zasady') return { page: 'rules' };
+  if (first === 'bezpieczenstwo') return { page: 'security' };
   return { page: 'dashboard' };
 }
 
@@ -96,6 +98,7 @@ export const href = {
   stats: () => '#/statystyki',
   monitor: () => '#/monitoring',
   rules: () => '#/zasady',
+  security: () => '#/bezpieczenstwo',
 };
 
 /** Warstwa grafu zapisana w adresie strony: `…/graf?warstwa=osint` albo `…/graf?warstwa=blockchain`. */

@@ -345,6 +345,17 @@ function readSnapshot<T>(url: URL): T | undefined {
   }
 }
 
+let sharedSnapshots: RegistryData | undefined;
+
+/**
+ * Migawki rejestrów z katalogu data/ (wczytywane raz). Poza łącznikiem służą do rozpoznania, czy usługa
+ * NAZWANA w treści ma wpis w RDWW albo w rejestrze MiCA — wyłącznie nazwy, bez adresów.
+ */
+export function loadRegistrySnapshots(): RegistryData {
+  sharedSnapshots ??= { rdww: readSnapshot<RdwwSnapshot>(RDWW_URL), knf: readSnapshot<KnfSnapshot>(KNF_URL), casp: readSnapshot<CaspSnapshot>(ESMA_URL) };
+  return sharedSnapshots;
+}
+
 export interface RegistriesOptions {
   /** Dane zamiast migawek z katalogu data/ (testy). */
   data?: RegistryData;

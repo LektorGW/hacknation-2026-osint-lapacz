@@ -308,7 +308,7 @@ test('zestawienie spraw i jawne reguły ocen', async () => {
 test('decyzja o parze kont: klucz kanoniczny, a wycofanie zostawia wpis w rejestrze', async () => {
   const { caseId, runId } = await caseWithRun();
   const before = (await app.inject(`/api/runs/${runId}/dossier`)).json();
-  assert.deepEqual(Object.keys(before.indicators).sort(), ['accountWallet', 'cashOut', 'commonOperator']);
+  assert.deepEqual(Object.keys(before.indicators).sort(), ['accountWallet', 'businessActivity', 'cashOut', 'commonOperator']);
 
   // Kolejność kont i wielkość liter nie mają znaczenia — zapisywany jest klucz kanoniczny.
   const created = await post(`/api/cases/${caseId}/decisions`, { target: 'link', key: ' Targ.example|Inny <-> gitpub.example|krypto_janek ', decision: 'rejected', note: 'inna osoba' });

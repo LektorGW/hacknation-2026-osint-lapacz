@@ -70,77 +70,37 @@ pnpm install
 
 ## Uruchomienie krok po kroku
 
-Trzy procesy, każdy w osobnym terminalu, uruchamiane z katalogu głównego repozytorium. Polecenia są takie same w Windows (PowerShell) i w Linuksie; różni się tylko ustawianie zmiennych środowiskowych.
+Pełny opis wdrożenia (konfiguracja, bezpieczeństwo, kopie zapasowe, usługa systemowa): [docs/WDROZENIE.md](docs/WDROZENIE.md).
 
-### 1. Piaskownica (dane syntetyczne) — port 4100
-
-```
-pnpm --filter @olcys/sandbox start
-```
-
-Strona startowa: <http://localhost:4100>.
-
-### 2. API — port 4000
+### Docker — bez instalowania Node
 
 ```
-pnpm --filter @olcys/api start
+docker compose up -d --build
 ```
 
-Polecenie uruchamia `node src/server.ts` w katalogu `apps/api`. API nasłuchuje na `127.0.0.1:4000`; stan: <http://127.0.0.1:4000/api/health>. Bez dodatkowych zmiennych API korzysta wyłącznie z piaskownicy.
+Interfejs i API: <http://127.0.0.1:4000>. Bez pliku `.env` — wyłącznie dane syntetyczne (piaskownica w tym samym kontenerze), bez połączeń z internetem. Zatrzymanie: `docker compose down` (łagodne, z zapisem bazy).
 
-Serwer nie wczytuje sam pliku `.env`. Zmienne ustawia się w terminalu albo przekazuje plikiem:
-
-```powershell
-# Windows (PowerShell)
-$env:OLCYS_DATA_DIR = '.data'
-pnpm --filter @olcys/api start
-```
-
-```bash
-# Linux
-OLCYS_DATA_DIR=.data pnpm --filter @olcys/api start
-```
+### Node.js 24 + pnpm
 
 ```
-# oba systemy — zmienne z pliku .env w katalogu głównym
-cd apps/api
-node --env-file=../../.env src/server.ts
+pnpm run setup     # zależności, budowa interfejsu, pytania o konfigurację → plik .env
+pnpm start         # API + interfejs na jednym porcie: http://127.0.0.1:4000
 ```
 
-Włączenie prawdziwych źródeł: `ENABLE_LIVE=1` (patrz [Zmienne środowiskowe](#zmienne-środowiskowe) i [Zasady legalności](#zasady-legalności)).
+Uwaga: `pnpm run setup`, nie `pnpm setup` (to wbudowane polecenie pnpm). Bez pytań: `pnpm run setup -- --yes`. Diagnoza konfiguracji: `pnpm run doctor`.
 
-### 3. Interfejs analityka — port 5173
+### Demonstracja na danych syntetycznych
 
 ```
-pnpm --filter @olcys/web dev
+pnpm start:demo    # API + interfejs + piaskownica (http://127.0.0.1:4100)
 ```
 
-Adres: <http://localhost:5173>. Serwer deweloperski Vite przekazuje `/api` do `http://localhost:4000`. Interfejs bez API (dane wbudowane): <http://localhost:5173/?demo=1>. Pasek u góry każdego ekranu pokazuje tryb: **LIVE** (publiczne źródła), **SANDBOX** (piaskownica, dane syntetyczne) albo **DEMO** (dane wbudowane w interfejs); ślady z łączników piaskownicy i laboratorium mają dodatkowo znacznik „dane syntetyczne”. Tryb podaje `GET /api/health` — interfejs nigdy nie zakłada LIVE domyślnie. Wersja statyczna: `pnpm --filter @olcys/web build` (wynik w `apps/web/dist`).
+Interfejs bez API (dane wbudowane): `?demo=1`. Pasek u góry pokazuje tryb danych — **SANDBOX**, **LIVE** albo **DEMO** — i pozwala przełączać dane syntetyczne i prawdziwe bez restartu. Tryb deweloperski (piaskownica + API + Vite na :5173): `pnpm dev`.
 
-### Zamykanie API
+### Zamykanie
 
-W terminalu wystarczy Ctrl+C — sygnały SIGINT, SIGTERM, SIGBREAK i SIGHUP zamykają serwer łagodnie. W Windows zatrzymanie procesu z zewnątrz nie dostarcza sygnału, dlatego jest też żądanie przyjmowane wyłącznie z tego samego komputera:
+Ctrl+C zamyka wszystko łagodnie: API kończy przebiegi i zapisuje migawkę bazy. Procesu nie należy zabijać na siłę. W Windows z zewnątrz: `Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4000/api/admin/shutdown` (z nagłówkiem `Authorization: Bearer <token>`, gdy ustawiono `OLCYS_API_TOKEN`).
 
-```powershell
-# Windows (PowerShell)
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4000/api/admin/shutdown
-```
-
-```bash
-# Linux
-curl -X POST http://127.0.0.1:4000/api/admin/shutdown
-```
-
-Łagodne zamknięcie kończy bieżące żądania, zatrzymuje monitoring i analizy w tle, zapisuje migawkę bazy i zamyka sterownik. Procesu nie należy zabijać na siłę („Zakończ zadanie”, `kill -9`).
-
-### Trwałość bazy
-
-- Bez `DATABASE_URL` dane są we wbudowanej bazie PGlite w katalogu `OLCYS_DATA_DIR` (domyślnie `./data/pg` względem katalogu `apps/api`).
-- Trwałym zapisem jest **migawka** całej bazy: plik `<OLCYS_DATA_DIR>.migawka.tar.gz`, zapisywany co minutę i przy zamknięciu. Każde uruchomienie tworzy świeży katalog roboczy i wczytuje do niego migawkę. Powód: katalog roboczy PGlite w Windows nie otwiera się ponownie po zamknięciu procesu.
-- Po nagłym przerwaniu procesu przepadają zmiany od ostatniej migawki.
-- `.gitignore` wyklucza `.data*/` i `*.migawka.tar.gz`. Domyślny katalog `data/pg` nie jest objęty regułą `.data*/`, dlatego w przykładach wyżej ustawiono `OLCYS_DATA_DIR=.data`.
-- Do pracy na prawdziwych danych zalecany jest zewnętrzny PostgreSQL: `DATABASE_URL=postgres://uzytkownik:haslo@localhost:5432/olcys`. Schemat zakłada się sam przy starcie.
-- Harmonogramy cyklicznych analiz spraw są w pamięci procesu — po restarcie trzeba je ustawić ponownie. Harmonogram monitoringu jest zapisany w bazie.
 
 ## Zmienne środowiskowe
 
@@ -154,6 +114,14 @@ curl -X POST http://127.0.0.1:4000/api/admin/shutdown
 | `DATABASE_URL` | zewnętrzny PostgreSQL; gdy podana, PGlite nie jest używany | nie | — |
 | `SANDBOX_URL` | adres piaskownicy dla łączników i dostawcy danych syntetycznych | nie | `http://localhost:4100` |
 | `CEIDG_API_TOKEN` | token JWT API v3 Hurtowni danych CEIDG; tworzy łącznik `live-ceidg`; trafia tylko w nagłówku do `dane.biznes.gov.pl` | nie | wyłączone |
+| `OLCYS_API_TOKEN` | token API (min. 16 znaków); każde żądanie `/api/*` poza `/api/health` wymaga `Authorization: Bearer <token>` | nie | wyłączony |
+| `OLCYS_SNAPSHOT_KEY` | klucz AES-256-GCM migawki bazy (64 znaki hex albo base64 32 bajtów); stara jawna migawka wczytuje się i jest szyfrowana przy zapisie | nie | migawka jawna |
+| `OLCYS_RETENTION_DAYS_CLOSED` | po ilu dniach od zamknięcia usuwać sprawy zarchiwizowane i niepowiązane z otwartymi (nigdy bez archiwum) | nie | wyłączona |
+| `OLCYS_ARCHIVE_DIR` | katalog na pliki archiwów spraw; bez niego w bazie zostaje tylko skrót SHA-256 archiwum | nie | — |
+| `OLCYS_WEB_ORIGIN` | adresy interfejsu dopuszczone przez CORS i ochronę przed żądaniami z obcych stron, po przecinku | nie | `http://localhost:5173`, `http://127.0.0.1:5173`, `:4173` |
+| `OLCYS_ALLOWED_HOSTS` | dodatkowe nazwy hosta API (nagłówek Host); adresy IP i `localhost` zawsze dozwolone | nie | — |
+| `OLCYS_RATE_LIMIT_PER_MIN` | limit kosztownych żądań na adres IP i trasę na minutę (`0` wyłącza) | nie | `30` |
+| `OLCYS_CONTACT` | kontakt w nagłówku User-Agent zapytań do Wikimedia (wymaganie ich zasad) | przy źródłach live | — |
 | `NOSTR_RELAYS` | przekaźniki Nostr (`wss://…`, po przecinku), których zasady operator zaakceptował; bez nich `live-nostr` używa tylko NIP-05 | nie | — |
 | `MARGINALIA_API_KEY` | klucz Marginalia Search (`public` = klucz wspólny); włącza `web-search` | nie | — |
 | `MOJEEK_API_KEY`, `MOJEEK_STORAGE_RIGHTS` | klucz Mojeek; dostawca powstaje tylko z `MOJEEK_STORAGE_RIGHTS=1` (plan z prawem przechowywania wyników) | nie | — |
@@ -454,7 +422,7 @@ Dane zewnętrzne w repozytorium: lista OFAC SDN (publiczny plik Departamentu Ska
 - **PGlite w Windows.** Katalog roboczy nie otwiera się ponownie po zamknięciu procesu, dlatego trwałość zapewnia migawka zapisywana co minutę i przy zamknięciu. Katalog może obsługiwać tylko jeden proces naraz; po zabiciu procesu przepadają zmiany od ostatniej migawki. Do pracy na prawdziwych danych — zewnętrzny PostgreSQL.
 - Brak kont użytkowników i uwierzytelniania: API nasłuchuje tylko lokalnie, autor decyzji jest stały („analityk”).
 - Harmonogramy cyklicznych analiz spraw nie przetrwają restartu API.
-- Brak konteneryzacji głównych aplikacji (pliki Docker są tylko w `apps/identity-lab`).
+- Obraz Docker (`Dockerfile`, `docker-compose.yml`) jest przygotowany i sprawdzony składniowo, ale nie był budowany na maszynie zespołu.
 
 **Model językowy**
 

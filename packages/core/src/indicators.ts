@@ -2,7 +2,8 @@
 //
 //   A. Konto → portfel   (`account_wallet`)  — na ile KONKRETNE KONTO publicznie deklaruje związek z adresem;
 //   B. Wspólny operator  (`common_operator`) — na ile dwa KONKRETNE KONTA może obsługiwać ten sam operator;
-//   C. Wyjście do fiat   (`cash_out`)        — na ile dane wskazują wymianę kryptowalut na waluty tradycyjne.
+//   C. Wyjście do fiat   (`cash_out`)        — na ile dane wskazują wymianę kryptowalut na waluty tradycyjne;
+//   D. Działalność       (`business_activity`) — sygnały możliwej niezgłoszonej działalności gospodarczej (hipoteza).
 //
 // Żaden z nich nie jest skalibrowanym prawdopodobieństwem: to wskaźniki porządkowe 0–100 z jawnych
 // reguł eksperckich. Każdy składnik niesie regułę, wagę, źródło, dowód, wyjaśnienie, ocenę
@@ -63,7 +64,7 @@ export interface ScoreComponent {
   blocking?: boolean;
 }
 
-export type IndicatorKind = 'account_wallet' | 'common_operator' | 'cash_out';
+export type IndicatorKind = 'account_wallet' | 'common_operator' | 'cash_out' | 'business_activity';
 
 export interface Indicator {
   kind: IndicatorKind;
@@ -224,9 +225,33 @@ export const CASH_OUT_STAGE_LABEL: Record<CashOutStage, string> = {
   documented_fiat_exit: 'udokumentowane wyjście do walut tradycyjnych',
 };
 
+/**
+ * Rodzaj usługi wyjścia do walut tradycyjnych (off-ramp) — klasyfikacja po NAZWIE usługi z jawnej listy
+ * (`packages/chain/data/fiat-offramps.json`), nie po adresie.
+ */
+export type OfframpKind =
+  /** Giełda lub kantor kryptowalut z wypłatą w walucie tradycyjnej. */
+  | 'exchange_with_pln'
+  /** Operator bitomatów (kryptomatów) — wypłata gotówki. */
+  | 'crypto_atm_operator'
+  /** Wydawca karty płatniczej zasilanej kryptowalutami. */
+  | 'crypto_card_issuer'
+  /** Bramka płatnicza — rozliczenie sprzedawcy w walucie tradycyjnej. */
+  | 'payment_gateway'
+  /** Platforma wymiany bezpośredniej (P2P), często z depozytem (escrow). */
+  | 'p2p_escrow';
+
+/** Co potwierdzi wypłatę: do kogo skierować zapytanie i jakie dane mu podać. */
+export interface CashOutConfirmation {
+  /** Zdanie dla analityka: czego brakuje do ostatniego szczebla i kto może to potwierdzić. */
+  text: string;
+  /** Usługi, do których warto skierować zapytanie, z gotowymi wskazówkami (z powiązań z usługami). */
+  services: { name: string; serviceId?: string; requestHints: string[] }[];
+}
+
 export interface CashOutAssessment {
   id: string;
-  /** Adres, od którego zaczyna się przepływ. */
+  /** Adres, od którego zaczyna się przepływ (dla ocen z publikacji: pusty). */
   address: string;
   network: string;
   stage: CashOutStage;
@@ -239,12 +264,138 @@ export interface CashOutAssessment {
   /** Zawsze `computed` albo `hypothesis`; `confirmed` tylko po decyzji analityka. */
   status: ClaimStatus;
   statement: string;
+  /** Skąd ocena: dane blockchain (domyślnie) albo publikacje kont podmiotu (Web2) — te nigdy nie dają ostatniego szczebla. */
+  origin?: 'chain' | 'web';
+  /** Krótko: dlaczego to oznaka wypłaty (albo dlaczego jeszcze nie). */
+  why?: string;
+  /** Co potwierdzi wypłatę — zapytanie do usługi z gotowymi wskazówkami. */
+  confirm?: CashOutConfirmation;
+  /** Rodzaj usługi wyjścia do fiat i jej wpis w rejestrach publicznych (rozpoznanie po nazwie). */
+  offramp?: { kind: OfframpKind; label: string; registry: string[] };
+  /** Publikacje podmiotu, z których pochodzi ocena (tylko `origin: 'web'`). */
+  publications?: { url: string; service: string; title?: string; publishedAt?: string }[];
+}
+
+// ---------- D. Sygnały możliwej niezgłoszonej działalności gospodarczej ----------
+
+/** Wpływy jednego roku podatkowego (czas polski) — OBRÓT (suma wpływów), nie dochód ani przychód podatkowy. */
+export interface BusinessTurnoverYear {
+  year: string;
+  /** Liczba wpływów (przelewów przychodzących od kontrahentów spoza usług). */
+  inflows: number;
+  /** Liczba różnych adresów nadawców. */
+  payers: number;
+  /** Suma wycenionych wpływów w PLN (szacunek po kursie z istniejących wycen). */
+  valuePln: number;
+  /** Ile wpływów udało się wycenić. */
+  valued: number;
+  /** Ile z wycenionych wpływów oparto na kursie przykładowym (dane demonstracyjne). */
+  sampleRated: number;
+}
+
+/** Wynik sprawdzenia jednego rejestru publicznego w tej analizie. */
+export interface BusinessRegistryCheck {
+  registry: string;
+  /** Łącznik, przez który sprawdzono rejestr. */
+  connectorId: string;
+  /**
+   * `found` — wpis znaleziony; `not_found` — szukano i nie znaleziono; `not_checked` — rejestru nie sprawdzano
+   * (łącznik nieużyty, brak tokenu albo brak danych do zapytania); `unavailable` — źródło nie odpowiedziało.
+   */
+  status: 'found' | 'not_found' | 'not_checked' | 'unavailable';
+  /** Po czym szukano: numer (NIP/KRS), domena, nazwa. Wyszukiwanie po nazwie jest zawodne. */
+  basis: 'number' | 'domain' | 'name' | 'none';
+  /** Co faktycznie sprawdzono (np. „NIP 5260250274”, „nazwa „Jan Kowalski””). */
+  queries: string[];
+  records: { name: string; identifier?: string; url: string; status?: string; nameOnly?: boolean }[];
+  note: string;
+}
+
+/** Węzeł siatki (osoba, konto, organizacja) z sygnałami działalności — ze ścieżką do podmiotu sprawy. */
+export interface BusinessNetworkEntry {
+  nodeId: string;
+  label: string;
+  kind: string;
+  score: number;
+  level: string;
+  /** Reguły potwierdzające, które dały punkty. */
+  rules: string[];
+  statement: string;
+  /** Najmocniejsza ścieżka do podmiotu (siła z zanikiem na hipotezach); `null` — brak ścieżki. */
+  path: { summary: string; strength: number; level: string; hypotheses: number; labels: string[]; weakest?: { label: string; status: string; strength: number } } | null;
+}
+
+/** Ścieżka wskaźnika D: działalność możliwie niezgłoszona albo podmiot zarejestrowany (zgodność obrotu, ryzyko AML). */
+export type BusinessTrack = 'unregistered' | 'registered_entity';
+
+/** Podmiot z rejestru publicznego (wykaz VAT, KRS, CEIDG) powiązany z podmiotem sprawy — dane tak, jak zwrócił je rejestr. */
+export interface RegisteredEntity {
+  /** `nip:…` albo `krs:…`. */
+  id: string;
+  name: string;
+  nip?: string;
+  krs?: string;
+  regon?: string;
+  /** Status VAT z wykazu podatników VAT (Czynny, Zwolniony, Niezarejestrowany) albo informacja o wykreśleniu. */
+  vatStatus?: string;
+  registrationDate?: string;
+  removalDate?: string;
+  /** Kody PKD z KRS lub CEIDG (kod i opis). */
+  pkd: { code: string; description?: string }[];
+  capital?: string;
+  /** Reprezentanci, prokurenci, wspólnicy, członkowie organów — tak, jak podaje rejestr (KRS maskuje nazwiska). */
+  people: string[];
+  /** Rachunki zgłoszone do wykazu podatników VAT (pełne numery — dane jawne wykazu). */
+  whitelistAccounts: string[];
+  /** Skąd dane: rejestr i adres zapytania. */
+  sources: { registry: string; url: string }[];
+}
+
+/**
+ * Ścieżka „podmiot zarejestrowany — weryfikacja zgodności obrotu i ryzyko prania pieniędzy”: sygnały do weryfikacji
+ * (np. możliwe wprowadzanie środków z kryptowalut do obrotu firmy). Nigdy nie stwierdza prania pieniędzy.
+ */
+export interface RegisteredEntityAssessment {
+  track: 'registered_entity';
+  entities: RegisteredEntity[];
+  indicator: Indicator;
+  status: 'hypothesis';
+  statement: string;
+  whatToVerify: string[];
+}
+
+/**
+ * Wskaźnik D: sygnały, że podmiot (lub węzeł jego siatki) prowadzi działalność gospodarczą, która może nie być
+ * zgłoszona. Zawsze hipoteza: narzędzie nie zna statusu podatkowego — rozstrzygają wyłącznie systemy KAS.
+ * Ma dwie ścieżki: główną (`track: 'unregistered'`) i — gdy rejestry zwróciły wpis — `registered`.
+ */
+export interface BusinessActivityAssessment {
+  id: string;
+  /** Ścieżka głównej oceny: zawsze `unregistered` (sygnały działalności możliwie niezgłoszonej). */
+  track: 'unregistered';
+  /** Druga ścieżka: podmiot zarejestrowany — zgodność obrotu i ryzyko prania pieniędzy (tylko gdy rejestr zwrócił wpis). */
+  registered?: RegisteredEntityAssessment;
+  /** Kogo dotyczy ocena. */
+  subject: { kind: string; label: string; nodeId?: string };
+  indicator: Indicator;
+  status: 'hypothesis';
+  statement: string;
+  /** Suma wycenionych wpływów w PLN według roku podatkowego — obrót (wpływy), nie dochód. */
+  turnoverPlnByYear: Record<string, number>;
+  turnover: BusinessTurnoverYear[];
+  registryCheck: BusinessRegistryCheck[];
+  /** Sprawdzenia po stronie KAS sformułowane jako zalecenia — nigdy jako twierdzenia o statusie podatkowym. */
+  whatToVerify: string[];
+  /** Podmioty w siatce sprawy z sygnałami działalności (tylko w ocenie podmiotu sprawy). */
+  network?: BusinessNetworkEntry[];
 }
 
 export interface InvestigationIndicators {
   accountWallet: AccountWalletLink[];
   commonOperator: OperatorHypothesis[];
   cashOut: CashOutAssessment[];
+  /** D. Sygnały możliwej niezgłoszonej działalności gospodarczej (brak pola = analiza sprzed wskaźnika D). */
+  businessActivity?: BusinessActivityAssessment;
 }
 
 /** Klucz pary kont — niezależny od kolejności. */

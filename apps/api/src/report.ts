@@ -23,6 +23,8 @@ import { formatFiat, payoutSummary } from './service-reply.ts';
 import type { ServiceReplyView } from './service-reply.ts';
 import { renderIndicatorSections, renderMethodologyBox, renderProofSection } from './report-proof.ts';
 import { renderServiceSection } from './report-service.ts';
+import { renderOrganizationSections } from './report-org.ts';
+import { renderBusinessSection } from './report-business.ts';
 import type { CaseSummary } from './storage.ts';
 
 export interface ConnectorInfo {
@@ -726,6 +728,8 @@ ${renderKeyFindings(dossier)}
 <h2>Ustalenie osoby</h2>
 ${renderPersons(dossier)}
 
+${renderOrganizationSections(dossier)}
+
 <h2>Dowód spieniężenia</h2>
 ${renderProofSection(dossier.cashOutProof)}
 
@@ -758,6 +762,8 @@ ${renderServiceSection(dossier.serviceLinks)}
 ${renderServiceReplies(dossier)}
 
 ${renderIndicatorSections(dossier.indicators, dossier.persons)}
+
+${renderBusinessSection(dossier.indicators?.businessActivity)}
 
 <h2>Jak czytać ten raport</h2>
 ${renderMethodologyBox()}

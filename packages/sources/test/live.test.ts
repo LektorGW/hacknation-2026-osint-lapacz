@@ -279,6 +279,8 @@ describe('łączniki live — konfiguracja', () => {
       'rejestry-publiczne',
       'live-farcaster',
       'web-search',
+      // Listy sankcyjne i ostrzeżenia — lokalne migawki oficjalnych list.
+      'listy-sankcyjne',
     ]);
     assert.equal(new Set(ids).size, ids.length);
     for (const connector of connectors) {

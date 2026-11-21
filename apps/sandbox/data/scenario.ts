@@ -8,6 +8,9 @@
 import { MARKET_ADDR, marketAccounts, marketLabeledAddresses, marketLedger, marketPages, marketThreads } from './market.ts';
 import { RELATED_ADDR, relatedAccounts, relatedLabeledAddresses, relatedLedger, relatedPages } from './related.ts';
 import { PROOF_ADDR, proofAccounts, proofLabeledAddresses, proofLedger, proofPages, proofThreads } from './proofs.ts';
+import { NETWORK_ADDR, networkAccounts, networkLabeledAddresses, networkLedger, networkPages } from './network.ts';
+import { BUSINESS_ADDR, businessAccounts, businessLabeledAddresses, businessLedger, businessPages } from './business.ts';
+import { FIAT_ADDR, fiatAccounts, fiatLabeledAddresses, fiatLedger, fiatPages, fiatThreads } from './fiat.ts';
 
 export type Service = 'gitpub' | 'www' | 'targ' | 'forum' | 'spolecznosc' | 'komunikator';
 
@@ -716,9 +719,9 @@ export const snapshots: Snapshot[] = [
 // ---------- Całość: scenariusze a–h, „rynek P2P" (data/market.ts), „powiązane tożsamości" (data/related.ts), „dowody" (data/proofs.ts) ----------
 
 /** Adresy części rynkowej — do testów i dokumentacji. */
-export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR };
+export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR, NETWORK_ADDR, BUSINESS_ADDR, FIAT_ADDR };
 
-export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses];
+export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses, ...networkLabeledAddresses, ...businessLabeledAddresses, ...fiatLabeledAddresses];
 export const ledger: LedgerRow[] = [
   ...baseLedger,
   ...marketLedger(ADDR),
@@ -745,10 +748,16 @@ export const ledger: LedgerRow[] = [
     anonEth: MARKET_ADDR.anonEth4,
     anonTron: MARKET_ADDR.anonTron4,
   }),
+  // Część „siatka” (data/network.ts) — demonstracja rozwijania sieci na żądanie.
+  ...networkLedger({ exchangeBtc: ADDR.exchangeBtc, exchangeEth: ADDR.exchangeEth }),
+  // Część „działalność” (data/business.ts) — demonstracja wskaźnika D.
+  ...businessLedger({ exchangeBtc: ADDR.exchangeBtc }),
+  // Część „wyjście do walut tradycyjnych” (data/fiat.ts) — demonstracja wskaźnika C (Web2 + blockchain).
+  ...fiatLedger({ swapEth: ADDR.swapEth, anonEth: MARKET_ADDR.anonEth4 }),
 ];
-export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts];
-export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages];
-export const threads: Thread[] = [...baseThreads, ...marketThreads, ...proofThreads];
+export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts, ...networkAccounts, ...businessAccounts, ...fiatAccounts];
+export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages, ...networkPages, ...businessPages, ...fiatPages];
+export const threads: Thread[] = [...baseThreads, ...marketThreads, ...proofThreads, ...fiatThreads];
 
 export const scenario = { accounts, pages, threads, snapshots, labeledAddresses, ledger };
 export type Scenario = typeof scenario;

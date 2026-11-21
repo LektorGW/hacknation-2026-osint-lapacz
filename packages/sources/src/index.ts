@@ -24,6 +24,22 @@ import { applyOwnershipProofsToAll } from './proof-text.ts';
 import { createCeidgConnector, createKrsConnector, createVatWhitelistConnector, withRegistryIdentifiers } from './registry.ts';
 import { createSandboxConnectors } from './sandbox.ts';
 import { createSearchConnectors } from './search/index.ts';
+import { createRiskListsConnector } from './sanctions/index.ts';
+export {
+  checkNetworkNodes,
+  createRiskListsConnector,
+  getDefaultRiskLists,
+  loadRiskLists,
+  matchRiskLists,
+  riskListAddressFlags,
+  riskListGraph,
+  screenSanctions,
+  RISK_LISTS_ID,
+  IDENTIFIER_MATCH_CAVEAT,
+  NAME_MATCH_CAVEAT,
+  WARNING_LIST_CAVEAT,
+} from './sanctions/index.ts';
+export type { RiskListMatch, RiskListQuery, RiskListResult, RiskNodeFlag, RiskNodeInput, RiskAddressFlag, RiskGraphResult, ScreenSanctionsRow } from './sanctions/index.ts';
 import type { SearchConfig } from './search/index.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
@@ -38,6 +54,8 @@ export { findRegistryNumbers, isValidNip, isValidNrb, registryIdentifier, regist
 export type { CeidgOptions, RegistryNumber } from './registry.ts';
 export { createSearchConnectors, searchConfigFromEnv } from './search/index.ts';
 export type { SearchConfig, WebSearchProvider } from './search/index.ts';
+export { coreName as registryCoreName, loadRegistrySnapshots } from './search/index.ts';
+export type { CaspEntry, RdwwEntry, RegistryData } from './search/index.ts';
 export { deepTargets } from './deep/search.ts';
 export type { DeepSearchOptions, DeepTarget } from './deep/search.ts';
 export type { Fetcher } from './http.ts';
@@ -231,5 +249,7 @@ export function createConnectors(config: SourcesConfig): SourceConnector[] {
       log: config.log,
     }),
   );
+  // Listy sankcyjne i ostrzeżenia (lokalne migawki oficjalnych list) — zapytanie nie opuszcza systemu.
+  connectors.push(createRiskListsConnector());
   return connectors.map(withOwnershipProofs);
 }

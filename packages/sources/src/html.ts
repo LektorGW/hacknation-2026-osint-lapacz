@@ -2,6 +2,7 @@
 // Świadomie bez zewnętrznego parsera: potrzebujemy tylko tekstu, w którym
 // `extractAddresses` znajdzie adresy, oraz odnośników do innych profili.
 
+import { validateAddress } from '@olcys/core';
 import { addressFromHref } from './address-text.ts';
 
 const BLOCK_TAGS =
@@ -43,12 +44,20 @@ function decodeEntities(text: string): string {
 export function htmlToText(html: string): string {
   const stripped = html
     .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<(script|style|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    // <noscript> to treść dla czytelnika bez JavaScriptu (np. adresy zbiórki na stronie organizacji) — znacznik
+    // znika, treść zostaje; skrypty i style wewnątrz usunięto wyżej.
+    .replace(/<\/?noscript\b[^>]*>/gi, ' ')
     // Odnośnik płatności (`bitcoin:…`) albo odnośnik do eksploratora bloków niesie adres w atrybucie href —
     // zostawiamy go w tekście, bo widoczny napis to często tylko „wpłać tutaj".
     .replace(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi, (tag, href: string) => {
       const address = addressFromHref(href);
       return address ? `${tag} [adres z odnośnika: ${address}] ` : tag;
+    })
+    // Strony zbiórek pokazują adres w polu „kopiuj” (`<input readonly value="…">`) — bez tego adres znika z tekstu.
+    .replace(/<input\b[^>]*\bvalue\s*=\s*["']([^"']{20,120})["'][^>]*>/gi, (tag, value: string) => {
+      const address = validateAddress(value.trim())?.address;
+      return address ? ` [adres z pola: ${address}] ` : ' ';
     })
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(new RegExp(`</?(?:${BLOCK_TAGS})\\b[^>]*>`, 'gi'), '\n')

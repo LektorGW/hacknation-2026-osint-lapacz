@@ -5,6 +5,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AiAssistant, AnalysisRun, ChainProvider, ScoreRules, SourceConnector } from '@olcys/core';
 import { runAnalysis } from './analysis.ts';
+import { filterByDataMode } from './data-mode.ts';
+import type { DataMode } from './data-mode.ts';
 import type { ActivityResolver, AnalysisStage } from './analysis.ts';
 import type { QueryTiming, StageTiming } from './intel.ts';
 import { PIVOT_LIMITS } from './pivot.ts';
@@ -13,11 +15,14 @@ import type { CaseSummary, Storage } from './storage.ts';
 export type RunDepth = 'standard' | 'deep';
 
 /** Limity analizy w obu trybach — jawne, pokazywane przez API. */
-export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAddresses: number; requestTimeoutMs: number; totalTimeoutMs: number; concurrency: number; maxRequests: number }> = {
+export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAddresses: number; requestTimeoutMs: number; totalTimeoutMs: number; concurrency: number; maxRequests: number; maxCounterparties: number }> = {
   // `maxRequests`: budżet zapytań całej analizy (łączniki + dostawcy danych blockchain) — z dużym zapasem ponad zwykłe zużycie.
-  standard: { discoveryDepth: 3, maxChainAddresses: 15, requestTimeoutMs: 20_000, totalTimeoutMs: 120_000, concurrency: 6, maxRequests: 3000 },
+  // `maxCounterparties`: ilu największych kontrahentów bez etykiety sprawdzić w publikacjach (siatka adresu).
+  standard: { discoveryDepth: 3, maxChainAddresses: 15, requestTimeoutMs: 20_000, totalTimeoutMs: 120_000, concurrency: 6, maxRequests: 3000, maxCounterparties: 10 },
   // Tryb głęboki pyta setki różnych hostów — większa współbieżność nie obciąża żadnego z nich bardziej.
-  deep: { discoveryDepth: 4, maxChainAddresses: 40, requestTimeoutMs: 45_000, totalTimeoutMs: 240_000, concurrency: 24, maxRequests: 8000 },
+  // Kontrahentów sprawdza 25 zamiast 10: każdy to jedno zapytanie na źródło (najwięksi przez kosztowne wyszukiwarki
+  // tylko pierwsi trzej), więc umiarkowane podniesienie mieści się w budżecie i czasie trybu głębokiego.
+  deep: { discoveryDepth: 4, maxChainAddresses: 40, requestTimeoutMs: 45_000, totalTimeoutMs: 240_000, concurrency: 24, maxRequests: 8000, maxCounterparties: 25 },
 };
 
 /** Limity rozszerzania, które analityk może zmienić dla jednej analizy (w granicach schematu żądania). */
@@ -37,8 +42,8 @@ export interface RunLimitOverrides {
 /** Wyszukiwarka obiegająca setki forów potrzebuje więcej czasu niż pojedyncze źródło. */
 const CONNECTOR_TIMEOUTS: Record<string, number> = { 'deep-search': 30_000 };
 
-/** Analiza zapisana w bazie: kontrakt `AnalysisRun` plus tryb, w którym ją wykonano. */
-export type StoredRun = AnalysisRun & { depth?: RunDepth; period?: RunPeriod };
+/** Analiza zapisana w bazie: kontrakt `AnalysisRun` plus tryb, w którym ją wykonano (głębokość, okres, tryb danych). */
+export type StoredRun = AnalysisRun & { depth?: RunDepth; period?: RunPeriod; dataMode?: DataMode };
 
 /** Okres, którego ma dotyczyć historia blockchain (daty ISO 8601). */
 export interface RunPeriod {
@@ -72,6 +77,8 @@ export interface RunOptions {
   period?: RunPeriod;
   /** Limity rozszerzania podane dla tej analizy; mają pierwszeństwo przed limitami trybu. */
   limits?: RunLimitOverrides;
+  /** Tryb danych (syntetyczne / prawdziwe / oba): zawęża dostawców danych blockchain i jest zapisywany w analizie. */
+  dataMode?: DataMode;
 }
 
 export interface RunEngineDeps {
@@ -117,11 +124,12 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
     const requested = Object.fromEntries(Object.entries(options.limits ?? {}).filter(([, value]) => value !== undefined)) as RunLimitOverrides;
     const limits = { ...DEPTH_LIMITS[depth], ...deps.limits, ...requested };
     const update = (patch: Partial<RunProgress>) => Object.assign(state, patch, { updatedAt: now().toISOString() });
+    const providers = depth === 'deep' ? (deps.deepChainProviders ?? deps.chainProviders) : deps.chainProviders;
     try {
       const result = await runAnalysis({
         query: caseSummary.query,
         connectors: options.connectors,
-        chainProviders: depth === 'deep' ? (deps.deepChainProviders ?? deps.chainProviders) : deps.chainProviders,
+        chainProviders: options.dataMode ? filterByDataMode(providers, options.dataMode) : providers,
         resolveActivity: deps.resolveActivity,
         rules: deps.rules,
         now,
@@ -131,7 +139,8 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
         maxChainAddresses: limits.maxChainAddresses,
         maxRequests: limits.maxRequests,
         maxIdentifiers: requested.maxIdentifiers,
-        maxCounterparties: requested.maxCounterparties,
+        maxCounterparties: requested.maxCounterparties ?? limits.maxCounterparties,
+        deep: depth === 'deep',
         timeoutMs: limits.requestTimeoutMs,
         connectorTimeouts: CONNECTOR_TIMEOUTS,
         pivot: PIVOT_LIMITS[depth],
@@ -179,6 +188,7 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
       // Tryb standardowy nie dopisuje pola — zapis pozostaje zgodny z wcześniejszymi analizami.
       ...(depth === 'deep' ? { depth } : {}),
       ...(options.period?.from || options.period?.to ? { period: options.period } : {}),
+      ...(options.dataMode ? { dataMode: options.dataMode } : {}),
     };
     await storage.saveRun(run);
     const state: RunProgress = {

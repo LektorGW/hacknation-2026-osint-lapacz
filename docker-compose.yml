@@ -1,0 +1,90 @@
+# OŁCyŚ — uruchomienie w kontenerach. Wszystko działa lokalnie, bez usług chmurowych.
+#
+#   docker compose up -d --build                     API + interfejs: http://127.0.0.1:4000
+#   docker compose --profile postgres up -d --build   to samo z serwerem PostgreSQL w osobnym kontenerze
+#   docker compose logs -f olcys                      dziennik
+#   docker compose down                               łagodne zatrzymanie (zapis bazy) — dane zostają w wolumenie
+#
+# Konfiguracja: plik .env obok tego pliku (np. z kreatora: pnpm run setup) — jest opcjonalny. Bez niego kontener
+# działa na danych syntetycznych (piaskownica uruchamiana w tym samym kontenerze), bez dostępu do internetu.
+# Porty są domyślnie wystawione WYŁĄCZNIE na 127.0.0.1 hosta. Udostępnienie w sieci: OLCYS_BIND=0.0.0.0 w .env
+# (wtedy ustaw też OLCYS_API_TOKEN i OLCYS_ALLOWED_HOSTS — docs/WDROZENIE.md).
+
+name: olcys
+
+services:
+  olcys:
+    build: .
+    image: olcys:latest
+    init: true
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    # Wartości zależne od kontenera mają pierwszeństwo przed .env (ścieżki i porty z kreatora dotyczą hosta).
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: "4000"
+      SANDBOX_HOST: 0.0.0.0
+      SANDBOX_PORT: "4100"
+      OLCYS_DATA_DIR: /data/pg
+      OLCYS_BACKUP_DIR: /data/kopie
+      OLCYS_IN_CONTAINER: "1"
+      # Piaskownica (dane syntetyczne) w tym samym kontenerze; 0 = tylko źródła publiczne (z ENABLE_LIVE=1 w .env).
+      OLCYS_START_SANDBOX: ${OLCYS_START_SANDBOX:-1}
+      # Archiwa spraw na serwerze — tylko gdy ustawiono OLCYS_ARCHIVE_DIR w .env (w kontenerze zawsze pod /data).
+      OLCYS_ARCHIVE_DIR: ${OLCYS_ARCHIVE_DIR:+/data/archiwa}
+    ports:
+      - "${OLCYS_BIND:-127.0.0.1}:${OLCYS_PORT:-4000}:4000"
+      # Strony piaskownicy w przeglądarce (scenariusz demonstracyjny, np. /_demo/faza/before).
+      - "${OLCYS_BIND:-127.0.0.1}:${OLCYS_SANDBOX_PORT:-4100}:4100"
+    volumes:
+      - olcys-dane:/data
+    # Łagodne zamknięcie: API kończy przebiegi i zapisuje migawkę bazy — nie przerywać po domyślnych 10 s.
+    stop_signal: SIGTERM
+    stop_grace_period: 150s
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  # Opcjonalny PostgreSQL (zalecany do pracy na prawdziwych danych i monitoringu).
+  # W .env: POSTGRES_PASSWORD=<hasło> oraz DATABASE_URL=postgres://olcys:<hasło>@postgres:5432/olcys
+  postgres:
+    image: postgres:17-alpine
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: olcys
+      POSTGRES_DB: olcys
+      # Bez hasła kontener bazy odmówi startu (celowo — brak domyślnego hasła).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - olcys-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olcys -d olcys"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    stop_grace_period: 60s
+
+  # Opcjonalna, osobna piaskownica (profil „sandbox”) — np. gdy API działa z OLCYS_START_SANDBOX=0, a dane syntetyczne
+  # mają być wspólne dla kilku stanowisk. Wtedy w .env: OLCYS_START_SANDBOX=0 i SANDBOX_URL=http://sandbox:4100
+  sandbox:
+    image: olcys:latest
+    profiles: [sandbox]
+    restart: unless-stopped
+    working_dir: /app/apps/sandbox
+    command: ["node", "src/server.ts"]
+    environment:
+      SANDBOX_HOST: 0.0.0.0
+      SANDBOX_PORT: "4100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  olcys-dane:
+  olcys-postgres:

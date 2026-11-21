@@ -64,6 +64,8 @@ import type { ServiceReply } from './service-reply.ts';
 import { ADDRESS_CASE_ADDR, addressCaseDossier, demoAddressCase, demoAddressRun, demoServiceCase, demoServiceRun, serviceCaseDossier } from './demo-cases.ts';
 import { IDENTITY_SCORE, addressKey, computePriority, dossierFromRun, profileKey } from './dossier.ts';
 import { fmtPln, sum } from './format.ts';
+import { createDemoNetwork } from './demo-network.ts';
+import { createDemoLifecycle, ensureOpen } from './demo-lifecycle.ts';
 
 type StoredCase = Omit<CaseSummary, 'runs'>;
 
@@ -691,6 +693,7 @@ const DEMO_VALUES = ['tomwzor', 'tomasz wzorcowy', 'tomasz.wzorcowy@poczta.examp
 function startDemoRun(caseId: string, connectors: string[] | undefined, options: RunOptions = {}): RunHandle {
   const depth = options.depth ?? 'deep';
   const stored = findCase(caseId);
+  ensureOpen(stored);
   sequence += 1;
   const now = new Date().toISOString();
   const used = connectors ?? demoConnectors.filter((item) => item.enabledByDefault).map((item) => item.id);
@@ -768,6 +771,7 @@ export const demoBackend: Backend = {
 
   addIdentifiers: async (caseId, identifiers) => {
     const stored = findCase(caseId);
+    ensureOpen(stored);
     const known = new Set(stored.query.identifiers.map((item) => `${item.type}|${item.value}`));
     stored.query = { identifiers: [...stored.query.identifiers, ...identifiers.filter((item) => !known.has(`${item.type}|${item.value}`))] };
     return summarizeCase(stored);
@@ -786,7 +790,7 @@ export const demoBackend: Backend = {
   getRunDossier: async (runId) => buildDossier(findRun(runId)),
 
   addDecision: async (caseId, input) => {
-    findCase(caseId);
+    ensureOpen(findCase(caseId));
     sequence += 1;
     const now = new Date().toISOString();
     const created: DecisionRecord = { id: `demo-decyzja-${sequence}`, caseId, ...input, target: input.target as AnalystDecision['target'], decidedAt: now, author: 'analityk (demo)' };
@@ -1006,6 +1010,18 @@ export const demoBackend: Backend = {
     if (!watch) throw new ApiError('Ta sprawa nie jest obserwowana — zaznacz „Monitoruj” na pulpicie.', 404);
     watch.nextRunAt = minutesLater(watch.everyMinutes);
     return startDemoRun(caseId, undefined, { depth: watch.depth });
+  },
+  // Rozwijanie sieci na żądanie — syntetyczny zbiór danych (demo-network.ts).
+  // Cykl życia sprawy (zamknięcie, archiwum, usunięcie) i dziennik audytu — w pamięci karty.
+  ...createDemoLifecycle({ cases, runs, owned: [decisions, serviceReplies], watched, summarize: summarizeCase }),
+  ...createDemoNetwork(async (caseId) => {
+    const run = latestRun(findCase(caseId).id);
+    return run ? buildDossier(run).graph : null;
+  }),
+  // Tryb DEMO ma własne, wbudowane dane — przełącznik danych syntetycznych i prawdziwych go nie dotyczy.
+  getDataMode: async () => null,
+  setDataMode: async () => {
+    throw new ApiError('W trybie DEMO dane są wbudowane w interfejs — przełącznik trybu danych działa tylko z usługą analizy.', 501);
   },
 };
 

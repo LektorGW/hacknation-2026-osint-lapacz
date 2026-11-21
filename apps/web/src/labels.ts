@@ -122,6 +122,7 @@ export const NODE_KIND_LABEL: Record<GraphNodeKind, string> = {
   service: 'Serwis / kontrahent',
   source: 'Źródło dowodowe',
   person: 'Osoba powiązana',
+  organization: 'Organizacja (beneficjent zbiórki / podmiot z rejestru)',
 };
 
 export const NODE_KIND_PLURAL: Record<GraphNodeKind, string> = {
@@ -134,6 +135,7 @@ export const NODE_KIND_PLURAL: Record<GraphNodeKind, string> = {
   service: 'Serwisy i kontrahenci',
   source: 'Źródła',
   person: 'Osoby powiązane',
+  organization: 'Organizacje',
 };
 
 export const EDGE_KIND_LABEL: Record<GraphEdge['kind'], string> = {
@@ -148,6 +150,9 @@ export const EDGE_KIND_LABEL: Record<GraphEdge['kind'], string> = {
   declares: 'konto deklaruje personę',
   documented_by: 'udokumentowane w źródle',
   same_operator: 'hipoteza wspólnego operatora kont',
+  beneficiary_of: 'adres zbiórki organizacji (hipoteza)',
+  holds_role: 'pełni funkcję w organizacji (rejestr) — nie właściciel adresu',
+  org_relation: 'relacja między organizacjami (rejestr)',
 };
 
 /** Status twierdzenia: skąd wiemy to, co pokazujemy. Kolejność = kolejność w legendzie i filtrach. */

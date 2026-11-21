@@ -22,6 +22,9 @@ import { insightEffect } from './ai-rules.ts';
 import type { InsightEvidence } from './ai-rules.ts';
 import { OWNERSHIP_CATEGORIES, effectiveUnrelatedPublishers, sortFindings } from './analysis.ts';
 import { buildCashOutAssessments } from './cashout-stage.ts';
+import { fiatPublicationsOf } from './fiat-signals.ts';
+import { applyBusinessBadges, businessForDossier, businessKeyFindings } from './business.ts';
+import { checkNetworkNodes } from '@olcys/sources';
 import type { AnalysisFinding } from './analysis.ts';
 import { detectReplacements } from './diff.ts';
 import { buildProfileNodes, decisionMatchesProfile, profileKey, sightingsOf } from './entity.ts';
@@ -29,6 +32,8 @@ import { formatDate, shortAddress, sumByYear } from './format.ts';
 import { buildExplanations, buildUnconfirmedAddresses } from './explain.ts';
 import type { Explanation, ServiceLabel, UnconfirmedAddress } from './explain.ts';
 import { buildGraph } from './graph.ts';
+import { riskListGraph } from '@olcys/sources';
+import type { RiskGraphResult } from '@olcys/sources';
 import { addressKey, sightingKey } from './intel.ts';
 import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
@@ -48,6 +53,12 @@ import { buildServiceLinks, detectServiceMentions } from './services.ts';
 import type { ExternalServiceMatcher, MentionSource } from './services.ts';
 import type { CaseSummary, DecisionRecord } from './storage.ts';
 import { buildTimeline } from './timeline.ts';
+import { beneficiaryNote, charityClass } from './beneficiary.ts';
+import { addressLinkGraph, buildAddressNetwork } from './network.ts';
+import type { AddressNetwork } from './network.ts';
+import { annotateExplanations, insertOrganizationFindings, organizationGraph, organizationViews, resolveBeneficiaries } from './organizations.ts';
+import type { DossierOrganization } from './organizations.ts';
+import type { OrganizationNetwork } from './org-network.ts';
 
 /** Adres w teczce: wynik względem osoby głównej plus adnotacje o korektach. */
 export type DossierFinding = Omit<Finding, 'evidence'> & {
@@ -141,6 +152,17 @@ export interface DossierView extends Dossier {
   sourceErrors: NonNullable<RunIntel['sourceErrors']>;
   /** Kontrola rozszerzania analizy: limity, budżet zapytań, powody zatrzymania, parametry do powtórzenia. Brak dla starszych analiz. */
   expansion?: RunIntel['expansion'];
+  /**
+   * Organizacje wskazane przez kontekst cytowań adresu (beneficjent zbiórki / odbiorca płatności) — hipotezy z jawnym
+   * wskaźnikiem. Organizacja nie jest kandydatem na osobę: Wskaźnik Pewności dla osoby pozostaje 0%.
+   */
+  organizations: DossierOrganization[];
+  /** Sieć organizacji z rejestrów publicznych: osoby w rolach (nie właściciele adresu), podmioty powiązane, źródła, zatrzymania. */
+  organizationNetwork?: OrganizationNetwork;
+  /** Siatka adresu: wpływy i wypływy zbiorczo, punkty zapytania, ten sam portfel — bez osób dla wpłacających. */
+  addressNetwork: AddressNetwork[];
+  /** Odznaki list sankcyjnych i ostrzeżeń dla węzłów grafu (id węzła → trafienie); brak = brak trafień. */
+  riskLists?: RiskGraphResult['badges'];
 }
 
 export interface DossierInput {
@@ -235,6 +257,9 @@ export function buildDossier(input: DossierInput): DossierView {
   const subjectFindings = (run.findings as AnalysisFinding[]).filter((finding) => analystAddresses.has(addressKey(finding)));
   const ownerUnknown = addressOnly && subjectFindings.length > 0 && subjectFindings.every((finding) => finding.widelyCited);
   if (ownerUnknown) persons.length = 0;
+  // Beneficjent adresu cytowanego przez wielu: czyj to adres zbiórki (organizacja, nie osoba).
+  const beneficiaries = resolveBeneficiaries(run.findings, input.intel);
+  const beneficiaryOf = new Map(beneficiaries.filter((item) => item.attributed).map((item) => [addressKey(item), item]));
   let main: DossierPerson | undefined = persons[0];
   const mainProfileIds = new Set(main && main.probability > 0 ? main.profileIds : []);
   const mainNodes = nodes.filter((node) => mainProfileIds.has(node.card.id));
@@ -334,7 +359,10 @@ export function buildDossier(input: DossierInput): DossierView {
         kept.push({ ...evidence, identityMatch: node.card.identityMatch, identityReasons: node.card.identityReasons });
       }
     }
-    const addressClass = finding.chain?.profile.addressClass ?? 'unknown';
+    // Adres zbiórki organizacji nie jest przypisywany osobie (klasa „charity”); adres analityka zostaje przedmiotem sprawy.
+    const beneficiary = beneficiaryOf.get(addressKey(finding));
+    const addressClass = charityClass(finding.chain?.profile.addressClass, beneficiary, analystAddresses.has(addressKey(finding)));
+    if (beneficiary && !annotations.some((note) => note.startsWith('Adres zbiórki organizacji') || note.startsWith('Adres płatności organizacji'))) annotations.push(beneficiaryNote(beneficiary));
     // Dowód kryptograficzny lub potwierdzony profil ma pierwszeństwo przed liczbą cytujących adres.
     const unrelatedPublishers = effectiveUnrelatedPublishers(kept, finding.unrelatedPublishers);
     let confidence = computeConfidence({ evidence: kept, addressClass, unrelatedPublishers }, rules);
@@ -369,6 +397,15 @@ export function buildDossier(input: DossierInput): DossierView {
       };
     }
 
+    if (beneficiary && analystAddresses.has(addressKey(finding)) && confidence.score === 0) {
+      confidence = {
+        ...confidence,
+        ledger: [
+          ...confidence.ledger,
+          { rule: 'info.charity_beneficiary', delta: 0, running: 0, explanation: `0% dla osoby — znany adres zbiórki organizacji „${beneficiary.name}” (hipoteza z kontekstu cytowań). Adres podany przez analityka pozostaje przedmiotem sprawy: łańcuch i sumy dotyczą adresu.`, evidenceIds: [] },
+        ],
+      };
+    }
     const decision = addressDecisions.get(addressKey(finding).toLowerCase()) ?? addressDecisions.get(finding.address.toLowerCase());
     if (decision?.decision === 'rejected') {
       const explanation = `Adres odrzucony przez analityka — ${decisionNote(decision)}. Wykluczony z sum i priorytetu.`;
@@ -621,6 +658,11 @@ export function buildDossier(input: DossierInput): DossierView {
       ),
       // …albo odpowiedź usługi z co najmniej jedną wypłatą na rachunek (samo potwierdzenie KYC nie wystarcza).
       ...(replyExits.size > 0 ? { replyExits } : {}),
+      // Oznaki z publikacji (Web2) — wyłącznie dokumenty kont kandydata głównego; wzmianki innych autorów się nie liczą.
+      now: input.now,
+      serviceLinks,
+      publications: fiatPublicationsOf(mainNodes, findings),
+      webKey: caseSummary.id,
     }),
   };
   // Adresy powiązane w blockchainie, które mają publikację, są tożsamościami; pozostałe to „inne adresy”.
@@ -630,12 +672,27 @@ export function buildDossier(input: DossierInput): DossierView {
     const related = relatedAddressesOf(finding, publishedLinked);
     if (related.length > 0) finding.relatedAddresses = related;
   }
+  // Siatka adresu (zbiorczo): adresy sprawy podane przez analityka i potwierdzone — z zapisanych danych blockchain.
+  const organizations = organizationViews(beneficiaries, input.intel?.organizationNetwork);
+  const addressNetwork = findings
+    .filter((finding) => subjectAddresses.has(addressKey(finding)) && linkedKeys.has(addressKey(finding)))
+    .map((finding) =>
+      buildAddressNetwork({
+        finding,
+        serviceLinks,
+        ...(finding.relatedAddresses ? { relatedAddresses: finding.relatedAddresses } : {}),
+        checkedCounterparties: input.intel?.checkedCounterparties ?? [],
+        ...(input.intel?.expansion ? { maxCounterparties: input.intel.expansion.limits.maxCounterparties } : {}),
+        ...(beneficiaryOf.get(addressKey(finding)) ? { organization: beneficiaryOf.get(addressKey(finding))!.name } : {}),
+      }),
+    )
+    .filter((item): item is AddressNetwork => item !== undefined);
   const likelySame = sumByYear([summary.cashOutPlnByYear, ...linkedIdentities.filter((item) => item.relation === 'same_person_likely').map((item) => item.cashOutPlnByYear)]);
   const profiles = (ownerUnknown ? [] : nodes)
     .map((node) => node.card)
     .sort((a, b) => Number(mainProfileIds.has(b.id)) - Number(mainProfileIds.has(a.id)) || b.identityScore - a.identityScore);
 
-  const explanations = buildExplanations({
+  const explanations = annotateExplanations(buildExplanations({
     identifiers: run.query.identifiers,
     findings,
     linked,
@@ -650,7 +707,66 @@ export function buildDossier(input: DossierInput): DossierView {
     serviceLabels: input.serviceLabels,
     matcher: input.matchService,
     seizures: seizures.length,
+  }), organizations);
+
+  const graphInput = {
+    subjectLabel: main?.fullName ?? caseSummary.name,
+    caseName: caseSummary.name,
+    identifiers,
+    profiles: ownerUnknown ? [] : nodes,
+    mainProfileIds,
+    findings,
+    serviceLinks,
+    relatedPersons,
+    trail,
+    proofs: confirmedProofs,
+    linkedIdentities,
+    seizures,
+    fundingSources,
+    indicators,
+    persons,
+    ...(serviceReplies.some((view) => !view.withdrawn) ? { serviceReplies } : {}),
+  };
+  const graph = buildGraph(graphInput);
+  // Sieć: adres ↔ adres (ten sam portfel, bezpośrednie przelewy; warstwa blockchain) oraz organizacje, osoby w rolach z rejestrów i relacje.
+  const addressLinks = addressLinkGraph(findings, graph);
+  graph.nodes.push(...addressLinks.nodes);
+  graph.edges.push(...addressLinks.edges);
+  const orgGraph = organizationGraph(organizations, input.intel?.organizationNetwork, graph);
+  graph.nodes.push(...orgGraph.nodes);
+  graph.edges.push(...orgGraph.edges);
+  // Oficjalne listy sankcyjne i ostrzeżeń (migawki lokalne, bez sieci): wpis listy jako osobny węzeł, trafienie
+  // identyfikatora = fakt o liście, zgodność nazwy = hipoteza. Błąd list nie blokuje teczki.
+  let riskLists: RiskGraphResult['badges'] | undefined;
+  try {
+    const risk = riskListGraph(graph, { attributes: organizationRegistryAttributes(input.intel?.organizationNetwork) });
+    const known = new Set(graph.nodes.map((node) => node.id));
+    graph.nodes.push(...risk.nodes.filter((node) => !known.has(node.id)));
+    graph.edges.push(...risk.edges);
+    if (Object.keys(risk.badges).length > 0) riskLists = risk.badges;
+  } catch {
+    riskLists = undefined;
+  }
+  // Wskaźnik D — sygnały działalności gospodarczej (dwie ścieżki) i węzły siatki z odznaką oraz ścieżką do podmiotu.
+  indicators.businessActivity = businessForDossier({
+    subjectLabel: main?.fullName ?? caseSummary.name,
+    mainNodes: ownerUnknown ? [] : mainNodes,
+    otherNodes: [...nodes.filter((node) => !mainProfileIds.has(node.card.id)), ...externalNodes],
+    sightings,
+    findings,
+    linkedKeys,
+    beneficiaries: beneficiaryOf,
+    connectorsUsed: run.connectors,
+    identifiers: run.query.identifiers,
+    sourceErrors: input.intel?.sourceErrors ?? [],
+    cashOut: indicators.cashOut,
+    graph,
+    linkedIdentities,
+    serviceReplies,
+    ...(input.intel?.organizationNetwork ? { organizationNetwork: input.intel.organizationNetwork } : {}),
+    riskCheck: (riskNodes) => checkNetworkNodes(riskNodes),
   });
+  applyBusinessBadges(graph, indicators.businessActivity);
 
   return {
     caseId: caseSummary.id,
@@ -686,24 +802,11 @@ export function buildDossier(input: DossierInput): DossierView {
     indicators,
     sourceErrors: input.intel?.sourceErrors ?? [],
     ...(input.intel?.expansion ? { expansion: input.intel.expansion } : {}),
-    graph: buildGraph({
-      subjectLabel: main?.fullName ?? caseSummary.name,
-      caseName: caseSummary.name,
-      identifiers,
-      profiles: ownerUnknown ? [] : nodes,
-      mainProfileIds,
-      findings,
-      serviceLinks,
-      relatedPersons,
-      trail,
-      proofs: confirmedProofs,
-      linkedIdentities,
-      seizures,
-      fundingSources,
-      indicators,
-      persons,
-      ...(serviceReplies.some((view) => !view.withdrawn) ? { serviceReplies } : {}),
-    }),
+    graph,
+    organizations,
+    ...(input.intel?.organizationNetwork ? { organizationNetwork: input.intel.organizationNetwork } : {}),
+    addressNetwork,
+    ...(riskLists ? { riskLists } : {}),
     timeline: buildTimeline({
       linked,
       profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)),
@@ -726,7 +829,7 @@ export function buildDossier(input: DossierInput): DossierView {
         : summary.priorityReasons,
     },
     decisions: input.decisions,
-    keyFindings: buildKeyFindings({
+    keyFindings: [...withRiskListFindings(insertOrganizationFindings(buildKeyFindings({
       addressOnly,
       widelyCited: subjectFindings.some((finding) => finding.widelyCited),
       mentions: input.intel?.mentions ?? [],
@@ -747,6 +850,25 @@ export function buildDossier(input: DossierInput): DossierView {
       relatedPersons,
       priority: summary.priority,
       connectorCount: run.connectors.length,
-    }),
+    }), organizations, input.intel?.organizationNetwork), riskLists), ...businessKeyFindings(indicators.businessActivity)],
   };
+}
+
+/** Numery rejestrowe organizacji z sieci organizacji (KRS, NIP) — do porównania z identyfikatorami wpisów list. */
+function organizationRegistryAttributes(network: OrganizationNetwork | undefined): Record<string, { identifiers: { kind: string; value: string }[] }> {
+  const attributes: Record<string, { identifiers: { kind: string; value: string }[] }> = {};
+  for (const org of network?.organizations ?? []) {
+    const identifiers = [
+      ...(org.identifiers.krs ? [{ kind: 'KRS', value: org.identifiers.krs }] : []),
+      ...(org.identifiers.nip ? [{ kind: 'NIP', value: org.identifiers.nip }] : []),
+    ];
+    if (identifiers.length > 0) attributes[org.id] = { identifiers };
+  }
+  return attributes;
+}
+
+/** Trafienia na listach jako ustalenia: identyfikator na liście = fakt, zgodność nazwy = wniosek do weryfikacji. */
+function withRiskListFindings(findings: DossierView['keyFindings'], badges: RiskGraphResult['badges'] | undefined): DossierView['keyFindings'] {
+  if (!badges) return findings;
+  return [...findings, ...Object.values(badges).map((badge) => ({ text: `${badge.summary} ${badge.caveat}`, layer: badge.status === 'source_fact' ? ('fact' as const) : ('inference' as const) }))];
 }

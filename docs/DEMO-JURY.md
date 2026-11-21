@@ -89,6 +89,27 @@ usługi — wprowadzony jawnie, oznaczony, odwracalny i nigdy nie mylony ze źr�
 
 „Zasady punktacji” są teraz w dolnej części paska bocznego, obok „Słownika pojęć” i „Pomocy”.
 
+## 7. Koniec sprawy: zamknięcie → archiwum → usunięcie (0,5 min)
+
+Przygotowanie: dwie sprawy z tym samym adresem lub nickiem (np. dwa razy „Kogo sprawdzić?” z tym samym
+nickiem pod różnymi nazwami spraw — „Sprawa A” i „Sprawa B”). Szczegóły: [BEZPIECZENSTWO.md](BEZPIECZENSTWO.md).
+
+1. Teczka „Sprawa A” → **„Zamknij sprawę”**, powód „postępowanie zakończone”. Znaczek zmienia się na
+   „Zamknięta”, nad teczką pojawia się informacja o zamknięciu, a próba nowej analizy czy decyzji kończy się
+   komunikatem „tylko do odczytu” (HTTP 409). Na pulpicie wiersz sprawy jest wyciszony, filtr „Pokaż sprawy:
+   zamknięte” ją wyróżnia.
+2. **„Archiwizuj i pobierz”** — przeglądarka pobiera ZIP: `MANIFEST.json` z SHA-256 każdego pliku, raport,
+   pakiet eksportu, wszystkie analizy, kopie treści źródeł (`dowody/…/<sha256>.txt`), decyzje, odpowiedzi usług,
+   rozwinięcia sieci i dziennik audytu. W bazie zostaje tylko skrót archiwum (widoczny nad teczką).
+3. **„Usuń sprawę”** — okno najpierw sprawdza powiązania: „Nie można usunąć — sprawa jest powiązana z:
+   „Sprawa B” (wspólny identyfikator …)”. Usunięcie zniszczyłoby materiał otwartej sprawy, więc jest zablokowane.
+4. Zamknij „Sprawę B”, wróć do „Sprawy A” → „Usuń sprawę”: okno ostrzega, że usunięcie jest nieodwracalne, ale
+   pobrane archiwum zachowuje kopię; wpisz nazwę sprawy → **„Usuń nieodwracalnie”**. Sprawa znika ze wszystkich
+   tabel; zostaje ślad bez danych osobowych.
+5. Pasek boczny → **„Bezpieczeństwo i retencja”**: token API, szyfrowanie migawki, retencja (domyślnie wyłączona
+   — nic nie znika samo), podgląd retencji z powodami i dziennik audytu z całą sekwencją: zamknięcie, archiwum,
+   odmowa usunięcia, usunięcie.
+
 ## Pytania, na które warto mieć odpowiedź
 
 - **Czy 90 to 90% pewności?** Nie. To wskaźnik porządkowy z jawnych reguł, nieskalibrowany —

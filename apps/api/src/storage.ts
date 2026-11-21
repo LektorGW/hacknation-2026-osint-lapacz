@@ -3,12 +3,16 @@
 // oraz `pg` (zewnętrzny serwer wskazany przez DATABASE_URL).
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseSnapshotKey, readSnapshot, writeSnapshot } from './security-snapshot.ts';
 import type { AnalysisRun, AnalystDecision, ProfileAttributes, SourceCategory, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
 import type { CapturedDocument } from './analysis.ts';
+import { parseDataMode } from './data-mode.ts';
+import type { DataMode } from './data-mode.ts';
 import type { RunIntel } from './intel.ts';
 import type { ServiceReply } from './service-reply.ts';
+import type { ExpansionRecord } from './network/types.ts';
 
 export interface RunSummary {
   id: string;
@@ -16,6 +20,23 @@ export interface RunSummary {
   status: string;
   findingCount: number;
   topScore: number;
+  /** Tryb danych, w którym wykonano analizę (syntetyczne / prawdziwe / oba). */
+  dataMode?: DataMode;
+}
+
+/** Stan sprawy: otwarta, zamknięta (tylko do odczytu) albo zarchiwizowana (zamknięta z pobranym archiwum). */
+export type CaseStatus = 'open' | 'closed' | 'archived';
+
+/** Metadane archiwum sprawy zapisane w bazie (sam plik — tylko w OLCYS_ARCHIVE_DIR, jeśli ustawiono). */
+export interface CaseArchiveMeta {
+  generatedAt: string;
+  bytes: number;
+  files: number;
+  manifestSha256: string;
+  toolVersion: string;
+  rulesSha256: string;
+  /** Nazwa pliku w OLCYS_ARCHIVE_DIR (bez danych z żądania); brak = plik nie jest przechowywany na serwerze. */
+  storedAs?: string;
 }
 
 export interface CaseSummary {
@@ -24,6 +45,34 @@ export interface CaseSummary {
   createdAt: string;
   query: SubjectQuery;
   runs: RunSummary[];
+  status: CaseStatus;
+  closedAt?: string;
+  closedReason?: string;
+  archivedAt?: string;
+  archiveSha256?: string;
+  archive?: CaseArchiveMeta;
+}
+
+/** Wpis dziennika audytu — bez danych osobowych (identyfikatory techniczne, rodzaje, liczby). */
+export interface AuditEntry {
+  seq?: number;
+  at: string;
+  actor: string;
+  action: string;
+  caseId?: string;
+  target?: string;
+  details: Record<string, unknown>;
+}
+
+/** Ślad po usuniętej sprawie: bez nazw i identyfikatorów osób. */
+export interface CaseTombstone {
+  id: string;
+  deletedAt: string;
+  archiveSha256?: string;
+  /** `reczne` — analityk; `retencja` — zadanie retencji. */
+  mode: 'reczne' | 'retencja';
+  /** Liczba usuniętych wierszy w każdej tabeli. */
+  counts: Record<string, number>;
 }
 
 /** Decyzja analityka wraz z autorem (na razie stałym — narzędzie nie ma kont użytkowników). */
@@ -85,6 +134,19 @@ export interface CorpusStats {
 export interface SqlDriver {
   query(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]>;
   close(): Promise<void>;
+  /** Polecenia w jednej transakcji (jedno połączenie); błąd wycofuje wszystkie. Brak = polecenia kolejno, bez transakcji. */
+  transaction?<T>(work: (query: SqlDriver['query']) => Promise<T>): Promise<T>;
+  /** Natychmiastowy trwały zapis (PGlite: migawka na dysk), np. po usunięciu sprawy. */
+  flush?(): Promise<void>;
+  /** Czy migawka bazy na dysku jest szyfrowana (tylko PGlite z katalogiem danych). */
+  encryptedAtRest?: boolean;
+}
+
+/** Ustawienia sterownika PGlite z katalogiem danych. */
+export interface PgliteOptions {
+  /** Klucz AES-256-GCM migawki (32 bajty); bez niego migawka jest zapisywana jawnie, jak dotąd. */
+  snapshotKey?: Buffer;
+  log?: (message: string) => void;
 }
 
 export interface Storage {
@@ -116,6 +178,12 @@ export interface Storage {
   listServiceReplies(caseId: string): Promise<ServiceReply[]>;
   /** Wycofuje odpowiedź: wpis zostaje z czasem i autorem wycofania. `false`, gdy nie ma takiej obowiązującej odpowiedzi. */
   withdrawServiceReply(caseId: string, replyId: string, withdrawal?: { at?: string; by?: string }): Promise<boolean>;
+  /** Zapisuje rozwinięcie sieci (węzeł → relacje) wraz z wynikiem, powodami zatrzymania i błędami źródeł. */
+  addNetworkExpansion(record: ExpansionRecord): Promise<void>;
+  /** Rozwinięcia sieci w sprawie w kolejności wykonania — łącznie z wycofanymi (ślad audytowy). */
+  listNetworkExpansions(caseId: string): Promise<ExpansionRecord[]>;
+  /** Wycofuje rozwinięcie: wpis zostaje z czasem i autorem wycofania. `false`, gdy nie ma takiego obowiązującego rozwinięcia. */
+  withdrawNetworkExpansion(caseId: string, expansionId: string, withdrawal?: { at?: string; by?: string }): Promise<boolean>;
   saveSweep(sweep: Sweep): Promise<void>;
   getSweep(id: string): Promise<Sweep | null>;
   listSweeps(): Promise<Sweep[]>;
@@ -145,13 +213,31 @@ export interface Storage {
   /** Usuwa publikacje starsze niż `olderThan` oraz najstarsze ponad `maxRows`; zwraca liczbę usuniętych. */
   pruneCorpus(olderThan: string, maxRows: number): Promise<number>;
   corpusStats(): Promise<CorpusStats>;
+  /** Zmienia stan sprawy (zamknięcie / przywrócenie / archiwum). */
+  setCaseStatus(id: string, change: { status: CaseStatus; closedAt?: string | null; closedReason?: string | null }): Promise<void>;
+  /** Zapisuje skrót i metadane archiwum oraz ustawia stan „zarchiwizowana”. */
+  recordCaseArchive(id: string, archive: { at: string; sha256: string; meta: CaseArchiveMeta }): Promise<void>;
+  /** Dopisuje wpis do dziennika audytu (tylko dopisywanie). */
+  addAudit(entry: AuditEntry): Promise<void>;
+  /** Wpisy dziennika audytu, najnowsze na końcu; `caseId` zawęża do sprawy. */
+  listAudit(filter?: { caseId?: string; limit?: number }): Promise<AuditEntry[]>;
+  /**
+   * Usuwa sprawę ze WSZYSTKICH tabel (każda tabela z kolumną `case_id` oraz dane analiz po `run_id`) w jednej transakcji,
+   * czyści odniesienia w przeglądach i trafieniach monitoringu i zostawia ślad w `case_tombstones`. Zwraca ślad.
+   */
+  deleteCase(id: string, tombstone: { deletedAt: string; mode: CaseTombstone['mode'] }): Promise<CaseTombstone | null>;
+  getTombstone(id: string): Promise<CaseTombstone | null>;
+  /** Natychmiastowy trwały zapis (migawka PGlite); dla zewnętrznego PostgreSQL nic nie robi. */
+  flush(): Promise<void>;
+  /** Czy migawka bazy na dysku jest szyfrowana. */
+  encryptedAtRest(): boolean;
   /** Czy baza odpowiada. */
   ping(): Promise<boolean>;
   close(): Promise<void>;
 }
 
 /** PGlite: `dataDir` wskazuje katalog danych; bez niego baza żyje tylko w pamięci. */
-export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
+export async function createPgliteDriver(dataDir?: string, options: PgliteOptions = {}): Promise<SqlDriver> {
   const { PGlite } = await import('@electric-sql/pglite');
   if (!dataDir) {
     const memory = new PGlite();
@@ -160,6 +246,7 @@ export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
       async query(sql, params) {
         return (await memory.query<Record<string, unknown>>(sql, params)).rows;
       },
+      transaction: (work) => memory.transaction((tx) => work(async (sql, params) => (await tx.query<Record<string, unknown>>(sql, params)).rows)),
       close: () => memory.close(),
     };
   }
@@ -184,24 +271,26 @@ export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
     return instance;
   };
 
+  const log = options.log ?? ((message: string) => console.warn(message));
+  const key = options.snapshotKey;
   let db: Awaited<ReturnType<typeof open>>;
-  if (existsSync(snapshotFile)) {
-    db = await open({ loadDataDir: new Blob([readFileSync(snapshotFile)]) });
+  // Nieczytelna migawka (zły klucz, brak klucza, uszkodzenie) przerywa start — pusta baza nadpisałaby dane przy pierwszym zapisie.
+  const stored = readSnapshot(snapshotFile, key, { log });
+  if (stored) {
+    db = await open({ loadDataDir: new Blob([new Uint8Array(stored.plain)]) });
   } else {
     db = await open();
   }
 
   let writing: Promise<void> = Promise.resolve();
   const snapshot = () => {
-    // Zapis przez plik tymczasowy: przerwany zapis nie niszczy poprzedniej migawki.
+    // Zapis przez plik tymczasowy ze sprawdzeniem i kopią .bak: przerwany zapis nie niszczy poprzedniej migawki.
     writing = writing
       .then(async () => {
         const dump = await db.dumpDataDir('gzip');
-        const temporary = `${snapshotFile}.tmp`;
-        writeFileSync(temporary, Buffer.from(await dump.arrayBuffer()));
-        renameSync(temporary, snapshotFile);
+        writeSnapshot(snapshotFile, Buffer.from(await dump.arrayBuffer()), key, { log });
       })
-      .catch((error) => console.warn(`Migawka bazy nie powiodła się: ${error instanceof Error ? error.message : error}`));
+      .catch((error) => log(`Migawka bazy nie powiodła się: ${error instanceof Error ? error.message : error}`));
     return writing;
   };
   const timer = setInterval(snapshot, 60_000);
@@ -211,6 +300,9 @@ export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
     async query(sql, params) {
       return (await db.query<Record<string, unknown>>(sql, params)).rows;
     },
+    transaction: (work) => db.transaction((tx) => work(async (sql, params) => (await tx.query<Record<string, unknown>>(sql, params)).rows)),
+    flush: snapshot,
+    encryptedAtRest: key !== undefined,
     async close() {
       clearInterval(timer);
       await snapshot();
@@ -227,13 +319,28 @@ export async function createPgDriver(connectionString: string): Promise<SqlDrive
       const result = await pool.query(sql, params);
       return result.rows;
     },
+    // Transakcja wymaga jednego połączenia z puli — BEGIN na `pool.query` trafiłby do przypadkowego połączenia.
+    async transaction(work) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await work(async (sql, params) => (await client.query(sql, params)).rows);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     close: () => pool.end(),
   };
 }
 
-export function createDriverFromEnv(env: NodeJS.ProcessEnv): Promise<SqlDriver> {
+export async function createDriverFromEnv(env: NodeJS.ProcessEnv, log?: (message: string) => void): Promise<SqlDriver> {
   if (env.DATABASE_URL) return createPgDriver(env.DATABASE_URL);
-  return createPgliteDriver(env.OLCYS_DATA_DIR ?? './data/pg');
+  return createPgliteDriver(env.OLCYS_DATA_DIR ?? './data/pg', { snapshotKey: parseSnapshotKey(env.OLCYS_SNAPSHOT_KEY), ...(log ? { log } : {}) });
 }
 
 const SCHEMA_SQL = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
@@ -264,8 +371,13 @@ function toRunSummary(row: Record<string, unknown>): RunSummary {
     status: String(row.status),
     findingCount: Number(row.finding_count),
     topScore: Number(row.top_score),
+    // Tryb danych analizy (znacznik SANDBOX/LIVE); analizy sprzed przełącznika go nie mają.
+    ...(parseDataMode(row.data_mode) ? { dataMode: parseDataMode(row.data_mode)! } : {}),
   };
 }
+
+/** Kolumna listy analiz potrzebna do znacznika SANDBOX/LIVE (bez wczytywania całego wyniku). */
+const RUN_MODE_COLUMNS = "result->>'dataMode' AS data_mode";
 
 export function createStorage(driver: SqlDriver): Storage {
   const toCase = (row: Record<string, unknown>, runs: RunSummary[]): CaseSummary => ({
@@ -274,7 +386,16 @@ export function createStorage(driver: SqlDriver): Storage {
     createdAt: toIso(row.created_at),
     query: row.query as SubjectQuery,
     runs,
+    status: (['open', 'closed', 'archived'].includes(String(row.status)) ? String(row.status) : 'open') as CaseStatus,
+    ...(row.closed_at == null ? {} : { closedAt: toIso(row.closed_at) }),
+    ...(row.closed_reason == null ? {} : { closedReason: String(row.closed_reason) }),
+    ...(row.archived_at == null ? {} : { archivedAt: toIso(row.archived_at) }),
+    ...(row.archive_sha256 == null ? {} : { archiveSha256: String(row.archive_sha256) }),
+    ...(row.archive_meta == null ? {} : { archive: row.archive_meta as CaseArchiveMeta }),
   });
+  const CASE_COLUMNS = 'id, name, created_at, query, status, closed_at, closed_reason, archived_at, archive_sha256, archive_meta';
+  /** Tabele bez usuwania przy kasowaniu sprawy: dziennik audytu i ślady usuniętych spraw. */
+  const KEEP_ON_DELETE = new Set(['audit_log', 'case_tombstones', 'cases', 'runs']);
 
   return {
     async migrate() {
@@ -294,13 +415,13 @@ export function createStorage(driver: SqlDriver): Storage {
         createdAt,
         JSON.stringify(query),
       ]);
-      return { id, name, createdAt, query, runs: [] };
+      return { id, name, createdAt, query, runs: [], status: 'open' };
     },
 
     async listCases() {
-      const cases = await driver.query('SELECT id, name, created_at, query FROM cases ORDER BY created_at DESC, id');
+      const cases = await driver.query(`SELECT ${CASE_COLUMNS} FROM cases ORDER BY created_at DESC, id`);
       const runs = await driver.query(
-        'SELECT id, case_id, started_at, status, finding_count, top_score FROM runs ORDER BY started_at, id',
+        `SELECT id, case_id, started_at, status, finding_count, top_score, ${RUN_MODE_COLUMNS} FROM runs ORDER BY started_at, id`,
       );
       return cases.map((row) =>
         toCase(row, runs.filter((run) => run.case_id === row.id).map(toRunSummary)),
@@ -308,10 +429,10 @@ export function createStorage(driver: SqlDriver): Storage {
     },
 
     async getCase(id) {
-      const [row] = await driver.query('SELECT id, name, created_at, query FROM cases WHERE id = $1', [id]);
+      const [row] = await driver.query(`SELECT ${CASE_COLUMNS} FROM cases WHERE id = $1`, [id]);
       if (!row) return null;
       const runs = await driver.query(
-        'SELECT id, started_at, status, finding_count, top_score FROM runs WHERE case_id = $1 ORDER BY started_at, id',
+        `SELECT id, started_at, status, finding_count, top_score, ${RUN_MODE_COLUMNS} FROM runs WHERE case_id = $1 ORDER BY started_at, id`,
         [id],
       );
       return toCase(row, runs.map(toRunSummary));
@@ -475,6 +596,56 @@ export function createStorage(driver: SqlDriver): Storage {
       const rows = await driver.query(
         'UPDATE service_replies SET withdrawn_at = $3, withdrawn_by = $4 WHERE case_id = $1 AND id = $2 AND withdrawn_at IS NULL RETURNING id',
         [caseId, replyId, withdrawal.at ?? new Date().toISOString(), withdrawal.by ?? 'analityk'],
+      );
+      return rows.length > 0;
+    },
+
+    async addNetworkExpansion(record) {
+      await driver.query(
+        `INSERT INTO network_expansions (id, case_id, node_id, relations, depth, started_at, finished_at, requested_by, results, stops, source_errors, budget, run_id)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb, $13)`,
+        [
+          record.id,
+          record.caseId,
+          record.nodeId,
+          JSON.stringify(record.relations),
+          record.depth,
+          record.startedAt,
+          record.finishedAt,
+          record.requestedBy,
+          JSON.stringify(record.results),
+          JSON.stringify(record.stops),
+          JSON.stringify(record.sourceErrors),
+          JSON.stringify(record.budget),
+          record.runId ?? null,
+        ],
+      );
+    },
+
+    async listNetworkExpansions(caseId) {
+      const rows = await driver.query('SELECT * FROM network_expansions WHERE case_id = $1 ORDER BY seq', [caseId]);
+      return rows.map((row) => ({
+        id: String(row.id),
+        caseId: String(row.case_id),
+        nodeId: String(row.node_id),
+        relations: row.relations as ExpansionRecord['relations'],
+        depth: Number(row.depth),
+        startedAt: toIso(row.started_at),
+        finishedAt: toIso(row.finished_at),
+        requestedBy: String(row.requested_by),
+        results: row.results as ExpansionRecord['results'],
+        stops: row.stops as ExpansionRecord['stops'],
+        sourceErrors: row.source_errors as ExpansionRecord['sourceErrors'],
+        budget: row.budget as ExpansionRecord['budget'],
+        ...(row.run_id == null ? {} : { runId: String(row.run_id) }),
+        ...(row.withdrawn_at == null ? {} : { withdrawnAt: toIso(row.withdrawn_at), withdrawnBy: String(row.withdrawn_by ?? 'analityk') }),
+      }));
+    },
+
+    async withdrawNetworkExpansion(caseId, expansionId, withdrawal = {}) {
+      const rows = await driver.query(
+        'UPDATE network_expansions SET withdrawn_at = $3, withdrawn_by = $4 WHERE case_id = $1 AND id = $2 AND withdrawn_at IS NULL RETURNING id',
+        [caseId, expansionId, withdrawal.at ?? new Date().toISOString(), withdrawal.by ?? 'analityk'],
       );
       return rows.length > 0;
     },
@@ -692,6 +863,130 @@ export function createStorage(driver: SqlDriver): Storage {
         ...(row?.newest == null ? {} : { newestFetchedAt: toIso(row.newest) }),
       };
     },
+
+    async setCaseStatus(id, change) {
+      await driver.query(
+        `UPDATE cases SET status = $2,
+           closed_at = CASE WHEN $3::boolean THEN $4::timestamptz ELSE closed_at END,
+           closed_reason = CASE WHEN $5::boolean THEN $6 ELSE closed_reason END
+         WHERE id = $1`,
+        [id, change.status, change.closedAt !== undefined, change.closedAt ?? null, change.closedReason !== undefined, change.closedReason ?? null],
+      );
+    },
+
+    async recordCaseArchive(id, archive) {
+      await driver.query(
+        "UPDATE cases SET status = 'archived', archived_at = $2, archive_sha256 = $3, archive_meta = $4::jsonb WHERE id = $1",
+        [id, archive.at, archive.sha256, JSON.stringify(archive.meta)],
+      );
+    },
+
+    async addAudit(entry) {
+      await driver.query(
+        'INSERT INTO audit_log (at, actor, action, case_id, target, details) VALUES ($1, $2, $3, $4, $5, $6::jsonb)',
+        [entry.at, entry.actor, entry.action, entry.caseId ?? null, entry.target ?? null, JSON.stringify(entry.details)],
+      );
+    },
+
+    async listAudit(filter = {}) {
+      const limit = Math.min(Math.max(filter.limit ?? 500, 1), 5000);
+      // Najnowsze `limit` wpisów, zwracane w kolejności chronologicznej.
+      const rows = filter.caseId
+        ? await driver.query('SELECT * FROM audit_log WHERE case_id = $1 ORDER BY seq DESC LIMIT $2', [filter.caseId, limit])
+        : await driver.query('SELECT * FROM audit_log ORDER BY seq DESC LIMIT $1', [limit]);
+      return rows.reverse().map((row) => ({
+        seq: Number(row.seq),
+        at: toIso(row.at),
+        actor: String(row.actor),
+        action: String(row.action),
+        ...(row.case_id == null ? {} : { caseId: String(row.case_id) }),
+        ...(row.target == null ? {} : { target: String(row.target) }),
+        details: (row.details ?? {}) as Record<string, unknown>,
+      }));
+    },
+
+    async deleteCase(id, tombstone) {
+      const work = async (query: SqlDriver['query']): Promise<CaseTombstone | null> => {
+        const [found] = await query('SELECT id, archive_sha256 FROM cases WHERE id = $1', [id]);
+        if (!found) return null;
+        const counts: Record<string, number> = {};
+        // Wszystkie tabele z kolumną `case_id` / `run_id` — także dodane później przez inne moduły.
+        const columns = await query(
+          `SELECT table_name, column_name FROM information_schema.columns
+            WHERE table_schema = current_schema() AND column_name IN ('case_id', 'run_id')
+            ORDER BY table_name`,
+        );
+        const safe = (name: string) => /^[a-z_][a-z0-9_]*$/.test(name);
+        const byRun = [...new Set(columns.filter((row) => row.column_name === 'run_id').map((row) => String(row.table_name)))].filter(
+          (table) => safe(table) && !KEEP_ON_DELETE.has(table),
+        );
+        const byCase = [...new Set(columns.filter((row) => row.column_name === 'case_id').map((row) => String(row.table_name)))].filter(
+          (table) => safe(table) && !KEEP_ON_DELETE.has(table),
+        );
+        // Najpierw dane analiz (kopie treści dokumentów itp.), potem tabele sprawy, na końcu analizy i sama sprawa.
+        for (const table of byRun) {
+          if (byCase.includes(table)) continue;
+          const rows = await query(`DELETE FROM "${table}" WHERE run_id IN (SELECT id FROM runs WHERE case_id = $1) RETURNING 1 AS x`, [id]);
+          counts[table] = (counts[table] ?? 0) + rows.length;
+        }
+        for (const table of byCase) {
+          const rows = await query(`DELETE FROM "${table}" WHERE case_id = $1 RETURNING 1 AS x`, [id]);
+          counts[table] = (counts[table] ?? 0) + rows.length;
+        }
+        counts.runs = (await query('DELETE FROM runs WHERE case_id = $1 RETURNING 1 AS x', [id])).length;
+        // Odniesienia w ustawieniach i rejestrach spoza sprawy: obserwacja, przeglądy źródeł, trafienia monitoringu.
+        let references = 0;
+        const [watch] = await query("SELECT data FROM monitor_config WHERE id = 'config:case-watch'");
+        if (watch?.data && typeof watch.data === 'object' && id in (watch.data as Record<string, unknown>)) {
+          const { [id]: _removed, ...rest } = watch.data as Record<string, unknown>;
+          await query("UPDATE monitor_config SET data = $1::jsonb WHERE id = 'config:case-watch'", [JSON.stringify(rest)]);
+          references += 1;
+        }
+        for (const row of await query('SELECT id, result FROM sweeps')) {
+          const sweep = row.result as { leads?: { caseId?: string }[] };
+          const linked = (sweep.leads ?? []).filter((lead) => lead.caseId === id);
+          if (linked.length === 0) continue;
+          for (const lead of linked) delete lead.caseId;
+          await query('UPDATE sweeps SET result = $2::jsonb WHERE id = $1', [row.id, JSON.stringify(sweep)]);
+          references += linked.length;
+        }
+        references += (await query("UPDATE monitor_hits SET data = data - 'caseId' WHERE data->>'caseId' = $1 RETURNING 1 AS x", [id])).length;
+        counts.odniesienia = references;
+        counts.cases = (await query('DELETE FROM cases WHERE id = $1 RETURNING 1 AS x', [id])).length;
+        const record: CaseTombstone = {
+          id,
+          deletedAt: tombstone.deletedAt,
+          ...(found.archive_sha256 == null ? {} : { archiveSha256: String(found.archive_sha256) }),
+          mode: tombstone.mode,
+          counts,
+        };
+        await query(
+          `INSERT INTO case_tombstones (id, deleted_at, archive_sha256, mode, counts) VALUES ($1, $2, $3, $4, $5::jsonb)
+           ON CONFLICT (id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at, archive_sha256 = EXCLUDED.archive_sha256, mode = EXCLUDED.mode, counts = EXCLUDED.counts`,
+          [id, record.deletedAt, record.archiveSha256 ?? null, record.mode, JSON.stringify(counts)],
+        );
+        return record;
+      };
+      return driver.transaction ? driver.transaction(work) : work((sql, params) => driver.query(sql, params));
+    },
+
+    async getTombstone(id) {
+      const [row] = await driver.query('SELECT * FROM case_tombstones WHERE id = $1', [id]);
+      if (!row) return null;
+      return {
+        id: String(row.id),
+        deletedAt: toIso(row.deleted_at),
+        ...(row.archive_sha256 == null ? {} : { archiveSha256: String(row.archive_sha256) }),
+        mode: String(row.mode) as CaseTombstone['mode'],
+        counts: row.counts as Record<string, number>,
+      };
+    },
+
+    flush: async () => {
+      await driver.flush?.();
+    },
+
+    encryptedAtRest: () => driver.encryptedAtRest === true,
 
     async ping() {
       try {

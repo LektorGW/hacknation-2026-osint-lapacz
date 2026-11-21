@@ -8,6 +8,8 @@ import type { AiAssistant, ChainProvider } from '@olcys/core';
 import * as sources from '@olcys/sources';
 import { buildApp } from './app.ts';
 import { createDriverFromEnv, createStorage } from './storage.ts';
+import { retentionDaysFromEnv } from './retention.ts';
+import { registerAdminShutdown, securityFromEnv } from './security.ts';
 
 const env = process.env;
 const sandboxUrl = env.SANDBOX_URL ?? 'http://localhost:4100';
@@ -17,8 +19,15 @@ const torProxyUrl = env.TOR_PROXY_URL || undefined;
 // Laboratorium tożsamości (apps/identity-lab): symulacja lokalna na danych syntetycznych, domyślnie wyłączona.
 const labUrl = env.LAB_URL || undefined;
 const port = Number(env.API_PORT ?? 4000);
+// Sprawdzenie konfiguracji (port, katalog danych, adresy, klucze) — błąd zatrzymuje start z opisem po polsku.
+await (await import('./config-check.ts')).checkConfigOrExit(env);
 
-const storage = createStorage(await createDriverFromEnv(env));
+// Zabezpieczenia i retencja ze zmiennych środowiskowych — błędna wartość zatrzymuje start (bez wypisywania tokenu ani klucza).
+const security = securityFromEnv(env);
+const retentionDays = retentionDaysFromEnv(env.OLCYS_RETENTION_DAYS_CLOSED);
+const archiveDir = env.OLCYS_ARCHIVE_DIR?.trim() || undefined;
+
+const storage = createStorage(await createDriverFromEnv(env, (message) => console.warn(message)));
 await storage.migrate();
 
 // Token służy tylko do podniesienia limitu zapytań publicznego API; nie jest logowany ani zapisywany.
@@ -82,8 +91,10 @@ const app = await buildApp({
   storage,
   connectors,
   monitorConnectors,
-  chainProviders: createProviders({ sandboxUrl, labUrl, enableLive, blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined }),
-  deepChainProviders: createProviders({ sandboxUrl, labUrl, enableLive, depth: 'deep', blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined }),
+  // Dostawcy syntetyczni (piaskownica, laboratorium) osobno od prawdziwych: w trybie danych syntetycznych
+  // wycena korzysta z tabeli przykładowej i nie pyta kursów w internecie (przełącznik: data-mode.ts).
+  chainProviders: [...createProviders({ sandboxUrl, labUrl }), ...createProviders({ enableLive, blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined })],
+  deepChainProviders: [...createProviders({ sandboxUrl, labUrl, depth: 'deep' }), ...createProviders({ enableLive, depth: 'deep', blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined })],
   resolveActivity: chain.getActivityFromProviders,
   matchService: chain.matchService,
   ai: assistant,
@@ -99,7 +110,13 @@ const app = await buildApp({
     ...(env.CORPUS_MAX_ROWS ? { maxRows: Number(env.CORPUS_MAX_ROWS) } : {}),
   },
   logger: true,
+  security,
+  lifecycle: { ...(retentionDays !== undefined ? { retentionDays } : {}), ...(archiveDir ? { archiveDir } : {}) },
 });
+app.log.info(
+  `Zabezpieczenia: token API ${security.apiToken ? 'włączony' : 'wyłączony'}, szyfrowanie migawki ${storage.encryptedAtRest() ? 'włączone' : 'wyłączone'}, ` +
+    `retencja zamkniętych spraw ${retentionDays === undefined ? 'wyłączona' : `${retentionDays} dni`}, archiwa na serwerze ${archiveDir ? 'tak' : 'nie'}.`,
+);
 app.addHook('onClose', () => storage.close());
 
 // Łagodne zamykanie: najpierw Fastify (dokańcza żądania, zatrzymuje monitoring i analizy w tle),
@@ -121,14 +138,12 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) {
   process.on(signal, () => shutdown(signal));
 }
 
-// W systemie Windows zatrzymanie procesu z zewnątrz nie dostarcza sygnału, więc łagodne
-// zamknięcie da się też wywołać żądaniem — wyłącznie z tego samego komputera.
-app.post('/api/admin/shutdown', async (request, reply) => {
-  if (request.ip !== '127.0.0.1' && request.ip !== '::1') {
-    return reply.code(403).send({ error: 'Zamknięcie jest dostępne tylko lokalnie.' });
-  }
-  setImmediate(() => shutdown('żądanie lokalne'));
-  return { status: 'closing' };
-});
+// W systemie Windows zatrzymanie procesu z zewnątrz nie dostarcza sygnału, więc łagodne zamknięcie da się
+// też wywołać żądaniem — wyłącznie wprost na porcie API z tej samej maszyny (nie przez proxy interfejsu
+// ani z przeglądarki), a przy ustawionym OLCYS_API_TOKEN — także z tokenem.
+registerAdminShutdown(app, { port, onShutdown: () => shutdown('żądanie lokalne') });
+
+// Tryb produkcyjny jednym procesem: zbudowany interfejs (apps/web/dist) na tym samym porcie co API.
+await (await import('./static.ts')).registerStaticWeb(app, env);
 
 await app.listen({ port, host: env.API_HOST ?? '127.0.0.1' });

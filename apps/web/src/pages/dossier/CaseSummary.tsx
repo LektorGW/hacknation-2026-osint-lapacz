@@ -13,14 +13,19 @@ import { identityStatus } from '../../identities.ts';
 import { withGraphLayer } from '../../router.ts';
 import type { DossierTab } from '../../router.ts';
 import { edgeLayer } from '../../graph/investigation.ts';
+import { GraphView } from '../../graph/GraphView.tsx';
 import { FINDING_GROUPS, countText, groupKeyFindings, noPersonReason, searchInput, splitLead, summarySentence } from '../../ux.ts';
 import { isAddressCase } from '../../components/AddressSummary.tsx';
 import { useDossier } from '../../components/DossierContext.tsx';
 import { ServiceChips } from '../../components/ServiceCards.tsx';
+import { fiatSignalSummary } from '../../components/FiatSignals.tsx';
 import { Disclosure } from '../../components/ui/Disclosure.tsx';
 import { Hint } from '../../components/ui/Hint.tsx';
 import { Score } from '../../components/ui/Score.tsx';
 import { Term } from '../../components/ui/Term.tsx';
+import { OrganizationTile } from '../../components/OrganizationCards.tsx';
+import { leadOrganization } from '../../organizations.ts';
+import { BusinessHeroLine } from '../../components/BusinessActivity.tsx';
 
 const replyRef = (person: PersonCandidate | undefined): ServiceReplyRef | undefined =>
   (person as (PersonCandidate & { confirmedByReply?: ServiceReplyRef }) | undefined)?.confirmedByReply;
@@ -72,19 +77,61 @@ function nextActions(dossier: FullDossier, linked: Finding[]): Action[] {
  * „Most” między kafelkami podsumowania: klikalne połączenie, które otwiera graf w jednej warstwie —
  * osoba ↔ adresy to ślady z otwartych źródeł (OSINT), adresy ↔ wyjścia to przepływy w blockchainie.
  */
-function Bridge({ href, title, detail, empty, kind }: { href: string; title: string; detail: string; empty: boolean; kind: 'osint' | 'chain' }) {
+/** Wysokość łuku mostu nad pomostem w punkcie `x` (łuk paraboliczny między przyczółkami). */
+const archY = (x: number) => {
+  const t = (x - 14) / 132;
+  return 50 - 46 * 4 * t * (1 - t);
+};
+const HANGERS = [34, 54, 80, 106, 126];
+
+/** Rysunek mostu łukowego: przyczółki, łuk, wieszaki, pomost i rzeka; przy zaznaczeniu po pomoście jadą „dane”. */
+function BridgeDrawing() {
   return (
-    <a className={`bridge bridge-${kind} ${empty ? 'is-empty' : ''}`} href={href} title={`${title}: pokaż na grafie`}>
-      <span className="bridge-line" aria-hidden="true" />
-      <span className="bridge-pill">
-        <span className="bridge-title">{title}</span>
-        <span className="bridge-detail">{detail}</span>
-        <span className="bridge-cta">pokaż na grafie →</span>
-      </span>
-      <span className="bridge-line" aria-hidden="true" />
-    </a>
+    <svg className="bridge-svg" viewBox="0 0 160 84" aria-hidden="true" focusable="false">
+      <path className="bridge-water" d="M0 72 q10 -5 20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0" />
+      <path className="bridge-water bridge-water-2" d="M6 79 q10 -4 20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0" />
+      <path className="bridge-arch-fill" d={`M14 50 Q80 ${50 - 92} 146 50 Z`} />
+      {HANGERS.map((x) => (
+        <line key={x} className="bridge-hanger" x1={x} x2={x} y1={archY(x)} y2={50} />
+      ))}
+      <path className="bridge-arch" d={`M14 50 Q80 ${50 - 92} 146 50`} />
+      <rect className="bridge-pier" x="6" y="44" width="14" height="26" rx="2" />
+      <rect className="bridge-pier" x="140" y="44" width="14" height="26" rx="2" />
+      <rect className="bridge-deck" x="2" y="49" width="156" height="7" rx="3.5" />
+      <circle className="bridge-car bridge-car-1" cx="10" cy="52.5" r="2.4" />
+      <circle className="bridge-car bridge-car-2" cx="10" cy="52.5" r="2.4" />
+      <circle className="bridge-car bridge-car-3" cx="10" cy="52.5" r="2.4" />
+    </svg>
   );
 }
+
+/**
+ * „Most” między kafelkami podsumowania — przełącznik grafu pod kafelkami:
+ * osoba ↔ adresy to ślady z otwartych źródeł (OSINT), adresy ↔ wyjścia to przepływy w blockchainie.
+ * Zaznaczenie obu mostów pokazuje jeden, połączony graf obu warstw.
+ */
+function Bridge({ title, detail, empty, kind, active, onToggle }: { title: string; detail: string; empty: boolean; kind: 'osint' | 'chain'; active: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className={`bridge bridge-${kind} ${empty ? 'is-empty' : ''} ${active ? 'is-active' : ''}`}
+      aria-pressed={active}
+      onClick={onToggle}
+      title={active ? `${title}: ukryj na grafie` : `${title}: pokaż na grafie (zaznacz oba mosty, aby połączyć grafy)`}
+    >
+      <BridgeDrawing />
+      <span className="bridge-title">{title}</span>
+      <span className="bridge-detail">{detail}</span>
+      <span className="bridge-cta">{active ? '✓ na grafie poniżej' : 'pokaż na grafie'}</span>
+    </button>
+  );
+}
+
+const HERO_GRAPH_TITLE = {
+  identity: 'Graf: ślady OSINT — osoba, konta, publikacje i adresy',
+  chain: 'Graf: śledzenie w blockchainie — adresy, przepływy i usługi',
+  both: 'Graf połączony: ślady OSINT i przepływy w blockchainie',
+} as const;
 
 function jumpTo(anchor: string) {
   const element = document.getElementById(anchor);
@@ -134,6 +181,8 @@ export function CaseHero() {
   const accounts = dossier.profiles.length;
   const chainEdges = dossier.graph.edges.filter((edge) => edgeLayer(edge) === 'chain').length;
   const graphHref = tabHref('graf');
+  const [shown, setShown] = useState<{ osint: boolean; chain: boolean }>({ osint: false, chain: false });
+  const heroLayer = shown.osint && shown.chain ? 'both' : shown.osint ? 'identity' : shown.chain ? 'chain' : undefined;
   const osintDetail =
     sources + accounts > 0 ? `${countText(accounts, 'konto', 'konta', 'kont')} · ${countText(sources, 'źródło', 'źródła', 'źródeł')}` : 'brak śladów w źródłach';
   const chainDetail = chainEdges > 0 ? countText(chainEdges, 'przepływ', 'przepływy', 'przepływów') : 'brak przepływów do usług';
@@ -184,6 +233,8 @@ export function CaseHero() {
               <Score value={person.probability} kind="person" reasons={person.reasons} caption="pewność, że to osoba ze sprawy" />
               {person.nameVariants.length > 0 && name !== person.nameVariants[0] && <p className="muted small">występuje też jako: {person.nameVariants.slice(0, 3).join(', ')}</p>}
             </>
+          ) : leadOrganization(dossier) ? (
+            <OrganizationTile org={leadOrganization(dossier)!} />
           ) : (
             <>
               <p className="answer-value answer-empty">Nie ustalono osoby</p>
@@ -197,7 +248,14 @@ export function CaseHero() {
           </a>
         </article>
 
-        <Bridge kind="osint" href={withGraphLayer(graphHref, 'osint')} title="Ślady OSINT" detail={osintDetail} empty={sources + accounts === 0} />
+        <Bridge
+          kind="osint"
+          title="Ślady OSINT"
+          detail={osintDetail}
+          empty={sources + accounts === 0}
+          active={shown.osint}
+          onToggle={() => setShown((current) => ({ ...current, osint: !current.osint }))}
+        />
 
         <article className={`answer ${addressInput ? 'is-input' : ''}`}>
           <h3 className="answer-label">
@@ -236,7 +294,14 @@ export function CaseHero() {
           </a>
         </article>
 
-        <Bridge kind="chain" href={withGraphLayer(graphHref, 'blockchain')} title="Śledzenie w blockchainie" detail={chainDetail} empty={chainEdges === 0} />
+        <Bridge
+          kind="chain"
+          title="Śledzenie w blockchainie"
+          detail={chainDetail}
+          empty={chainEdges === 0}
+          active={shown.chain}
+          onToggle={() => setShown((current) => ({ ...current, chain: !current.chain }))}
+        />
 
         <article className="answer">
           <h3 className="answer-label">Dokąd trafiły pieniądze</h3>
@@ -270,6 +335,11 @@ export function CaseHero() {
           ) : (
             <ServiceChips />
           )}
+          {dossier.indicators && (
+            <p className="answer-fiat small">
+              <Term id="off-ramp">oznaki wypłaty na PLN</Term>: <strong className="tabular">{fiatSignalSummary(dossier.indicators.cashOut).total}</strong>
+            </p>
+          )}
           {proofs.strongest && (
             <Score
               value={proofs.strongest.combinedConfidence}
@@ -287,6 +357,32 @@ export function CaseHero() {
           </a>
         </article>
       </div>
+
+      <BusinessHeroLine />
+
+      {heroLayer ? (
+        <section className={`hero-graph hero-graph-${heroLayer}`} aria-label={HERO_GRAPH_TITLE[heroLayer]}>
+          <header className="hero-graph-head">
+            <h3>{HERO_GRAPH_TITLE[heroLayer]}</h3>
+            <div className="hero-graph-actions">
+              {heroLayer !== 'both' && (
+                <button type="button" className="button" onClick={() => setShown({ osint: true, chain: true })}>
+                  Połącz oba grafy
+                </button>
+              )}
+              <a className="button" href={heroLayer === 'both' ? graphHref : withGraphLayer(graphHref, heroLayer === 'identity' ? 'osint' : 'blockchain')}>
+                Otwórz w sekcji Graf
+              </a>
+              <button type="button" className="button" onClick={() => setShown({ osint: false, chain: false })} aria-label="Ukryj graf">
+                Ukryj
+              </button>
+            </div>
+          </header>
+          <GraphView layer={heroLayer} embedded />
+        </section>
+      ) : (
+        <p className="hero-graph-tip muted small">Kliknij most, aby zobaczyć jego część grafu. Zaznacz oba mosty, aby połączyć grafy w jeden.</p>
+      )}
 
       {actions.length > 0 && (
         <div className="next-actions" data-tour="actions">

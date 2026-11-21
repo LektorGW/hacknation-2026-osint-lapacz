@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import { validateAddress } from '@olcys/core';
 import { scenario } from '../data/scenario.ts';
 import { registerExchangeReply } from './exchange-reply.ts';
+import { SYNTHETIC_LIST, searchSyntheticSanctions, syntheticSanctions } from '../data/network.ts';
 import type { Account, DocKind, Service, Snapshot, Thread } from '../data/scenario.ts';
 
 /**
@@ -413,6 +414,46 @@ ${cards}
   );
 
   registerExchangeReply(app);
+
+  // --- Lista sankcyjna SYNTETYCZNA (dane zmyślone, data/network.ts) ---
+
+  const sanctionsLayout = (title: string, body: string) =>
+    layout('/sankcje', 'Lista syntetyczna', 'Lista sankcyjna SYNTETYCZNA — wpisy zmyślone, wyłącznie do demonstracji', '#7a1f1f', title, body);
+
+  app.get<{ Querystring: { q?: string } }>('/sankcje/api/search', (request) =>
+    searchSyntheticSanctions(request.query.q ?? '').map((entry) => ({ ...entry, synthetic: true })),
+  );
+
+  app.get('/sankcje', (_request, reply) =>
+    html(
+      reply,
+      sanctionsLayout(
+        'Wpisy',
+        `<h1>${esc(SYNTHETIC_LIST)}</h1><p class="meta">Wszystkie wpisy są zmyślone i nie odpowiadają żadnej prawdziwej liście sankcyjnej.</p>\n${syntheticSanctions
+          .map((entry) => `<div class="karta"><a href="/sankcje/wpis/${entry.id}"><strong>${esc(entry.name)}</strong></a><p class="meta">${entry.id} · ${entry.type === 'person' ? 'osoba' : 'organizacja'}</p></div>`)
+          .join('\n')}`,
+      ),
+    ),
+  );
+
+  app.get<{ Params: { id: string } }>('/sankcje/wpis/:id', (request, reply) => {
+    const entry = syntheticSanctions.find((item) => item.id === request.params.id);
+    if (!entry) {
+      reply.code(404);
+      return html(reply, sanctionsLayout('Nie znaleziono', '<h1>Brak takiego wpisu</h1>'));
+    }
+    return html(
+      reply,
+      sanctionsLayout(
+        entry.name,
+        `<article><p class="meta">${esc(entry.list)} · wpis ${entry.id} · dodano ${entry.listedAt}</p><h1>${esc(entry.name)}</h1>
+<p><strong>UWAGA: wpis SYNTETYCZNY — dane zmyślone na potrzeby demonstracji.</strong> ${esc(entry.note)}</p>
+<p>Rodzaj: ${entry.type === 'person' ? 'osoba' : 'organizacja'}${entry.aliases.length ? ` · inne nazwy: ${entry.aliases.map(esc).join(', ')}` : ''}</p>
+${entry.addresses.length ? `<p>Adresy kryptowalutowe: ${entry.addresses.map((address) => `<code>${address}</code>`).join(', ')}</p>` : ''}
+<p class="meta">Programy: ${entry.programs.map(esc).join('; ')}</p></article>`,
+      ),
+    );
+  });
 
   app.get<{ Params: { phase: string } }>('/_demo/faza/:phase', (request, reply) => {
     if (request.params.phase !== 'before' && request.params.phase !== 'after') {

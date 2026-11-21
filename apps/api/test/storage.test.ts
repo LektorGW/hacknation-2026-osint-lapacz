@@ -24,6 +24,7 @@ test('sprawa: zapis, odczyt i lista', async () => {
     createdAt: '2026-11-21T08:00:00.000Z',
     query,
     runs: [],
+    status: 'open',
   });
   assert.ok((await storage.listCases()).some((item) => item.id === created.id));
   assert.equal(await storage.getCase('brak'), null);

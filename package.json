@@ -4,8 +4,17 @@
   "version": "0.1.0",
   "description": "OSINTowy Łapacz Cyfrowych Śladów — HackNation 2026 (MF/KAS)",
   "license": "MIT",
+  "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "build": "pnpm --filter @olcys/web build",
+    "start": "node scripts/run.ts start",
+    "start:demo": "node scripts/run.ts demo",
+    "dev": "node scripts/run.ts dev",
+    "setup": "node scripts/setup.ts",
+    "doctor": "node scripts/doctor.ts",
+    "backup": "node scripts/backup.ts",
+    "service": "node scripts/install-service.ts"
   }
 }

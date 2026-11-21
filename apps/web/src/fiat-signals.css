@@ -1,0 +1,14 @@
+/* Wskaźnik C: oznaki wypłaty na PLN według źródła (W publikacjach / W blockchainie). */
+.fiat-groups { margin: 0.75rem 0 1rem; padding: 0.75rem 0.9rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-sunken); }
+.fiat-groups-head { margin: 0 0 0.6rem; }
+.fiat-groups-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.75rem; }
+.fiat-group-title { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.35rem; font-size: 0.92rem; }
+.fiat-count { display: inline-block; min-width: 1.5rem; padding: 0 0.4rem; border-radius: 999px; border: 1px solid var(--border); text-align: center; font-size: 0.8rem; }
+.fiat-icon { width: 18px; height: 18px; flex: none; fill: none; stroke: var(--primary); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.fiat-rows { margin: 0; padding-left: 1.1rem; }
+.fiat-rows li { margin: 0.15rem 0; }
+.fiat-urls { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; margin-left: 0.35rem; font-size: 0.8rem; }
+.cashout-guidance { margin: 0.4rem 0; }
+.cashout-guidance dt { font-weight: 600; }
+.cashout-guidance dd { margin: 0 0 0.35rem 0; }
+.answer-fiat { margin: 0.35rem 0 0; }

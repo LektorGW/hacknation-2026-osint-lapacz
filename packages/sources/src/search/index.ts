@@ -17,6 +17,8 @@ export type { FarcasterOptions } from './farcaster.ts';
 export { createMarginaliaProvider, createMojeekProvider } from './providers.ts';
 export { createRegistriesConnector, REGISTRIES_ID } from './registries.ts';
 export type { RegistryData } from './registries.ts';
+export { coreName, loadRegistrySnapshots } from './registries.ts';
+export type { CaspEntry, RdwwEntry } from './registries.ts';
 export { buildWebQueries, createWebSearchConnector, SNIPPET_NOTICE, WEB_SEARCH_ID } from './web-search.ts';
 export type { WebSearchOptions, WebSearchProvider, WebSearchRequest, WebSearchResult } from './web-search.ts';
 

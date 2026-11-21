@@ -31,6 +31,7 @@ export * from './labels.ts';
 export * from './networks.ts';
 export * from './links.ts';
 export * from './ofac.ts';
+export * from './offramps.ts';
 export * from './party-labels.ts';
 export * from './trace.ts';
 export * from './valuation.ts';

@@ -1,0 +1,31 @@
+/* Przełącznik trybu danych (pasek trybu), wybór trybu przy „Ustal” i znaczniki SANDBOX/LIVE analiz. */
+
+.data-mode { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+.data-mode-label { font-weight: 600; color: var(--text); }
+.data-mode-switch { border-radius: 999px; background: var(--surface); }
+.data-mode-switch button { padding: 0.1rem 0.7rem; font-size: 0.78rem; line-height: 1.5; }
+.data-mode-switch button[aria-pressed='true'] { background: var(--mode); color: var(--mode-on); }
+.data-mode-switch button:disabled { cursor: not-allowed; opacity: 0.5; }
+.data-mode-switch button:disabled[aria-pressed='true'] { opacity: 1; }
+.data-mode-error { color: var(--danger); font-weight: 600; }
+
+.data-mode-dialog { max-width: min(32rem, calc(100vw - 2rem)); padding: var(--s5); border: 1px solid var(--border-strong); border-radius: var(--radius-small); background: var(--surface); color: var(--text); }
+.data-mode-dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+.data-mode-dialog h2 { margin-top: 0; font-size: 1.15rem; }
+
+.quick-data-mode { display: inline-flex; align-items: center; gap: var(--s1); font-size: 0.86rem; font-weight: 600; white-space: nowrap; }
+.quick-data-mode select { min-height: 2.2rem; padding: 0.1rem 0.4rem; border-width: 2px; }
+.quick-data-mode.is-synthetic select { border-color: var(--calc); }
+.quick-data-mode.is-live select { border-color: var(--ok); }
+
+.chip-run-mode { margin: 0 0 0 var(--s1); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; vertical-align: middle; }
+.connector.is-out-of-mode { opacity: 0.6; }
+
+@media (max-width: 720px) {
+  .data-mode-switch button { min-height: 44px; }
+  .quick-data-mode { white-space: normal; }
+}
+
+@media print {
+  .data-mode-dialog { display: none; }
+}

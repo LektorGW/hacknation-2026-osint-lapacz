@@ -1199,6 +1199,9 @@ kbd { font-family: var(--mono); font-size: 0.84em; padding: 0.05rem 0.4rem; bord
 .indicator-level { margin-left: var(--s2); font-size: 0.84rem; font-weight: 600; }
 .indicator-statement { margin: var(--s2) 0; }
 .indicator-meta { margin: var(--s2) 0; font-size: 0.88rem; }
+/* Wskaźnik D: siatka podmiotów z sygnałami i linia w podsumowaniu sprawy. */
+.business-network { margin: var(--s3) 0; }
+.business-hero-line { margin: var(--s3) 0 0; }
 .component-table { font-size: 0.82rem; min-width: 880px; }
 .component-table td { vertical-align: top; }
 .component-table .component-group th { text-align: left; background: var(--ok-bg); color: var(--ok); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }

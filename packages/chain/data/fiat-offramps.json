@@ -1,0 +1,418 @@
+{
+  "name": "usługi wyjścia do walut tradycyjnych (packages/chain/data/fiat-offramps.json)",
+  "uwaga": "Jawna lista NAZW usług, w których kryptowaluty zamienia się na waluty tradycyjne (off-ramp), z rodzajem usługi. Służy WYŁĄCZNIE do rozpoznawania nazw w treściach i etykietach — nie zawiera adresów. Adres usługi wolno oznaczyć tylko w data/labels.json i tylko z publicznym źródłem wymieniającym dokładny adres (pole source); dla polskich usług takiego źródła nie znaleziono (stan 2026-11-21), więc nie oznaczono żadnego adresu. Rodzaje: exchange_with_pln (giełda lub kantor z wypłatą w walucie tradycyjnej), crypto_atm_operator (operator bitomatów), crypto_card_issuer (wydawca karty zasilanej kryptowalutami), payment_gateway (bramka płatnicza), p2p_escrow (platforma wymiany bezpośredniej). Pole registry: dokładne nazwy podmiotów, pod którymi usługa występuje w migawkach Rejestru działalności w zakresie walut wirtualnych (rdww, IAS Katowice) albo tymczasowego rejestru MiCA (casp, ESMA) — numer wpisu i organ narzędzie odczytuje z migawki, niczego tu nie dopisuje. Zgodność nazwy nie jest dowodem, że konto podmiotu prowadzi ten właśnie podmiot. Pole cryptoContext: nazwa liczy się tylko w zdaniu, które mówi o kryptowalutach (marki płatności ogólnego przeznaczenia).",
+  "services": [
+    {
+      "name": "Zonda (BitBay)",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "zondacrypto",
+        "zonda",
+        "bitbay",
+        "zondy",
+        "zondzie",
+        "zondę",
+        "zondą"
+      ]
+    },
+    {
+      "name": "Kanga",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "kanga exchange",
+        "kanga",
+        "kangę",
+        "kangi",
+        "kandze",
+        "kangą"
+      ]
+    },
+    {
+      "name": "Egera",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "egera",
+        "egerę",
+        "egery",
+        "egerze"
+      ]
+    },
+    {
+      "name": "FlyingAtom",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "flyingatom",
+        "flying atom"
+      ],
+      "registry": {
+        "rdww": [
+          "FLYINGATOM SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ",
+          "FLYINGATOM ONLINE SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ"
+        ]
+      }
+    },
+    {
+      "name": "Binance",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "binance"
+      ],
+      "registry": {
+        "rdww": [
+          "BINANCE POLAND SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ"
+        ]
+      }
+    },
+    {
+      "name": "Revolut",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "revolut",
+        "revolucie",
+        "revoluta",
+        "revolutem"
+      ],
+      "registry": {
+        "casp": [
+          "Revolut Digital Assets (Europe) Ltd"
+        ]
+      }
+    },
+    {
+      "name": "Bitpanda",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "bitpanda",
+        "bitpandę",
+        "bitpandzie",
+        "bitpandy"
+      ],
+      "registry": {
+        "casp": [
+          "Bitpanda GmbH"
+        ]
+      }
+    },
+    {
+      "name": "Kraken",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "kraken"
+      ],
+      "registry": {
+        "casp": [
+          "Payward Europe Solutions Limited"
+        ]
+      }
+    },
+    {
+      "name": "Coinbase",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "coinbase"
+      ],
+      "registry": {
+        "casp": [
+          "Coinbase Luxembourg S.A."
+        ]
+      }
+    },
+    {
+      "name": "Bybit",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "bybit"
+      ],
+      "registry": {
+        "casp": [
+          "Bybit EU GmbH"
+        ]
+      }
+    },
+    {
+      "name": "OKX",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "okx",
+        "okex"
+      ],
+      "registry": {
+        "casp": [
+          "OKX Europe Limited"
+        ]
+      }
+    },
+    {
+      "name": "KuCoin",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "kucoin"
+      ],
+      "registry": {
+        "casp": [
+          "KuCoin EU Exchange GmbH"
+        ]
+      }
+    },
+    {
+      "name": "Bitstamp",
+      "kind": "exchange_with_pln",
+      "keywords": [
+        "bitstamp"
+      ],
+      "registry": {
+        "casp": [
+          "Bitstamp Europe S.A."
+        ]
+      }
+    },
+    {
+      "name": "Bitomat (ogólnie)",
+      "kind": "crypto_atm_operator",
+      "keywords": [
+        "bitomat",
+        "bitomaty",
+        "bitomatu",
+        "bitomacie",
+        "bitomatem",
+        "bitomatów",
+        "bitcoinomat",
+        "kryptomat",
+        "kryptomatu",
+        "kryptomacie",
+        "crypto atm",
+        "bitcoin atm"
+      ]
+    },
+    {
+      "name": "Shitcoins.club",
+      "kind": "crypto_atm_operator",
+      "keywords": [
+        "shitcoins.club",
+        "shitcoins club"
+      ]
+    },
+    {
+      "name": "Binance Card",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "binance card",
+        "karta binance",
+        "kartą binance",
+        "karty binance"
+      ]
+    },
+    {
+      "name": "Crypto.com (karta)",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "crypto.com card",
+        "crypto.com visa",
+        "karta crypto.com",
+        "kartą crypto.com",
+        "karty crypto.com"
+      ]
+    },
+    {
+      "name": "Zonda (karta)",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "zonda card",
+        "zondacrypto card",
+        "karta zonda",
+        "kartą zonda",
+        "karta zondacrypto",
+        "kartą zondacrypto"
+      ]
+    },
+    {
+      "name": "Bybit Card",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "bybit card",
+        "karta bybit",
+        "kartą bybit"
+      ]
+    },
+    {
+      "name": "Revolut (krypto)",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "revolut crypto",
+        "revolut krypto",
+        "kryptowaluty w revolucie",
+        "krypto w revolucie",
+        "krypto na revolucie"
+      ]
+    },
+    {
+      "name": "Wirex",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "wirex"
+      ],
+      "registry": {
+        "rdww": [
+          "WIREX EUROPE SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ"
+        ]
+      }
+    },
+    {
+      "name": "Nexo Card",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "nexo card",
+        "karta nexo",
+        "kartą nexo"
+      ]
+    },
+    {
+      "name": "Karta krypto (ogólnie)",
+      "kind": "crypto_card_issuer",
+      "keywords": [
+        "karta krypto",
+        "kartą krypto",
+        "karty krypto",
+        "kartę krypto",
+        "karta kryptowalutowa",
+        "kartą kryptowalutową",
+        "kartę kryptowalutową",
+        "crypto card",
+        "karta do krypto",
+        "kartę do krypto"
+      ]
+    },
+    {
+      "name": "BitPay",
+      "kind": "payment_gateway",
+      "keywords": [
+        "bitpay"
+      ],
+      "registry": {
+        "casp": [
+          "BitPay B.V."
+        ]
+      }
+    },
+    {
+      "name": "CoinGate",
+      "kind": "payment_gateway",
+      "keywords": [
+        "coingate"
+      ],
+      "registry": {
+        "casp": [
+          "UAB \"Decentralized\""
+        ]
+      }
+    },
+    {
+      "name": "NOWPayments",
+      "kind": "payment_gateway",
+      "keywords": [
+        "nowpayments"
+      ]
+    },
+    {
+      "name": "CoinPayments",
+      "kind": "payment_gateway",
+      "keywords": [
+        "coinpayments"
+      ]
+    },
+    {
+      "name": "BTCPay",
+      "kind": "payment_gateway",
+      "keywords": [
+        "btcpay",
+        "btcpay server"
+      ]
+    },
+    {
+      "name": "Przelewy24 (płatności krypto)",
+      "kind": "payment_gateway",
+      "keywords": [
+        "przelewy24",
+        "przelewy 24"
+      ],
+      "cryptoContext": true
+    },
+    {
+      "name": "Tpay (płatności krypto)",
+      "kind": "payment_gateway",
+      "keywords": [
+        "tpay"
+      ],
+      "cryptoContext": true
+    },
+    {
+      "name": "Binance P2P",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "binance p2p",
+        "p2p binance",
+        "p2p na binance",
+        "p2p.binance.com"
+      ]
+    },
+    {
+      "name": "Bybit P2P",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "bybit p2p",
+        "p2p na bybit"
+      ]
+    },
+    {
+      "name": "OKX P2P",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "okx p2p",
+        "p2p na okx"
+      ]
+    },
+    {
+      "name": "LocalCoinSwap",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "localcoinswap"
+      ]
+    },
+    {
+      "name": "LocalBitcoins",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "localbitcoins"
+      ]
+    },
+    {
+      "name": "Bisq",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "bisq"
+      ]
+    },
+    {
+      "name": "HodlHodl",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "hodlhodl",
+        "hodl hodl"
+      ]
+    },
+    {
+      "name": "Paxful",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "paxful"
+      ]
+    },
+    {
+      "name": "Noones",
+      "kind": "p2p_escrow",
+      "keywords": [
+        "noones"
+      ]
+    }
+  ]
+}

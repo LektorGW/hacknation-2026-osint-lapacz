@@ -5,6 +5,9 @@ import type { IdentifierType } from '@olcys/core';
 import { DEFAULT_DEPTH, api, errorMessage, isDemo, quickCheck } from '../api.ts';
 import type { CaseSummary, Overview } from '../api.ts';
 import { AnalysisProgress, ModeSwitch, PeriodFields } from '../components/Progress.tsx';
+import { RunModeTag, useMode } from '../components/Mode.tsx';
+import { DATA_MODES, DATA_MODE_SHORT, parseDataMode, runDataModeTag } from '../mode.ts';
+import type { DataMode } from '../mode.ts';
 import { cleanPeriod } from '../proof.ts';
 import type { Depth, RunProgress } from '../proof.ts';
 import { EmptyState, ErrorBox, Skeleton } from '../components/common.tsx';
@@ -19,6 +22,15 @@ import { href, navigate } from '../router.ts';
 import { DEFAULT_WATCH_MINUTES, HISTORY_SORT_LABEL, intervalLabel, nextSort, sortHistory } from '../stats.ts';
 import type { CaseStat, HistorySortKey, SortDirection } from '../stats.ts';
 import { useAsync } from '../useAsync.ts';
+import { CaseStatusBadge } from '../components/CaseLifecycle.tsx';
+import type { CaseStatus } from '../api.ts';
+
+const STATUS_FILTERS: { value: CaseStatus | 'all'; label: string }[] = [
+  { value: 'all', label: 'wszystkie' },
+  { value: 'open', label: 'otwarte' },
+  { value: 'closed', label: 'zamknięte' },
+  { value: 'archived', label: 'zarchiwizowane' },
+];
 
 const EXAMPLES = ['tomwzor', 'tomasz.wzorcowy@poczta.example', 'Tomasz Wzorcowy', 'KryptoGielda', 'bc1qadres0badany3x7k9m2p4q6r8s0t2v4w6y8z0a2c'];
 
@@ -32,6 +44,8 @@ function QuickCheck() {
   const [range, setRange] = useState({ from: '', to: '' });
   const [progress, setProgress] = useState<RunProgress>();
   const [error, setError] = useState<string>();
+  // Tryb danych tylko dla tej analizy; puste = ustawienie z paska trybu.
+  const [dataModeOverride, setDataModeOverride] = useState<DataMode>();
   const type = override ?? detectIdentifierType(value);
   const typed = value.trim() !== '';
 
@@ -58,7 +72,7 @@ function QuickCheck() {
     setPending(trimmed);
     setProgress(undefined);
     try {
-      const created = await quickCheck(trimmed, type, { depth, period }, setProgress);
+      const created = await quickCheck(trimmed, type, { depth, period, ...(dataModeOverride ? { dataMode: dataModeOverride } : {}) }, setProgress);
       navigate(href.case(created.id));
     } catch (failure) {
       setError(errorMessage(failure));
@@ -95,6 +109,7 @@ function QuickCheck() {
         <button type="submit" className="button button-primary button-large">
           Ustal
         </button>
+        <DataModeOverride value={dataModeOverride} onChange={setDataModeOverride} />
       </div>
       {typed && (
         <p className="quick-type" id={`${fieldId}-type`}>
@@ -127,6 +142,28 @@ function QuickCheck() {
       )}
       {error && <ErrorBox message={error} />}
     </form>
+  );
+}
+
+/** Tryb danych przy przycisku „Ustal”: bieżący z paska trybu albo inny tylko dla tej analizy. */
+function DataModeOverride({ value, onChange }: { value?: DataMode; onChange: (mode: DataMode | undefined) => void }) {
+  const { dataMode } = useMode();
+  if (!dataMode) return null;
+  // Wybór równy bieżącemu ustawieniu (np. po zmianie w pasku) to brak nadpisania.
+  const chosen = value && value !== dataMode.current && dataMode.available[value] ? value : undefined;
+  const effective = chosen ?? dataMode.current;
+  return (
+    <label className={`quick-data-mode ${effective === 'synthetic' ? 'is-synthetic' : 'is-live'}`} title="Skąd pobierać dane w tej analizie. Ustawienie dla wszystkich nowych analiz zmienia przełącznik „Dane” w pasku u góry.">
+      <span>Dane:</span>
+      <select value={chosen ?? ''} onChange={(event) => onChange(parseDataMode(event.target.value))}>
+        <option value="">{DATA_MODE_SHORT[dataMode.current]} (bieżące)</option>
+        {DATA_MODES.filter((mode) => mode !== dataMode.current && dataMode.available[mode]).map((mode) => (
+          <option key={mode} value={mode}>
+            {DATA_MODE_SHORT[mode]} — tylko ta analiza
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -184,24 +221,41 @@ function SortHeader({ column, sort, onSort, term, numeric }: { column: HistorySo
 
 function CaseHistory({ cases, overview }: { cases: CaseSummary[]; overview: Overview }) {
   const [sort, setSort] = useState<{ key: HistorySortKey; direction: SortDirection }>({ key: 'created', direction: 'desc' });
+  const [statusFilter, setStatusFilter] = useState<CaseStatus | 'all'>('all');
   if (cases.length === 0) {
     return <EmptyState title="Nie ma jeszcze żadnej sprawy">Wpisz identyfikator osoby w polu „Kogo sprawdzić?” — sprawa powstanie automatycznie.</EmptyState>;
   }
   // Pełna lista z usługi; starsza wersja podaje tylko 10 najważniejszych spraw.
   const stats: Pick<CaseStat, 'caseId' | 'priority' | 'topScore' | 'cashOutPlnTotal' | 'services'>[] = overview.caseStats ?? overview.topCases;
+  const withStatus = cases.some((item) => item.status !== undefined);
+  const visible = statusFilter === 'all' ? cases : cases.filter((item) => (item.status ?? 'open') === statusFilter);
   const rows = sortHistory(
-    cases.map((item) => ({ ...item, stat: stats.find((entry) => entry.caseId === item.id) })),
+    visible.map((item) => ({ ...item, stat: stats.find((entry) => entry.caseId === item.id) })),
     sort.key,
     sort.direction,
   );
   const withServices = rows.some(({ stat }) => (stat?.services?.length ?? 0) > 0);
   const onSort = (key: HistorySortKey) => setSort(nextSort(sort, key));
   return (
+    <>
+    {withStatus && (
+      <label className="history-filter">
+        Pokaż sprawy:
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as CaseStatus | 'all')}>
+          {STATUS_FILTERS.map((item) => (
+            <option key={item.value} value={item.value}>
+              {item.label} ({item.value === 'all' ? cases.length : cases.filter((entry) => (entry.status ?? 'open') === item.value).length})
+            </option>
+          ))}
+        </select>
+      </label>
+    )}
     <div className="table-scroll">
       <table className="table history-table">
         <thead>
           <tr>
             <th scope="col">Sprawa</th>
+            {withStatus && <th scope="col">Stan</th>}
             <th scope="col">
               <span className="sort-head">
                 Monitoruj <Term id="monitorowanie-sprawy" icon />
@@ -219,10 +273,15 @@ function CaseHistory({ cases, overview }: { cases: CaseSummary[]; overview: Over
           {rows.map((item) => {
             const { stat } = item;
             return (
-              <tr key={item.id}>
+              <tr key={item.id} className={(item.status ?? 'open') !== 'open' ? 'is-closed' : undefined}>
                 <th scope="row">
-                  <a href={href.case(item.id)}>{item.name}</a>
+                  <a href={href.case(item.id)}>{item.name}</a> <RunModeTag tag={runDataModeTag(item.runs.at(-1))} />
                 </th>
+                {withStatus && (
+                  <td>
+                    <CaseStatusBadge status={item.status ?? 'open'} />
+                  </td>
+                )}
                 <td className="watch-cell">
                   <WatchToggle item={item} />
                 </td>
@@ -252,6 +311,8 @@ function CaseHistory({ cases, overview }: { cases: CaseSummary[]; overview: Over
         </tbody>
       </table>
     </div>
+    {rows.length === 0 && <p className="muted">Brak spraw w tym stanie.</p>}
+    </>
   );
 }
 

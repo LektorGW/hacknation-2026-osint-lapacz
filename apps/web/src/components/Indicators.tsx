@@ -23,6 +23,8 @@ import { SyntheticTag } from './Mode.tsx';
 import { Disclosure } from './ui/Disclosure.tsx';
 import { Score } from './ui/Score.tsx';
 import { Term } from './ui/Term.tsx';
+import { BusinessActivityCard } from './BusinessActivity.tsx';
+import { CashOutGuidance, FiatSignalGroups } from './FiatSignals.tsx';
 
 /** Odnośnik do eksploratora dla transakcji — tylko gdy teczka go podaje. */
 export function txExplorer(dossier: FullDossier, txid: string): string | undefined {
@@ -410,7 +412,11 @@ function CashOutItem({ item }: { item: CashOutAssessment }) {
       indicator={item.indicator}
       status={item.status}
       title={
-        <>
+        item.origin === 'web' ? (
+          <>
+            <span className="chip chip-network">Web2</span> <strong>Publikacje kont podmiotu</strong>
+          </>
+        ) : <>
           <span className="chip chip-network">{NETWORK_SHORT[item.network as keyof typeof NETWORK_SHORT] ?? item.network}</span>
           <ShortAddress value={item.address} /> <span aria-hidden="true">→</span> <strong>{item.serviceName ?? 'adres bez etykiety usługi'}</strong>
           {item.amount !== undefined && item.asset && <span className="muted"> · {fmtAmount(item.amount, item.asset)}</span>}
@@ -425,6 +431,7 @@ function CashOutItem({ item }: { item: CashOutAssessment }) {
       }
     >
       {item.statement && <p className="indicator-statement">{item.statement}</p>}
+      <CashOutGuidance item={item} />
       <CashOutLadder stage={item.stage} />
       {(item.txids ?? []).length > 0 && (
         <div className="indicator-meta">
@@ -452,7 +459,7 @@ export function IndicatorsTab() {
       <header className="section-head">
         <div>
           <h2 id="wskazniki">Wskaźniki</h2>
-          <p className="muted">Trzy osobne wskaźniki — nie sumuje się ich ani nie mnoży. Każdy ma jawną tabelę składników, którą można odtworzyć i zakwestionować.</p>
+          <p className="muted">Osobne wskaźniki A–D — nie sumuje się ich ani nie mnoży. Każdy ma jawną tabelę składników, którą można odtworzyć i zakwestionować.</p>
         </div>
       </header>
       <p className="notice notice-quiet scale-note" role="note">
@@ -498,8 +505,11 @@ export function IndicatorsTab() {
             <p className="notice notice-inline" role="note">
               <strong>Stałe ograniczenie.</strong> {CASH_OUT_LIMITATION}
             </p>
+            <FiatSignalGroups cashOut={cashOut} />
             {cashOut.length === 0 ? <p className="muted">Brak pozycji.</p> : <ul className="indicator-list">{cashOut.map((item) => <CashOutItem key={item.id} item={item} />)}</ul>}
           </article>
+
+          <BusinessActivityCard />
         </>
       )}
     </section>
