@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { AiAssistant, AnalysisRun, ChainProvider, ScoreRules, SourceConnector } from '@olcys/core';
 import { runAnalysis } from './analysis.ts';
 import type { ActivityResolver, AnalysisStage } from './analysis.ts';
+import type { QueryTiming, StageTiming } from './intel.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 
 export type RunDepth = 'standard' | 'deep';
@@ -18,7 +19,7 @@ export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAd
 };
 
 /** Wyszukiwarka obiegająca setki forów potrzebuje więcej czasu niż pojedyncze źródło. */
-const CONNECTOR_TIMEOUTS: Record<string, number> = { 'deep-search': 60_000 };
+const CONNECTOR_TIMEOUTS: Record<string, number> = { 'deep-search': 30_000 };
 
 /** Analiza zapisana w bazie: kontrakt `AnalysisRun` plus tryb, w którym ją wykonano. */
 export type StoredRun = AnalysisRun & { depth?: RunDepth };
@@ -38,6 +39,9 @@ export interface RunProgress {
   startedAt: string;
   updatedAt: string;
   error?: string;
+  /** Po zakończeniu: czas faz analizy i najwolniejsze zapytania do łączników. */
+  timings?: StageTiming[];
+  slowestQueries?: QueryTiming[];
 }
 
 export interface RunOptions {
@@ -115,7 +119,7 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
       await storage.saveRun(run);
       await storage.saveDocuments(run.id, result.documents);
       await storage.saveRunIntel(run.id, result.intel);
-      update({ status: 'completed', stage: 'done', addresses: result.findings.length });
+      update({ status: 'completed', stage: 'done', addresses: result.findings.length, timings: result.intel.timings, slowestQueries: result.intel.slowestQueries });
       deps.onCompleted?.();
       return run;
     } catch (error) {

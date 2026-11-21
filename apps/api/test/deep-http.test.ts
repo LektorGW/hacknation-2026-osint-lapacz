@@ -32,6 +32,9 @@ before(async () => {
     await gate;
     return slowSearch(identifier, context);
   };
+  // Pojedyncze źródło monitoringu z wyszukiwaniem: w analizie nie bierze udziału w żadnym trybie —
+  // te same hosty pyta zbiorczo wyszukiwarka forów.
+  const monitorSource = { ...fakeConnector('mon-forum-x', 'forum-x.example', ['nick'], () => []), enabledByDefault: false };
   // Wyszukiwarka forów: wyłączona domyślnie, dołączana tylko w trybie głębokim.
   const deepSearch = {
     ...fakeConnector('deep-search', 'forum.example', ['nick'], (identifier) =>
@@ -59,7 +62,7 @@ before(async () => {
   ai = fakeAi((input) => (input.text.includes('BLIK') ? { polishNexus: { score: 90, reasons: ['oferta dla kupujących z Krakowa'] }, offer: { side: 'sell', asset: 'BTC', paymentMethods: ['gotówka', 'BLIK'], location: 'Kraków' }, quote: 'Sprzedam BTC za gotówkę' } : {}));
   app = await buildApp({
     storage,
-    connectors: [gitpub, deepSearch, forum],
+    connectors: [gitpub, deepSearch, forum, monitorSource],
     chainProviders: [fakeProvider()],
     deepChainProviders: [deepProvider],
     ai,
@@ -133,7 +136,12 @@ test('tryb głęboki: dodatkowe źródła i dostawcy; tryb standardowy bez zmian
   assert.deepEqual(deep.connectors, ['gitpub', 'deep-search', 'forum', 'corpus']);
   assert.deepEqual(deep.findings.map((finding: { address: string }) => finding.address).sort(), [BTC_A, BTC_B].sort());
   assert.deepEqual(deep.findings[0].chain.limitations, ['Tryb głęboki.']);
-  assert.equal((await app.inject(`/api/runs/${deep.id}/progress`)).json().depth, 'deep');
+  const progress = (await app.inject(`/api/runs/${deep.id}/progress`)).json();
+  assert.equal(progress.depth, 'deep');
+  // Po zakończeniu postęp zawiera pomiar czasu faz i najwolniejsze zapytania.
+  assert.deepEqual(progress.timings.map((item: { stage: string }) => item.stage), ['search-0', 'occurrences', 'chain', 'counterparties', 'scoring', 'ai']);
+  assert.ok(progress.slowestQueries.length > 0 && progress.slowestQueries.length <= 10);
+  assert.deepEqual(Object.keys(progress.slowestQueries[0]).sort(), ['connectorId', 'documents', 'identifier', 'ms']);
   assert.equal((await send('POST', `/api/cases/${caseId}/runs`, { depth: 'bardzo' })).statusCode, 400);
 
   // To samo jednym wywołaniem — także w tle.

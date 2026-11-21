@@ -56,7 +56,10 @@ for (const value of values) {
   for (const person of dossier.relatedPersons.slice(0, 5)) console.log(`  powiązana: ${person.handle} ${person.strength} ${person.relations.map((item: { kind: string }) => item.kind).join(',')}`);
   console.log(`  priorytet ${dossier.totals.priority}, graf ${dossier.graph.nodes.length}/${dossier.graph.edges.length}, oś czasu ${dossier.timeline.length}`);
   for (const item of dossier.keyFindings) console.log(`  • [${item.layer}] ${item.text}`);
-  if (process.env.LOG) for (const entry of run.log.filter((item: { message: string }) => /BŁĄD|limit|wzmianki|Pominięto/.test(item.message)).slice(0, 25)) console.log(`  dziennik: ${entry.message.slice(0, 220)}`);
+  const timing = (await app.inject(`/api/runs/${dossier.runId}/progress`)).json();
+  console.log(`  czasy faz: ${(timing.timings ?? []).map((item: { stage: string; ms: number }) => `${item.stage} ${(item.ms / 1000).toFixed(1)} s`).join(', ')}`);
+  for (const query of timing.slowestQueries ?? []) console.log(`  wolne zapytanie: ${query.connectorId} ${query.identifier.type} „${query.identifier.value}” ${(query.ms / 1000).toFixed(1)} s, dokumentów ${query.documents}`);
+  if (process.env.LOG) for (const entry of run.log.filter((item: { message: string }) => /limit|wzmianki|Krok|Odkryty|Czas faz|pominięto|Start analizy/.test(item.message) && !/403/.test(item.message)).slice(0, 60)) console.log(`  dziennik: ${entry.message.slice(0, 220)}`);
 }
 
 if (process.env.SWEEP) {

@@ -112,9 +112,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return found;
   };
 
-  /** Źródła dołączane w trybie głębokim: wyszukiwarka forów i źródła monitoringu z wyszukiwaniem. */
-  const isDeepSource = (connector: SourceConnector) =>
-    (connector.id === 'deep-search' || connector.id.startsWith('mon-')) && connector.accepts.length > 0;
+  /**
+   * Źródło dołączane w trybie głębokim: wyszukiwarka forów. Pojedyncze źródła monitoringu (`mon-*`)
+   * pytają te same hosty co ona jednym zbiorczym zapytaniem — pomiar pokazał, że dublowały pracę
+   * i zajmowały większość czasu analizy, więc zostają wyłącznie dla monitoringu.
+   */
+  const isDeepSource = (connector: SourceConnector) => connector.id === 'deep-search' && connector.accepts.length > 0;
 
   const selectConnectors = (connectorIds?: string[], depth: RunDepth = 'standard'): SourceConnector[] => {
     const unknown = (connectorIds ?? []).filter((id) => !connectors.some((connector) => connector.id === id));
@@ -306,6 +309,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       addresses: run.findings.length,
       startedAt: run.startedAt,
       updatedAt: run.finishedAt ?? run.startedAt,
+      ...(await storage.getRunIntel(run.id).then((intel) => (intel?.timings ? { timings: intel.timings, slowestQueries: intel.slowestQueries ?? [] } : {}))),
     };
   });
 

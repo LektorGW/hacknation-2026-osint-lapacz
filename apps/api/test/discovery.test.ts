@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runAnalysis } from '../src/analysis.ts';
 import { createLimiter } from '../src/concurrency.ts';
-import { BTC_A, BTC_B, BTC_C, ETH_A, fakeConnector, fakeProvider } from './helpers.ts';
+import { BTC_A, BTC_B, BTC_C, ETH_A, chainWith, fakeConnector, fakeProvider, transfer } from './helpers.ts';
 
 const nick = { type: 'nick' as const, value: 'krypto_janek' };
 
@@ -211,4 +211,66 @@ test('analiza blockchain startuje równolegle z wyszukiwaniem, gdy adres ma mocn
   assert.ok(events.indexOf('łańcuch: pobrano') >= 0 && events.indexOf('łańcuch: pobrano') < events.indexOf('wolne wyszukiwanie: koniec'));
   assert.equal(events.at(-1), 'wolne wyszukiwanie: koniec');
   assert.equal(result.findings[0]!.chain?.profile.address, BTC_A);
+});
+
+test('kosztowne wyszukiwarki dostają tylko identyfikatory z potwierdzonego profilu, najwyżej trzy', async () => {
+  const ens = { type: 'ens_name' as const, value: 'janek.eth' };
+  // Rekord z dowodem kryptograficznym wskazuje pięć kont; wpis na forum (bez potwierdzenia) — kolejne.
+  const resolver = fakeConnector('live-ens', 'ens.domains', ['ens_name'], () => [
+    {
+      url: 'https://app.ens.domains/janek.eth',
+      author: 'janek.eth',
+      category: 'cryptographic_proof' as const,
+      identityMatch: 'verified_link' as const,
+      text: `Rekord adresu: ${ETH_A}`,
+      discoveredIdentifiers: ['k1', 'k2', 'k3', 'k4', 'k5'].map((value) => ({ type: 'login' as const, value })),
+    },
+  ]);
+  const profiles = fakeConnector('profile', 'forum.example', ['login'], (identifier) =>
+    identifier.value === 'k1' ? [{ url: 'https://forum.example/u/k1', author: 'k1', text: 'Profil.', discoveredIdentifiers: [{ type: 'login' as const, value: 'slabe_konto' }] }] : [],
+  );
+  const deepSearch = fakeConnector('deep-search', 'inne.example', ['ens_name', 'login'], () => []);
+  const corpus = fakeConnector('corpus', 'indeks', ['login'], () => []);
+  const result = await runAnalysis({ query: { identifiers: [ens] }, connectors: [resolver, profiles, deepSearch, corpus], chainProviders: [] });
+
+  // Wyszukiwarka forów: identyfikator analityka i trzy pierwsze konta z rekordu ENS.
+  assert.deepEqual(deepSearch.calls.map((call) => call.value), ['janek.eth', 'k1', 'k2', 'k3']);
+  // Źródła bezpośrednie i indeks własny (lokalny) sprawdzają wszystkie, także słabo udokumentowane.
+  assert.deepEqual(profiles.calls.map((call) => call.value), ['k1', 'k2', 'k3', 'k4', 'k5', 'slabe_konto']);
+  assert.deepEqual(corpus.calls.map((call) => call.value), ['k1', 'k2', 'k3', 'k4', 'k5', 'slabe_konto']);
+  assert.ok(result.intel.trail.every((entry) => entry.followed));
+});
+
+test('pomiar czasu: fazy w kolejności wykonania i najwolniejsze zapytania', async () => {
+  const slow = fakeConnector('wolny', 'wolny.example', ['nick'], () => [{ url: 'https://wolny.example/krypto_janek', author: 'krypto_janek', text: `Adres ${BTC_A}` }]);
+  const search = slow.search.bind(slow);
+  slow.search = async (identifier, context) => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return search(identifier, context);
+  };
+  const quick = fakeConnector('szybki', 'szybki.example', ['nick', 'crypto_address'], () => []);
+  const result = await runAnalysis({ query: { identifiers: [nick] }, connectors: [slow, quick], chainProviders: [fakeProvider()] });
+
+  assert.deepEqual(result.intel.timings!.map((item) => item.stage), ['search-0', 'occurrences', 'chain', 'counterparties', 'scoring']);
+  assert.ok(result.intel.timings!.every((item) => Number.isInteger(item.ms) && item.ms >= 0));
+  assert.ok(result.intel.timings![0]!.ms >= 25);
+  const [slowest] = result.intel.slowestQueries!;
+  assert.deepEqual([slowest!.connectorId, slowest!.identifier, slowest!.documents], ['wolny', nick, 1]);
+  assert.ok(slowest!.ms >= 25);
+  assert.ok(result.intel.slowestQueries!.length <= 10);
+  assert.ok(result.log.some((entry) => entry.message.startsWith('Czas faz: search-0')));
+  assert.ok(result.log.some((entry) => entry.message.startsWith('Najwolniejsze zapytania: wolny (nick „krypto_janek”)')));
+});
+
+test('kontrahenci i dalsze adresy: w kosztownej wyszukiwarce tylko najważniejsze', async () => {
+  const counterparties = ['1BoatSLRHtKNngkdXEeobR76b53LETtpyT', '12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX', '1HLoD9E4SDFFPDiYfNYnkBLQ85Y51J3Zb1', BTC_C, BTC_B];
+  const profile = fakeConnector('gitpub', 'gitpub.example', ['nick'], () => [{ url: 'https://gitpub.example/krypto_janek', author: 'krypto_janek', text: `Adres ${BTC_A}` }]);
+  const deepSearch = fakeConnector('deep-search', 'inne.example', ['crypto_address'], () => []);
+  const direct = fakeConnector('adresy', 'adresy.example', ['crypto_address'], () => []);
+  const chain = chainWith({ [BTC_A]: { transfers: counterparties.map((counterparty, index) => transfer(index + 1, { counterparty, time: '2025-01-01T00:00:00.000Z', amount: 10 - index })) } });
+  await runAnalysis({ query: { identifiers: [nick] }, connectors: [profile, deepSearch, direct], chainProviders: [chain] });
+
+  // Adres podmiotu i trzech największych kontrahentów; pozostali tylko w źródle bezpośrednim.
+  assert.deepEqual(deepSearch.calls.map((call) => call.value).sort(), [BTC_A, ...counterparties.slice(0, 3)].sort());
+  assert.deepEqual(direct.calls.map((call) => call.value).sort(), [BTC_A, ...counterparties].sort());
 });

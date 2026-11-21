@@ -74,6 +74,20 @@ export interface MentionSummary {
   atLeast?: boolean;
 }
 
+/** Czas jednej fazy analizy (kolejne kroki wyszukiwania są osobnymi wpisami `search-N`). */
+export interface StageTiming {
+  stage: string;
+  ms: number;
+}
+
+/** Jedno zapytanie łącznik × identyfikator — do wskazania najwolniejszych źródeł. */
+export interface QueryTiming {
+  connectorId: string;
+  identifier: Identifier;
+  ms: number;
+  documents: number;
+}
+
 export interface RunIntel {
   version: 1;
   discoveryDepth: number;
@@ -85,6 +99,10 @@ export interface RunIntel {
   authorComparisons?: AuthorComparison[];
   /** Analiza przerwana limitem czasu — wynik częściowy. */
   partial?: boolean;
+  /** Pomiar czasu: fazy analizy w kolejności wykonania. */
+  timings?: StageTiming[];
+  /** Dziesięć najwolniejszych zapytań łącznik × identyfikator. */
+  slowestQueries?: QueryTiming[];
   /** Wzmianki o identyfikatorach podmiotu w publikacjach innych autorów (nieprzypisane podmiotowi). */
   mentions?: MentionSummary[];
 }
