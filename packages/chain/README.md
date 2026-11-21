@@ -15,6 +15,7 @@ const activity = await getActivityFromProviders(providers, 'bitcoin', address, {
 
 | Dostawca | Kiedy | Sieci | Żądania na adres |
 |---|---|---|---|
+| `LabChainProvider` | podano `labUrl` | wyłącznie sieć laboratoryjna `lab` (adresy `lab1…`) | 1 (`/api/blockchain`, wynik pamiętany 5 s) |
 | `SandboxChainProvider` | podano `sandboxUrl` | wszystkie | 1 + po jednym na nieopisanego kontrahenta (maks. 25) |
 | `EsploraProvider` (blockstream.info, zapasowo mempool.space) | `enableLive` | Bitcoin, testnet | 2–3 + etykiety WalletExplorer + adresy pośrednie |
 | `BlockscoutProvider` (eth.blockscout.com) | `enableLive` | Ethereum | 3 + 1 (hurtowe znaczniki) + śledzenie środków |
@@ -26,11 +27,25 @@ Do publicznego API trafia wyłącznie badany adres lub adres kontrahenta (do Bin
 
 Sandbox opisuje etykietą tylko pytany adres, dlatego dostawca dopytuje eksplorator o kontrahentów. Eksplorator może też opisać kontrahenta od razu w przelewie, polami opcjonalnymi `counterpartyLabel`, `counterpartyClass`, `counterpartyKind`, oraz podać `kind` dla pytanego adresu.
 
+### Sieć laboratoryjna (`labUrl`)
+
+`createChainProviders({ labUrl: 'http://127.0.0.1:8787' })` (w API: zmienna `LAB_URL`; domyślnie wyłączone) dodaje `LabChainProvider` — dostawcę dla testowego łańcucha UTXO z `apps/identity-lab`. To **sieć laboratoryjna, nie prawdziwa**: w core ma osobną wartość `Network` `'lab'`, a adresy `lab1` + 40 znaków hex nie mają sumy kontrolnej. Kod: `src/providers/lab.ts`, testy na atrapie: `test/lab.test.ts`.
+
+Zakres jest minimalny — tyle, żeby teczka pokazała aktywność adresu: saldo z rejestru portfeli, sumy wpływów i wypływów oraz przelewy między adresami z potwierdzonych bloków (nadawca = właściciel wydawanych wyjść, reszta wracająca do nadawcy jest pomijana). Nazwa portfela z rejestru trafia do profilu jako etykieta bez klasy.
+
+Ograniczenia (każde jest też w `limitations` wyniku):
+
+- **token LAB nie ma wartości pieniężnej** — dostawca nie wycenia niczego w PLN, nie tworzy wskaźników wypłat, ścieżek ani sum podatkowych;
+- bez transakcji oczekujących (mempool), śledzenia środków, klastra portfela i szukania powiązanych adresów;
+- emisja początkowa (genesis) i nagrody za bloki są wliczone do wpływów i salda, ale nie mają nadawcy, więc nie ma ich na liście przelewów;
+- kontrahenci nie dostają etykiet (nazwy portfeli w rejestrze to nazwy porządkowe, nie etykiety usług).
+
 ### Konfiguracja `createChainProviders`
 
 | Pole | Domyślnie | Znaczenie |
 |---|---|---|
 | `sandboxUrl` | — | włącza dostawcę danych syntetycznych |
+| `labUrl` | — | włącza dostawcę sieci laboratoryjnej (`apps/identity-lab`, token LAB bez wyceny) |
 | `enableLive` | `false` | publiczne API, kursy rynkowe, etykiety zewnętrzne, adresy pośrednie |
 | `rateSource` | zależnie od `enableLive` | własne źródło kursów |
 | `rateCacheFile` | `data/cache/rates.json` | plik pamięci podręcznej kursów; `false` = tylko w procesie |

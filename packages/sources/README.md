@@ -28,6 +28,24 @@ Pozostałe pola konfiguracji: `fediverseInstances` (nadpisuje `config/fediverse-
 | `sandbox-archiwum` | `archiwum.sandbox` | `sandboxUrl` | archiwalne kopie stron | — |
 | `tor-onion` | host `.onion` | `torProxyUrl` | jawne strony .onion z listy; domyślnie wyłączony | strony z listy zawierające adresy |
 
+## Łączniki laboratorium tożsamości (`labUrl`) — symulacja lokalna
+
+`createConnectors({ labUrl: 'http://127.0.0.1:8787' })` (w API: zmienna `LAB_URL`; domyślnie wyłączone) tworzy 27 łączników `lab-<slug>` do portali z `apps/identity-lab` — po jednym na portal, z etykietą „LAB: <nazwa>” i `service` `<slug>.lab.test`. To **symulacja lokalna na danych syntetycznych**: nazwy portali nawiązują do znanych serwisów, ale łączniki nie łączą się z żadnym prawdziwym serwisem. Kod: `src/lab.ts`, testy na atrapie: `test/lab.test.ts`.
+
+| Zapytanie | Żądania do laboratorium | Wynik |
+|---|---|---|
+| nick / login | `GET /api/accounts?service=&q=`, potem `GET /api/accounts/:id` (najwyżej 10 kont) | konto o dokładnie takiej nazwie: dokument profilu (`own_profile`) i osobny dokument na każdy wpis (`own_profile`), ofertę (`sale_offer`) i wątek (`forum_post`, bez cudzych odpowiedzi); `exact_identifier` |
+| e-mail | jak wyżej | konto z tym e-mailem w polu albo w opisie; `exact_identifier`; nick konta trafia do `discoveredIdentifiers` |
+| imię i nazwisko | jak wyżej | konto o takiej nazwie wyświetlanej; `name_only`, bez `discoveredIdentifiers` |
+| adres `lab1…` | `GET /api/portal/:slug` (zawartość portalu pamiętana 15 s) | profile z adresem na liście „publiczne adresy portfeli” oraz wpisy, wątki i odpowiedzi z adresem w treści; `name_only`, `matchedIdentifier.type === 'crypto_address'` |
+
+- `profile`: `handle`, `displayName`, `emails` (pole konta i e-maile z opisu), `location`, `bio`, `createdAt`. `discoveredIdentifiers`: e-maile konta inne niż zapytanie i wzmianki `@konto` w opisie. Wskazań słownych („piszę jako …”, „dawniej …”) łącznik nie interpretuje.
+- Dopasowanie jest dokładne (nie podciąg i bez wariantów zapisu nicku lub e-maila); adresy prawdziwych sieci nie są wysyłane do laboratorium.
+- Łączniki korzystają wyłącznie z `/api/accounts`, `/api/accounts/:id` i `/api/portal/:slug`. Nie czytają prawdy wzorcowej (`/api/ground-truth`, `/api/export/*`) ani wyników silnika laboratorium (`/api/resolve`, `/api/evaluate`, `/api/search`).
+- Bez metody `discover` (łączniki nie biorą udziału w typowaniu ani monitoringu).
+
+Pomiar narzędzia na laboratorium: `node scripts/benchmark-lab.ts` (katalog główny repozytorium), wynik w `docs/BENCHMARK-LAB.md`.
+
 ## Łączniki do prawdziwych serwisów (`enableLive`)
 
 | id | service dokumentów | Przyjmuje | Kategoria | Co odpytuje |
