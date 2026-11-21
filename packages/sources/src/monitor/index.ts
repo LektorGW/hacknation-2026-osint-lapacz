@@ -50,6 +50,19 @@ export interface MonitorRegistry {
   files: string[];
 }
 
+/**
+ * Nadpisanie wpisu z innego pliku rejestru: `{ "id": "…", "override": true, "enabled": false, "note": "powód" }`.
+ * Pozwala wyłączyć albo poprawić cudzy wpis bez edytowania cudzego pliku.
+ */
+export interface MonitorSourceOverride {
+  id: string;
+  override: true;
+  enabled?: boolean;
+  note?: string;
+  label?: string;
+  category?: MonitorSourceConfig['category'];
+}
+
 /** Sprawdza jeden wpis; zwraca powód odrzucenia albo `null`. */
 function entryProblem(entry: unknown): string | null {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'wpis nie jest obiektem';
@@ -71,9 +84,16 @@ export function mergeMonitorSources(groups: { file: string; entries: unknown[] }
   const warnings: string[] = [];
   const ids = new Map<string, string>();
   const addresses = new Map<string, string>();
+  const overrides: { name: string; patch: MonitorSourceOverride }[] = [];
   for (const { file, entries } of groups) {
     entries.forEach((entry, index) => {
       const name = `${file}#${index + 1}${typeof (entry as MonitorSourceConfig)?.id === 'string' ? ` („${(entry as MonitorSourceConfig).id}")` : ''}`;
+      // Wpis-nadpisanie nie jest źródłem: zmienia pola wpisu o tym samym `id` z dowolnego pliku.
+      if (entry && typeof entry === 'object' && (entry as MonitorSourceOverride).override === true) {
+        if (typeof (entry as MonitorSourceOverride).id === 'string') overrides.push({ name, patch: entry as MonitorSourceOverride });
+        else warnings.push(`${name}: pominięto — nadpisanie bez pola „id".`);
+        return;
+      }
       const problem = entryProblem(entry);
       if (problem) {
         warnings.push(`${name}: pominięto — ${problem}.`);
@@ -96,6 +116,19 @@ export function mergeMonitorSources(groups: { file: string; entries: unknown[] }
       addresses.set(address, name);
       sources.push(source);
     });
+  }
+  for (const { name, patch } of overrides) {
+    const at = sources.findIndex((source) => source.id.toLowerCase() === patch.id.toLowerCase());
+    if (at < 0) {
+      warnings.push(`${name}: nadpisanie pominięto — w rejestrze nie ma wpisu o tym „id".`);
+      continue;
+    }
+    const changed: MonitorSourceConfig = { ...sources[at]! };
+    if (typeof patch.enabled === 'boolean') changed.enabled = patch.enabled;
+    if (typeof patch.note === 'string') changed.note = patch.note;
+    if (typeof patch.label === 'string' && patch.label.trim()) changed.label = patch.label;
+    if (typeof patch.category === 'string' && CATEGORIES.includes(patch.category)) changed.category = patch.category;
+    sources[at] = changed;
   }
   return { sources, warnings };
 }
@@ -172,7 +205,7 @@ export interface MonitorConnector extends DiscoveringConnector {
 /** Tworzy po jednym łączniku dla każdego włączonego wpisu rejestru (wpisy błędne i powtórzone są pomijane z ostrzeżeniem). */
 export function createMonitorConnectors(http: HttpClient, sources: MonitorSourceConfig[], options: MonitorOptions = {}): MonitorConnector[] {
   const merged = mergeMonitorSources([{ file: 'rejestr', entries: sources }]);
-  for (const warning of merged.warnings) options.log?.(`Monitoring: ${warning}`);
+  // Ostrzeżenia rejestru zgłasza ten, kto go wczytał; tu trafiają już scalone wpisy.
   return merged.sources.filter((source) => source.enabled !== false).map((source) => createConnector(http, source, MONITOR_ENGINES[source.engine], options));
 }
 

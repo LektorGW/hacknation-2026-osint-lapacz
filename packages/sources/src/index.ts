@@ -10,8 +10,11 @@ import { createGravatarConnector } from './gravatar.ts';
 import { createHttpClient } from './http.ts';
 import type { Fetcher } from './http.ts';
 import { createKeybaseConnector } from './keybase.ts';
-import { createMonitorConnectors, loadMonitorSources } from './monitor/index.ts';
+import { createBitcoinWhosWhoConnector, createGithubSearchConnector, createWalletExplorerConnector, createWaybackTwitterConnector } from './deep/extra.ts';
+import { createDeepSearchConnector } from './deep/search.ts';
+import { createMonitorConnectors, loadMonitorSources, mergeMonitorSources } from './monitor/index.ts';
 import type { MonitorSourceConfig } from './monitor/index.ts';
+import type { DeepSearchOptions } from './deep/search.ts';
 import { createSandboxConnectors } from './sandbox.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
@@ -19,6 +22,9 @@ import { createWaybackConnector } from './wayback.ts';
 import { createWwwConnector } from './www.ts';
 
 export { htmlToText } from './html.ts';
+export { addressFromHref, findEnsNames, normalizeAddressText } from './address-text.ts';
+export { deepTargets } from './deep/search.ts';
+export type { DeepSearchOptions, DeepTarget } from './deep/search.ts';
 export type { Fetcher } from './http.ts';
 export {
   isLowRelevance,
@@ -44,6 +50,7 @@ export type {
   MonitorPassSummary,
   MonitorRegistry,
   MonitorSourceConfig,
+  MonitorSourceOverride,
   MonitorSourcesSummary,
 } from './monitor/index.ts';
 
@@ -68,6 +75,8 @@ export interface SourcesConfig {
    * Każdy włączony wpis daje łącznik `mon-<id>` z metodą `discover`, domyślnie wyłączony w analizie osoby.
    */
   monitorSources?: MonitorSourceConfig[];
+  /** Ustawienia łącznika `deep-search`: budżet czasu (domyślnie 45 s), liczba hostów naraz (12), limit czasu żądania (8 s), liczba serwisów StackExchange (4). */
+  deepSearch?: DeepSearchOptions;
   /** Tani filtr wstępny monitoringu: `discover` zwraca tylko posty zawierające adres kryptowalutowy. */
   monitorOnlyWithAddresses?: boolean;
   /** Odbiorca komunikatów o błędach konfiguracji (np. niepoprawny wpis rejestru). */
@@ -88,6 +97,7 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
   });
   const github = { token: config.githubToken?.trim() || undefined };
   const instances = config.fediverseInstances ?? loadFediverseInstances().instances;
+  const registry = registrySources(config);
   return [
     createKeybaseConnector(http),
     createEnsConnector(http),
@@ -100,17 +110,24 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createBitcointalkConnector(http),
     createWwwConnector(http, { skipHosts: instances }),
     createWaybackConnector(http),
-    ...monitorConnectors(config, http, github.token),
+    createWaybackTwitterConnector(http),
+    createWalletExplorerConnector(http),
+    createBitcoinWhosWhoConnector(http),
+    createGithubSearchConnector(http, github),
+    createDeepSearchConnector(http, registry, config.deepSearch),
+    ...monitorConnectors(config, http, github.token, registry),
   ];
 }
 
-function monitorConnectors(config: SourcesConfig, http: ReturnType<typeof createHttpClient>, githubToken: string | undefined): SourceConnector[] {
-  let sources = config.monitorSources;
-  if (!sources) {
-    const registry = loadMonitorSources();
-    for (const warning of registry.warnings) config.log?.(`Monitoring: ${warning}`);
-    sources = registry.sources;
-  }
+/** Rejestr źródeł: z konfiguracji albo z plików; czytany raz dla monitoringu i głębokiego wyszukiwania. */
+function registrySources(config: SourcesConfig): MonitorSourceConfig[] {
+  if (config.monitorSources) return mergeMonitorSources([{ file: 'rejestr', entries: config.monitorSources }]).sources;
+  const registry = loadMonitorSources();
+  for (const warning of registry.warnings) config.log?.(`Monitoring: ${warning}`);
+  return registry.sources;
+}
+
+function monitorConnectors(config: SourcesConfig, http: ReturnType<typeof createHttpClient>, githubToken: string | undefined, sources: MonitorSourceConfig[]): SourceConnector[] {
   return createMonitorConnectors(http, sources, {
     ...(githubToken ? { githubToken } : {}),
     ...(config.monitorOnlyWithAddresses !== undefined ? { onlyWithAddresses: config.monitorOnlyWithAddresses } : {}),

@@ -332,5 +332,41 @@
     "category": "forum_post",
     "enabled": false,
     "note": "Wyłączone: wyszukiwarka GitHuba wymaga tokenu (GITHUB_TOKEN). Po ustawieniu tokenu zmień enabled na true."
+  },
+  {
+    "id": "rss-se7ensins-all",
+    "override": true,
+    "enabled": false,
+    "note": "Wyłączone nadpisaniem z core.json: w próbach 2026-11-21 serwis odpowiadał HTTP 403 na żądania z jawnym User-Agentem narzędzia (odmowa dla automatów). Nie obchodzimy."
+  },
+  {
+    "id": "discourse-forums-babypips-com",
+    "override": true,
+    "enabled": false,
+    "note": "Wyłączone nadpisaniem z core.json: w próbach 2026-11-21 serwis odpowiadał HTTP 403 na żądania z jawnym User-Agentem narzędzia (odmowa dla automatów). Nie obchodzimy."
+  },
+  {
+    "id": "rss-linustechtips-mining",
+    "override": true,
+    "enabled": false,
+    "note": "Wyłączone nadpisaniem z core.json: w próbach 2026-11-21 serwis odpowiadał HTTP 403 na żądania z jawnym User-Agentem narzędzia (odmowa dla automatów). Nie obchodzimy."
+  },
+  {
+    "id": "rss-namepros-crypto",
+    "override": true,
+    "enabled": false,
+    "note": "Wyłączone nadpisaniem z core.json: w próbach 2026-11-21 serwis odpowiadał HTTP 403 na żądania z jawnym User-Agentem narzędzia (odmowa dla automatów). Nie obchodzimy."
+  },
+  {
+    "id": "rss-malwaretips-crypto",
+    "override": true,
+    "enabled": false,
+    "note": "Wyłączone nadpisaniem z core.json: w próbach 2026-11-21 serwis odpowiadał HTTP 403 na żądania z jawnym User-Agentem narzędzia (odmowa dla automatów). Nie obchodzimy."
+  },
+  {
+    "id": "rss-rune-server",
+    "override": true,
+    "enabled": false,
+    "note": "Wyłączone nadpisaniem z core.json: w próbach 2026-11-21 serwis odpowiadał HTTP 403 na żądania z jawnym User-Agentem narzędzia (odmowa dla automatów). Nie obchodzimy."
   }
 ]

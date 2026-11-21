@@ -4,6 +4,7 @@
 
 import { extractAddresses } from '@olcys/core';
 import type { ConnectorContext, Identifier, IdentifierType, ProfileAttributes, SourceCategory, SourceDocument } from '@olcys/core';
+import { findEnsNames, normalizeAddressText } from '../address-text.ts';
 import { findEmails, htmlToText } from '../html.ts';
 import type { HttpClient, HttpSession } from '../http.ts';
 import { dedupeIdentifiers, isTechnicalEmail } from '../identity.ts';
@@ -180,7 +181,7 @@ export function removeElements(html: string, tags: string[], classWord?: string)
 
 /** Treść posta bez cytatów innych osób (blockquote, bloki „quote" forów i Discourse). */
 export function postText(html: string): string {
-  return htmlToText(removeElements(html, ['blockquote'], 'quote')).slice(0, MAX_TEXT_CHARS);
+  return normalizeAddressText(htmlToText(removeElements(html, ['blockquote'], 'quote'))).slice(0, MAX_TEXT_CHARS);
 }
 
 /** Zamienia posty na dokumenty: najnowsze najpierw, bez powtórzeń adresów, do limitu. */
@@ -206,7 +207,8 @@ export function toDocuments(
     const emails = findEmails(body)
       .filter((email) => !isTechnicalEmail(email))
       .map((value): Identifier => ({ type: 'email', value }));
-    const discovered = dedupeIdentifiers([...(post.discovered ?? []), ...emails], undefined, [post.service]).slice(0, 8);
+    const ensNames = findEnsNames(body).map((value): Identifier => ({ type: 'ens_name', value }));
+    const discovered = dedupeIdentifiers([...(post.discovered ?? []), ...emails, ...ensNames], undefined, [post.service]).slice(0, 8);
     documents.push({
       connectorId,
       service: post.service,

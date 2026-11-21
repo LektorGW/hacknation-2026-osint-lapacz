@@ -265,6 +265,11 @@ describe('łączniki live — konfiguracja', () => {
       'live-bitcointalk',
       'live-www',
       'live-wayback',
+      'live-wayback-twitter',
+      'live-walletexplorer',
+      'live-bitcoinwhoswho',
+      'live-github-search',
+      'deep-search',
     ]);
     assert.equal(new Set(ids).size, ids.length);
     for (const connector of connectors) {
@@ -283,6 +288,8 @@ describe('łączniki live — konfiguracja', () => {
         { type: 'crypto_address', value: ADDR.kacperBtc },
       ] as Identifier[]) {
         if (!connector.accepts.includes(identifier.type)) continue;
+        // Serwisy wiedzy o adresach Bitcoin słusznie odpytują o poprawny adres BTC — sprawdzane osobno.
+        if (identifier.type === 'crypto_address' && ['live-walletexplorer', 'live-bitcoinwhoswho'].includes(connector.id)) continue;
         assert.deepEqual(await connector.search(identifier, ctx), [], `${connector.id} ${identifier.type}`);
       }
     }

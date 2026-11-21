@@ -2,6 +2,8 @@
 // Świadomie bez zewnętrznego parsera: potrzebujemy tylko tekstu, w którym
 // `extractAddresses` znajdzie adresy, oraz odnośników do innych profili.
 
+import { addressFromHref } from './address-text.ts';
+
 const BLOCK_TAGS =
   'p|div|section|article|header|footer|main|nav|aside|h[1-6]|ul|ol|li|table|thead|tbody|tr|td|th|pre|blockquote|form|dl|dt|dd|hr|figure|figcaption|title';
 
@@ -42,6 +44,12 @@ export function htmlToText(html: string): string {
   const stripped = html
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    // Odnośnik płatności (`bitcoin:…`) albo odnośnik do eksploratora bloków niesie adres w atrybucie href —
+    // zostawiamy go w tekście, bo widoczny napis to często tylko „wpłać tutaj".
+    .replace(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi, (tag, href: string) => {
+      const address = addressFromHref(href);
+      return address ? `${tag} [adres z odnośnika: ${address}] ` : tag;
+    })
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(new RegExp(`</?(?:${BLOCK_TAGS})\\b[^>]*>`, 'gi'), '\n')
     .replace(new RegExp(`</?(?:${FORMATTING_TAGS})\\b[^>]*>`, 'gi'), '')

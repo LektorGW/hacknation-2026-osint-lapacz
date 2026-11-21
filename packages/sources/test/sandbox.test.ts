@@ -70,7 +70,7 @@ describe('createConnectors', () => {
     assert.deepEqual(createConnectors({}), []);
     const live = createConnectors({ enableLive: true });
     // Łączniki stałe mają przedrostek „live-", źródła z rejestru monitoringu — „mon-".
-    assert.ok(live.length >= 2 && live.every((c) => c.id.startsWith('live-') || c.id.startsWith('mon-')));
+    assert.ok(live.length >= 2 && live.every((c) => c.id.startsWith('live-') || c.id.startsWith('mon-') || c.id === 'deep-search'));
     assert.ok(live.filter((c) => c.id.startsWith('mon-')).every((c) => !c.enabledByDefault));
     for (const id of ['live-github', 'live-wayback']) assert.ok(live.some((c) => c.id === id), id);
 
