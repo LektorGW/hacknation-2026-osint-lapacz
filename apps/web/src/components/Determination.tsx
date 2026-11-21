@@ -8,6 +8,8 @@ import { NETWORK_SHORT } from '../labels.ts';
 import { DualScore, Gauge, Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { ServiceChips } from './ServiceCards.tsx';
+import { AddressSummary, isAddressCase } from './AddressSummary.tsx';
+import { UnconfirmedAddresses } from './Explanations.tsx';
 
 const ATTRIBUTE_LABEL: Record<PersonCandidate['attributes'][number]['kind'], string> = {
   email: 'E-mail',
@@ -57,6 +59,11 @@ function Attributes({ person }: { person: PersonCandidate }) {
 
 /** Karta głównego kandydata — całe ustalenie widoczne bez przewijania. */
 export function Determination() {
+  const { dossier } = useDossier();
+  return isAddressCase(dossier) ? <AddressSummary /> : <PersonDetermination />;
+}
+
+function PersonDetermination() {
   const { dossier, tabHref } = useDossier();
   const person = dossier.persons[0];
   const { totals, keyFindings } = dossier;
@@ -86,6 +93,8 @@ export function Determination() {
           <a href={tabHref('dowod')}>Ścieżka krok po kroku</a>
         </p>
       )}
+
+      <UnconfirmedAddresses compact />
 
       <div className="determination-grid">
         <div className="determination-person">

@@ -1,5 +1,6 @@
 // Postęp analizy na żywo: etapy, pasek z liczników źródeł oraz liczba dokumentów i adresów.
 import { useId } from 'react';
+import type { Period } from '../proof.ts';
 import { progressView } from '../proof.ts';
 import type { Depth, RunProgress } from '../proof.ts';
 
@@ -11,6 +12,23 @@ export function DepthSwitch({ depth, onChange, disabled }: { depth: Depth; onCha
       <input type="checkbox" checked={depth === 'deep'} disabled={disabled} onChange={(event) => onChange(event.target.checked ? 'deep' : 'standard')} />
       {DEEP_LABEL}
     </label>
+  );
+}
+
+/** Okres analizy: dwa pola dat; puste oznaczają całą dostępną historię. */
+export function PeriodFields({ from, to, onChange, disabled }: { from: string; to: string; onChange: (period: Required<Period>) => void; disabled?: boolean }) {
+  return (
+    <fieldset className="period" disabled={disabled}>
+      <legend>Okres analizy (opcjonalnie)</legend>
+      <label>
+        od
+        <input type="date" value={from} max={to || undefined} onChange={(event) => onChange({ from: event.target.value, to })} />
+      </label>
+      <label>
+        do
+        <input type="date" value={to} min={from || undefined} onChange={(event) => onChange({ from, to: event.target.value })} />
+      </label>
+    </fieldset>
   );
 }
 

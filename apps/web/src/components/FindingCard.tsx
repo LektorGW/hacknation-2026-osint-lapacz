@@ -94,7 +94,7 @@ function ExcludedEvidence({ finding }: { finding: DossierFinding }) {
   const { annotations = [], excludedEvidence = [] } = finding;
   if (annotations.length === 0 && excludedEvidence.length === 0) return null;
   return (
-    <LayerSection layer="inference" title={`Ślady niewliczone do wyniku (${excludedEvidence.length})`}>
+    <LayerSection layer={excludedEvidence.length > 0 ? 'inference' : 'calc'} title={excludedEvidence.length > 0 ? `Ślady niewliczone do wyniku (${excludedEvidence.length})` : 'Adnotacje do wyniku i zakresu historii'}>
       {annotations.map((note) => (
         <p key={note}>{note}</p>
       ))}

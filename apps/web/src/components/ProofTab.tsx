@@ -3,13 +3,15 @@ import { api, serviceRequestUrl } from '../api.ts';
 import { cashOutRows } from '../dossier.ts';
 import { fmtAmount, fmtDateTime, fmtPln, scoreLevel, shorten, sum } from '../format.ts';
 import { CASH_OUT_LABEL, CLASS_LABEL, NETWORK_SHORT } from '../labels.ts';
-import { buildChain, proofSummary, sortProofs } from '../proof.ts';
+import { buildChain, proofSummary, splitProofs } from '../proof.ts';
+import { Explanations } from './Explanations.tsx';
 import type { CashOutProof, ChainNode } from '../proof.ts';
 import { useAsync } from '../useAsync.ts';
 import { CopyButton, EmptyState, ExternalLink, Gauge, LayerTag, ShortAddress, toLayer } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 
 const BASIS_TEXT: Record<CashOutProof['addressBasis'], string> = {
+  confirmed: 'adres potwierdzony przez analityka',
   published: 'adres opublikowany przez osobę',
   analyst: 'adres podany przez analityka',
   cluster: 'adres z klastra portfela',
@@ -125,6 +127,9 @@ function ProofCard({ proof }: { proof: CashOutProof }) {
           <p className="proof-formula">
             osoba–adres <strong>{proof.personAddressProbability}%</strong> × ścieżka <strong>{proof.trailConfidence}%</strong> ={' '}
             <strong>{proof.combinedConfidence}%</strong>
+            {proof.ownerUnconfirmed && proof.confidenceIfConfirmed !== undefined && (
+              <span className="chip chip-inference"> po potwierdzeniu własności adresu: {proof.confidenceIfConfirmed}%</span>
+            )}
             {proof.person && (
               <span className="muted">
                 {' '}
@@ -221,9 +226,11 @@ function IndicatorsOnly() {
 const VISIBLE = 4;
 
 export function ProofTab() {
-  const { dossier } = useDossier();
-  const proofs = sortProofs(dossier.cashOutProof ?? []);
+  const { dossier, tabHref } = useDossier();
+  const { firm, conditional } = splitProofs(dossier.cashOutProof ?? []);
+  const proofs = firm;
   const summary = proofSummary(proofs);
+  const explained = (dossier.explanations ?? []).length > 0;
   return (
     <section aria-labelledby="dowod">
       <header className="section-head">
@@ -234,9 +241,19 @@ export function ProofTab() {
           </p>
         </div>
       </header>
-      {proofs.length === 0 ? (
-        <IndicatorsOnly />
-      ) : (
+      {proofs.length === 0 && conditional.length === 0 && (explained ? <Explanations /> : <IndicatorsOnly />)}
+      {conditional.length > 0 && (
+        <section className="conditional" aria-labelledby="warunkowe">
+          <h3 id="warunkowe">Warunkowe — po potwierdzeniu własności adresu ({conditional.length})</h3>
+          <p className="muted">
+            Ścieżka środków jest udokumentowana, ale adres nie jest przypisany osobie. <a href={tabHref('adresy')}>Potwierdź albo odrzuć adres</a>.
+          </p>
+          {conditional.map((proof) => (
+            <ProofCard key={proof.id} proof={proof} />
+          ))}
+        </section>
+      )}
+      {proofs.length > 0 && (
         <>
           <div className="tiles">
             <div className="stat">

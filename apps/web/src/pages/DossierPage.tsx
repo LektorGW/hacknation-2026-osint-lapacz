@@ -11,6 +11,9 @@ import type { DossierContextValue } from '../components/DossierContext.tsx';
 import { AddressesTab, DecisionsTab, FlowsTab, PeopleTab, ProfilesTab, TimelineTab } from '../components/DossierTabs.tsx';
 import { RunLauncher, RunsTab } from '../components/Runs.tsx';
 import { ProofTab } from '../components/ProofTab.tsx';
+import { Explanations } from '../components/Explanations.tsx';
+import { periodLabel } from '../proof.ts';
+import type { Period } from '../proof.ts';
 import { ServiceList } from '../components/ServiceCards.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { fmtDateTime } from '../format.ts';
@@ -31,6 +34,13 @@ function downloadJson(name: string, data: unknown) {
   link.download = name;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+/** Okres wskazany przy uruchomieniu analizy — zapisany w samej analizie, nie w teczce. */
+function RunPeriod({ runId }: { runId: string }) {
+  const run = useAsync(() => api.getRun(runId), `period:${runId}`);
+  const label = periodLabel((run.data as { period?: Period } | undefined)?.period);
+  return label ? <strong className="period-note"> · analizowany okres: {label}</strong> : null;
 }
 
 /** Sprawa bez zakończonej analizy: identyfikatory i wybór źródeł. */
@@ -86,6 +96,7 @@ function Identifiers({ dossier }: { dossier: Dossier }) {
 /** Mapa powiązań w układzie kolumnowym; widok hubów usług dostępny pod przełącznikiem. */
 function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Dossier }) {
   const [hubs, setHubs] = useState(false);
+  const [fitted, setFitted] = useState(false);
   const query = {
     identifiers: dossier.subject.identifiers.filter((item) => item.origin === 'analyst').map((item) => item.identifier),
   };
@@ -93,6 +104,11 @@ function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Do
     <section className="card">
       <div className="section-head">
         <h2>Mapa powiązań</h2>
+        {!hubs && (
+          <button type="button" className="button map-fit" aria-pressed={fitted} onClick={() => setFitted(!fitted)}>
+            {fitted ? 'Powiększ mapę' : 'Dopasuj do ekranu'}
+          </button>
+        )}
         <button type="button" className="button" aria-pressed={hubs} onClick={() => setHubs(!hubs)}>
           {hubs ? 'Pokaż mapę kolumnową' : 'Pokaż widok usług'}
         </button>
@@ -100,6 +116,7 @@ function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Do
       {hubs ? (
         <UniverseView />
       ) : (
+        <div className={fitted ? 'map-fitted' : undefined}>
         <LinkMap
           subjectName={dossier.subject.name}
           query={query.identifiers.length > 0 ? query : summary.query}
@@ -108,6 +125,7 @@ function LinksOverview({ summary, dossier }: { summary: CaseSummary; dossier: Do
             location.hash = `#/sprawa/${summary.id}/adresy`;
           }}
         />
+        </div>
       )}
     </section>
   );
@@ -164,6 +182,10 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  useEffect(() => {
+    document.querySelector('.tabs a[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }, [tab, loaded.data]);
+
   const data = loaded.data;
   const context = useMemo<DossierContextValue | null>(() => {
     if (!data || !('dossier' in data)) return null;
@@ -211,6 +233,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
 
   const { dossier, summary, simplified } = context;
   const latestRunId = summary.runs.filter((run) => run.status === 'completed').at(-1)?.id;
+  const empty = dossier.persons.length === 0 && dossier.findings.length === 0 && (dossier.explanations ?? []).length > 0;
   const historic = 'runId' in source && latestRunId !== undefined && latestRunId !== dossier.runId;
 
   function print() {
@@ -230,6 +253,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
             <h1>{summary.name}</h1>
             <p className="muted">
               Stan na {fmtDateTime(dossier.generatedAt)} · adresy powiązane: {dossier.totals.linkedAddresses}, odrzucone: {dossier.totals.excludedAddresses}
+              <RunPeriod runId={dossier.runId} />
             </p>
           </div>
           <div className="actions no-print">
@@ -274,9 +298,11 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
           </p>
         )}
 
-        <Determination />
+        {/* Bez osoby i adresów puste sekcje zastępuje wyjaśnienie, czego brakuje. */}
+        {!empty && <Determination />}
+        <Explanations />
         <Identifiers dossier={dossier} />
-        <OtherCandidates />
+        {!empty && <OtherCandidates />}
 
         <nav className="tabs no-print" aria-label="Sekcje teczki">
           {DOSSIER_TABS.map((item, index) => (

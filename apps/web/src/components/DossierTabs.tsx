@@ -19,6 +19,7 @@ import { Bar, EmptyState, ExternalLink, Initial, LAYER_KEYS, LayerTag, ShortAddr
 import type { Layer } from './common.tsx';
 import { DecisionControls, useDossier } from './DossierContext.tsx';
 import { FindingCard, RejectedCard } from './FindingCard.tsx';
+import { UnconfirmedAddresses } from './Explanations.tsx';
 import { useToast } from './Toast.tsx';
 
 // ---------- Profile ----------
@@ -135,11 +136,13 @@ export function AddressesTab() {
   const { dossier } = useDossier();
   const linked = dossier.findings.filter((finding) => !finding.confidence.excluded);
   const rejected = dossier.findings.filter((finding) => finding.confidence.excluded);
+  if (dossier.findings.length === 0 && (dossier.unconfirmedAddresses ?? []).length > 0) return <UnconfirmedAddresses />;
   if (dossier.findings.length === 0) {
     return <EmptyState title="Nie znaleziono adresów">W wybranych źródłach nie ma adresów kryptowalutowych dla podanych identyfikatorów.</EmptyState>;
   }
   return (
     <>
+      <UnconfirmedAddresses />
       <section aria-labelledby="powiazane">
         <h2 id="powiazane">Adresy powiązane ({linked.length})</h2>
         {linked.map((finding, index) => (

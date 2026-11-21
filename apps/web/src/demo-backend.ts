@@ -54,14 +54,15 @@ import type { RawFinding, RawRun } from './demo-data.ts';
 import { demoHits, demoMonitorSources } from './demo-monitor.ts';
 import { demoAi, demoCorpus, demoExtras, demoOwnInsight, demoProgress, demoProofs, demoWarningEvidence, startDemoProgress } from './demo-proof.ts';
 import type { DossierFinding, FullDossier } from './proof.ts';
+import { ADDRESS_CASE_ADDR, addressCaseDossier, demoAddressCase, demoAddressRun, demoServiceCase, demoServiceRun, serviceCaseDossier } from './demo-cases.ts';
 import { IDENTITY_SCORE, addressKey, computePriority, dossierFromRun, profileKey } from './dossier.ts';
 import { fmtPln, sum } from './format.ts';
 
 type StoredCase = Omit<CaseSummary, 'runs'>;
 
 const NOW = new Date(DEMO_NOW);
-const cases: StoredCase[] = [demoCase];
-const runs: RawRun[] = [...demoRuns];
+const cases: StoredCase[] = [demoCase, demoAddressCase, demoServiceCase];
+const runs: RawRun[] = [...demoRuns, demoAddressRun, demoServiceRun];
 const decisions: AnalystDecision[] = [];
 const sweeps: Sweep[] = [];
 let sequence = 0;
@@ -425,6 +426,8 @@ function buildDossier(raw: RawRun): FullDossier {
     original: scoreRun(run, []),
     now: NOW,
   });
+  if (raw.caseId === demoAddressCase.id) return addressCaseDossier(base);
+  if (raw.caseId === demoServiceCase.id) return serviceCaseDossier(base, applied);
   if (!(raw.caseId === DEMO_CASE_ID && raw.findings.length > 0)) return { ...base, cashOutProof: [], mentions: [], partial: false, summary: null };
 
   const enriched = enrichDemo(base, summary, applied);
@@ -661,7 +664,8 @@ export const demoBackend: Backend = {
   },
 
   // Sprawa demonstracyjna powtarza ostatni wynik; nowe sprawy nie mają danych.
-  startRun: async (caseId, connectors, depth = 'standard') => {
+  startRun: async (caseId, connectors, options = {}) => {
+    const depth = options.depth ?? 'standard';
     const stored = findCase(caseId);
     sequence += 1;
     const now = new Date().toISOString();
@@ -830,12 +834,14 @@ export const demoBackend: Backend = {
   },
 
   // Znane identyfikatory prowadzą do sprawy demonstracyjnej; pozostałe idą zwykłą ścieżką.
-  quick: async (value, _type, depth = 'standard') => {
-    if (!DEMO_VALUES.includes(value.trim().toLowerCase())) return null;
+  quick: async (value, _type, options = {}) => {
+    const wanted = value.trim().toLowerCase();
+    const target = wanted === ADDRESS_CASE_ADDR ? demoAddressCase : wanted === 'kryptogielda' ? demoServiceCase : DEMO_VALUES.includes(wanted) ? demoCase : undefined;
+    if (!target) return null;
     sequence += 1;
     const id = `demo-postep-${sequence}`;
-    startDemoProgress(id, depth);
-    return { case: summarizeCase(demoCase), run: { id, status: 'running' } };
+    startDemoProgress(id, options.depth ?? 'standard');
+    return { case: summarizeCase(target), run: { id, status: 'running' } };
   },
   hasServiceRequest: async () => false,
 };

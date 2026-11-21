@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, isDemo } from './api.ts';
 import { useAsync } from './useAsync.ts';
 import { ToastProvider } from './components/Toast.tsx';
@@ -58,12 +58,14 @@ export function App() {
   const route = parseRoute(useHash());
   const scheme = useScheme();
   const help = useRef<HTMLDialogElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const ai = useAsync(() => api.getAi().catch(() => null), 'ai');
   const screen = `${route.page}:${'caseId' in route ? route.caseId : 'runId' in route ? route.runId : ''}`;
 
   // Nowy ekran zaczyna się od góry; przełączanie sekcji teczki nie zmienia przewinięcia.
   useEffect(() => {
     window.scrollTo(0, 0);
+    setMenuOpen(false);
   }, [screen]);
 
   useEffect(() => {
@@ -102,12 +104,15 @@ export function App() {
         Przejdź do treści
       </a>
       <div className="shell">
-        <header className="sidebar">
+        <header className={`sidebar ${menuOpen ? 'is-open' : ''}`} onKeyDown={(event) => event.key === 'Escape' && setMenuOpen(false)}>
           <a className="brand" href={href.dashboard()}>
             <span className="brand-short">OŁCyŚ</span>
             <span className="brand-long">OSINTowy Łapacz Cyfrowych Śladów</span>
           </a>
-          <nav aria-label="Główna nawigacja">
+          <button type="button" className="menu-button" aria-expanded={menuOpen} aria-controls="menu-glowne" onClick={() => setMenuOpen(!menuOpen)}>
+            <span aria-hidden="true">{menuOpen ? '✕' : '☰'}</span> Menu
+          </button>
+          <nav id="menu-glowne" aria-label="Główna nawigacja" onClick={() => setMenuOpen(false)}>
             {NAV.map((item) => (
               <a key={item.label} href={item.target} aria-current={item.pages.includes(route.page) ? 'page' : undefined}>
                 <svg viewBox="0 0 24 24" aria-hidden="true">

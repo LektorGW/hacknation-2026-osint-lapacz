@@ -4,6 +4,7 @@ import type { MonitorSourceStatus, MonitorStatus, ScoredSignal, WatchHit } from 
 import { api } from '../api.ts';
 import type { MonitorSettings } from '../api.ts';
 import type { CorpusStats } from '../proof.ts';
+import { paginate } from '../proof.ts';
 import type { TextInsight } from '@olcys/core';
 import { Bar, Crumbs, EmptyState, ErrorBox, ExternalLink, LayerTag, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
@@ -92,8 +93,25 @@ function StatusBar({ status, onChange, onRun, busy }: { status: MonitorStatus; o
 function Sources({ sources, onToggle }: { sources: MonitorSourceStatus[]; onToggle: (source: MonitorSourceStatus) => void }) {
   const [filter, setFilter] = useState('');
   const needle = filter.trim().toLowerCase();
-  const shown = sources.filter((source) => `${source.service} ${source.label}`.toLowerCase().includes(needle));
+  const [page, setPage] = useState(1);
+  const matching = sources.filter((source) => `${source.service} ${source.label}`.toLowerCase().includes(needle));
+  // Długą listę (setki źródeł) pokazujemy po 50 pozycji.
+  const paged = paginate(matching, page, 50);
+  const shown = paged.items;
   const services = [...new Set(shown.map((source) => source.service))];
+  const pager = paged.pages > 1 && (
+    <p className="pager">
+      <button type="button" className="button button-small" disabled={paged.page <= 1} onClick={() => setPage(paged.page - 1)}>
+        ← Poprzednie
+      </button>
+      <span>
+        strona {paged.page} z {paged.pages} · {matching.length} źródeł
+      </span>
+      <button type="button" className="button button-small" disabled={paged.page >= paged.pages} onClick={() => setPage(paged.page + 1)}>
+        Następne →
+      </button>
+    </p>
+  );
   const failing = sources.filter((source) => source.lastError).length;
   return (
     <details className="card">
@@ -103,8 +121,12 @@ function Sources({ sources, onToggle }: { sources: MonitorSourceStatus[]; onTogg
       </summary>
       <label className="inline-field source-filter">
         Filtr źródeł
-        <input type="text" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="serwis lub nazwa" />
+        <input type="text" value={filter} onChange={(event) => {
+            setFilter(event.target.value);
+            setPage(1);
+          }} placeholder="serwis lub nazwa" />
       </label>
+      {pager}
       {services.map((service) => (
         <section key={service} className="source-group">
           <h3>{service}</h3>

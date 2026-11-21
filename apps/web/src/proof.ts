@@ -9,7 +9,7 @@ export interface CashOutProof {
   address: string;
   network: Network;
   /** Skąd wiadomo o adresie: publikacja, wskazanie analityka albo klaster portfela. */
-  addressBasis: 'published' | 'analyst' | 'cluster';
+  addressBasis: 'published' | 'analyst' | 'cluster' | 'confirmed';
   cluster?: { seed: string; reason: string };
   personAddressProbability: number;
   trailConfidence: number;
@@ -20,6 +20,10 @@ export interface CashOutProof {
   serviceName: string;
   statement: string;
   trail: CashOutTrail;
+  /** Własność adresu nie jest potwierdzona — ustalenie warunkowe. */
+  ownerUnconfirmed?: boolean;
+  /** Łączna pewność po potwierdzeniu własności adresu. */
+  confidenceIfConfirmed?: number;
 }
 
 export type EvidenceWithInsight = StoredEvidence & { insight?: TextInsight };
@@ -39,6 +43,8 @@ export interface DossierExtras {
   partial?: boolean;
   mentions?: { identifier: Identifier; documents: number; authors: number; services: string[] }[];
   summary?: { text: string; model: string; promptVersion: string } | null;
+  explanations?: Explanation[];
+  unconfirmedAddresses?: UnconfirmedAddress[];
 }
 
 export type FullDossier = Dossier & DossierExtras;
@@ -198,4 +204,84 @@ export function proofSummary(proofs: CashOutProof[]): ProofSummary {
 /** Nazwa poziomu łącznej pewności — te same progi co w usłudze analizy. */
 export function proofTier(confidence: number): string {
   return confidence >= 80 ? 'bardzo wysoka' : confidence >= 60 ? 'wysoka' : confidence >= 40 ? 'średnia' : 'niska';
+}
+
+// ---------- Wyjaśnienia braków, adresy do potwierdzenia, okres analizy ----------
+
+export type ExplanationKind = 'service_name' | 'no_addresses' | 'only_unconfirmed' | 'widely_cited' | 'chain_skipped' | 'partial' | 'no_cash_out';
+
+export interface Explanation {
+  kind: ExplanationKind;
+  text: string;
+  suggestions: string[];
+  /** Tylko `service_name`: publicznie oznaczone adresy tej usługi. */
+  addresses?: { address: string; network: string; label: string }[];
+}
+
+export interface UnconfirmedAddress {
+  address: string;
+  network: Network;
+  sources: { url: string; service: string; author?: string; profileId?: string; personId?: string }[];
+  reasons: string[];
+  personAddressProbability: number;
+  /** Skrót aktywności w blockchainie; `null`, gdy łańcucha nie analizowano. */
+  chain: {
+    transfers: number;
+    totalReceived: number;
+    totalSent: number;
+    asset: string;
+    services: string[];
+    cashOutPlnTotal: number;
+    trails: number;
+  } | null;
+  /** Decyzje („confirmed”), które przypiszą adres podmiotowi. */
+  confirmWith: { target: 'profile' | 'address'; key: string }[];
+}
+
+export interface Period {
+  from?: string;
+  to?: string;
+}
+
+/** Działanie, które interfejs potrafi wykonać dla sugestii z wyjaśnienia; `null` — sama podpowiedź tekstowa. */
+export type SuggestionAction = 'add_identifier' | 'deep' | 'confirm' | null;
+
+/** Rozpoznaje działanie po treści sugestii — usługa podaje je zwykłym zdaniem. */
+export function suggestionAction(text: string): SuggestionAction {
+  const lower = text.toLowerCase();
+  if (/tryb(ie|u)? głębok/.test(lower)) return 'deep';
+  if (/potwierd(ź|z)/.test(lower)) return 'confirm';
+  if (/(dodaj|podaj|dopisz|wpisz).*(identyfikator|nick|e-mail|adres|profil)/.test(lower)) return 'add_identifier';
+  return null;
+}
+
+/** Ustalenia pewne i warunkowe (zależne od potwierdzenia własności adresu), każda grupa od najmocniejszego. */
+export function splitProofs(proofs: CashOutProof[]): { firm: CashOutProof[]; conditional: CashOutProof[] } {
+  const sorted = sortProofs(proofs);
+  return {
+    firm: sorted.filter((proof) => !proof.ownerUnconfirmed),
+    conditional: sorted
+      .filter((proof) => proof.ownerUnconfirmed)
+      .sort((a, b) => (b.confidenceIfConfirmed ?? b.combinedConfidence) - (a.confidenceIfConfirmed ?? a.combinedConfidence)),
+  };
+}
+
+/** Okres do wysłania: puste pola pomijamy; błąd, gdy początek jest po końcu. */
+export function cleanPeriod(from: string, to: string): { period?: Period; error?: string } {
+  if (from && to && from > to) return { error: 'Początek okresu analizy nie może być późniejszy niż koniec.' };
+  if (!from && !to) return {};
+  return { period: { ...(from ? { from } : {}), ...(to ? { to } : {}) } };
+}
+
+export function periodLabel(period: Period | undefined): string | undefined {
+  if (!period?.from && !period?.to) return undefined;
+  const day = (value?: string) => value?.slice(0, 10);
+  return period.from && period.to ? `${day(period.from)} – ${day(period.to)}` : period.from ? `od ${day(period.from)}` : `do ${day(period.to)}`;
+}
+
+/** Stronicowanie długich list: numer strony przycinany do zakresu. */
+export function paginate<T>(items: T[], page: number, size: number): { items: T[]; page: number; pages: number } {
+  const pages = Math.max(1, Math.ceil(items.length / size));
+  const current = Math.min(Math.max(1, page), pages);
+  return { items: items.slice((current - 1) * size, current * size), page: current, pages };
 }

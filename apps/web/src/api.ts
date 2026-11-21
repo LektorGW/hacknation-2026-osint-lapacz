@@ -16,7 +16,7 @@ import type {
   WatchHit,
 } from '@olcys/core';
 import { dossierFromRun } from './dossier.ts';
-import type { AiStatus, CorpusStats, Depth, FullDossier, RunProgress } from './proof.ts';
+import type { AiStatus, CorpusStats, Depth, FullDossier, Period, RunProgress } from './proof.ts';
 import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './identify.ts';
 import { serviceLinksFromFindings } from './services.ts';
 
@@ -83,6 +83,12 @@ export interface MonitorSettings {
   sources?: Record<string, boolean>;
 }
 
+/** Tryb i okres analizy; okres zawęża historię blockchain i publikacje. */
+export interface RunOptions {
+  depth?: Depth;
+  period?: Period;
+}
+
 export interface RunHandle {
   id: string;
   status: string;
@@ -105,7 +111,7 @@ export interface Backend {
   getCase(caseId: string): Promise<CaseSummary>;
   addIdentifiers(caseId: string, identifiers: Identifier[]): Promise<CaseSummary>;
   /** Uruchamia analizę w tle, jeśli usługa to potrafi; starsza odpowiada dopiero po zakończeniu. */
-  startRun(caseId: string, connectors?: string[], depth?: Depth): Promise<RunHandle>;
+  startRun(caseId: string, connectors?: string[], options?: RunOptions): Promise<RunHandle>;
   /** Postęp analizy; `null`, gdy usługa nie udostępnia tej trasy. */
   getProgress(runId: string): Promise<RunProgress | null>;
   getAi(): Promise<AiStatus | null>;
@@ -131,7 +137,7 @@ export interface Backend {
   dismissHit(hitId: string): Promise<WatchHit>;
   createCaseFromHit(hitId: string): Promise<CaseSummary>;
   /** Ustalenie jednym wywołaniem; `null`, gdy trasa nie istnieje. */
-  quick(value: string, type: IdentifierType, depth?: Depth): Promise<QuickResult | null>;
+  quick(value: string, type: IdentifierType, options?: RunOptions): Promise<QuickResult | null>;
   /** Czy usługa wystawia „Materiał do zapytania” dla usługi powiązanej z podmiotem. */
   hasServiceRequest(runId: string, serviceId: string): Promise<boolean>;
 }
@@ -239,8 +245,8 @@ const httpBackend: Backend = {
   getCase: (caseId) => request(`/api/cases/${enc(caseId)}`),
   addIdentifiers: (caseId, identifiers) =>
     feature('Dopisanie identyfikatorów', post(`/api/cases/${enc(caseId)}/identifiers`, { identifiers })),
-  startRun: (caseId, connectors, depth = 'standard') =>
-    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth, async: true }),
+  startRun: (caseId, connectors, options = {}) =>
+    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth: options.depth ?? 'standard', ...(options.period ? { period: options.period } : {}), async: true }),
   getProgress: (runId) => optional(request<RunProgress>(`/api/runs/${enc(runId)}/progress`), null),
   getAi: () => optional(request<AiStatus>('/api/ai'), null),
   getCorpusStats: () => optional(request<CorpusStats>('/api/corpus/stats'), null),
@@ -270,7 +276,8 @@ const httpBackend: Backend = {
   analyzeHit: (hitId) => feature('Analiza autora trafienia', post(`/api/monitor/hits/${enc(hitId)}/analyze`, {})),
   dismissHit: (hitId) => feature('Odrzucenie trafienia', post(`/api/monitor/hits/${enc(hitId)}/dismiss`, {})),
   createCaseFromHit: (hitId) => feature('Założenie sprawy z trafienia', post(`/api/monitor/hits/${enc(hitId)}/case`, {})),
-  quick: (value, type, depth = 'standard') => optional(post<QuickResult>('/api/quick', { value, type, depth, async: true }), null),
+  quick: (value, type, options = {}) =>
+    optional(post<QuickResult>('/api/quick', { value, type, depth: options.depth ?? 'standard', ...(options.period ? { period: options.period } : {}), async: true }), null),
   hasServiceRequest: async (runId, serviceId) => {
     try {
       const response = await fetch(serviceRequestUrl(runId, serviceId), { method: 'HEAD' });
@@ -329,6 +336,8 @@ function complete(dossier: Dossier): FullDossier {
     keyFindings: partial.keyFindings ?? [],
     timeline: partial.timeline ?? [],
     cashOutProof: partial.cashOutProof ?? [],
+    explanations: partial.explanations ?? [],
+    unconfirmedAddresses: partial.unconfirmedAddresses ?? [],
     mentions: partial.mentions ?? [],
   };
 }
@@ -377,10 +386,10 @@ export async function trackRun(runId: string, onProgress: (progress: RunProgress
 export async function runAnalysis(
   caseId: string,
   connectors: string[] | undefined,
-  depth: Depth,
+  options: RunOptions,
   onProgress: (progress: RunProgress) => void,
 ): Promise<void> {
-  const run = await api.startRun(caseId, connectors, depth);
+  const run = await api.startRun(caseId, connectors, options);
   if (run.status === 'running') await trackRun(run.id, onProgress);
   else if (run.status === 'failed') throw new ApiError('Analiza zakończyła się błędem — szczegóły w dzienniku analizy.', 500);
 }
@@ -389,16 +398,16 @@ export async function runAnalysis(
 export async function quickCheck(
   raw: string,
   type: IdentifierType,
-  depth: Depth,
+  options: RunOptions,
   onProgress: (progress: RunProgress) => void,
 ): Promise<CaseSummary> {
   const identifier = normalizeIdentifier(type, raw);
-  const quick = await api.quick(identifier.value, type, depth);
+  const quick = await api.quick(identifier.value, type, options);
   if (quick) {
     if (quick.run?.status === 'running') await trackRun(quick.run.id, onProgress);
     return quick.case;
   }
   const created = await api.createCase(suggestCaseName(identifier), [identifier]);
-  await runAnalysis(created.id, undefined, depth, onProgress);
+  await runAnalysis(created.id, undefined, options, onProgress);
   return created;
 }

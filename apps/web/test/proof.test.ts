@@ -130,3 +130,48 @@ test('ustalenia: kolejność po łącznej pewności i podsumowanie', () => {
 test('poziomy łącznej pewności', () => {
   assert.deepEqual([95, 80, 79, 60, 52, 40, 39, 0].map(proofTier), ['bardzo wysoka', 'bardzo wysoka', 'wysoka', 'wysoka', 'średnia', 'średnia', 'niska', 'niska']);
 });
+
+test('sugestie z wyjaśnień: rozpoznanie działania po treści zdania', async () => {
+  const { suggestionAction } = await import('../src/proof.ts');
+  assert.equal(suggestionAction('Uruchom tryb głęboki, żeby poszukać kolejnych publikacji.'), 'deep');
+  assert.equal(suggestionAction('Powtórz analizę w trybie głębokim.'), 'deep');
+  assert.equal(suggestionAction('Potwierdź adres, jeśli wiesz, że należy do podmiotu.'), 'confirm');
+  assert.equal(suggestionAction('Podaj identyfikator osoby (nick, e-mail, adres profilu), a nie nazwę usługi.'), 'add_identifier');
+  assert.equal(suggestionAction('Dodaj drugi identyfikator: e-mail albo adres profilu.'), 'add_identifier');
+  assert.equal(suggestionAction('Zapytaj operatora giełdy o dane klienta.'), null);
+});
+
+test('ustalenia warunkowe są oddzielone i sortowane po pewności po potwierdzeniu', async () => {
+  const { splitProofs } = await import('../src/proof.ts');
+  const proofs = [
+    proof('pewne-niskie', 30, 'A'),
+    { ...proof('warunkowe-slabe', 10, 'B'), ownerUnconfirmed: true, confidenceIfConfirmed: 60 },
+    proof('pewne-wysokie', 90, 'A'),
+    { ...proof('warunkowe-mocne', 5, 'C'), ownerUnconfirmed: true, confidenceIfConfirmed: 95 },
+  ];
+  const { firm, conditional } = splitProofs(proofs);
+  assert.deepEqual(firm.map((item) => item.id), ['pewne-wysokie', 'pewne-niskie']);
+  assert.deepEqual(conditional.map((item) => item.id), ['warunkowe-mocne', 'warunkowe-slabe']);
+});
+
+test('okres analizy: czyszczenie pól, błąd kolejności i opis', async () => {
+  const { cleanPeriod, periodLabel } = await import('../src/proof.ts');
+  assert.deepEqual(cleanPeriod('', ''), {});
+  assert.deepEqual(cleanPeriod('2025-01-01', ''), { period: { from: '2025-01-01' } });
+  assert.deepEqual(cleanPeriod('2025-01-01', '2025-12-31'), { period: { from: '2025-01-01', to: '2025-12-31' } });
+  assert.ok(cleanPeriod('2026-01-01', '2025-12-31').error);
+  assert.equal(periodLabel(undefined), undefined);
+  assert.equal(periodLabel({}), undefined);
+  assert.equal(periodLabel({ from: '2025-01-01T00:00:00Z', to: '2025-12-31' }), '2025-01-01 – 2025-12-31');
+  assert.equal(periodLabel({ to: '2025-12-31' }), 'do 2025-12-31');
+});
+
+test('stronicowanie długich list', async () => {
+  const { paginate } = await import('../src/proof.ts');
+  const items = Array.from({ length: 841 }, (_, index) => index);
+  assert.equal(paginate(items, 1, 50).pages, 17);
+  assert.deepEqual(paginate(items, 17, 50).items, items.slice(800));
+  assert.equal(paginate(items, 99, 50).page, 17);
+  assert.equal(paginate(items, 0, 50).page, 1);
+  assert.deepEqual(paginate([], 3, 50), { items: [], page: 1, pages: 1 });
+});

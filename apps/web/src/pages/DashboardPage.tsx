@@ -5,7 +5,8 @@ import type { IdentifierType } from '@olcys/core';
 import { api, errorMessage, isDemo, quickCheck } from '../api.ts';
 import type { CaseSummary, Overview } from '../api.ts';
 import { BarChart } from '../charts/Charts.tsx';
-import { AnalysisProgress, DepthSwitch } from '../components/Progress.tsx';
+import { AnalysisProgress, DepthSwitch, PeriodFields } from '../components/Progress.tsx';
+import { cleanPeriod } from '../proof.ts';
 import type { CorpusStats, Depth, RunProgress } from '../proof.ts';
 import { Bar, EmptyState, ErrorBox, LayerTag, ScoreBadge, Skeleton } from '../components/common.tsx';
 import { fmtDate, fmtDateTime, fmtPln, sum } from '../format.ts';
@@ -14,7 +15,7 @@ import { IDENTIFIER_LABEL, IDENTIFIER_TYPES } from '../labels.ts';
 import { href, navigate } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
 
-const EXAMPLES = ['tomwzor', 'tomasz.wzorcowy@poczta.example', 'Tomasz Wzorcowy'];
+const EXAMPLES = ['tomwzor', 'tomasz.wzorcowy@poczta.example', 'Tomasz Wzorcowy', 'KryptoGielda', 'bc1qadres0badany3x7k9m2p4q6r8s0t2v4w6y8z0a2c'];
 
 function QuickCheck() {
   const fieldId = useId();
@@ -23,6 +24,7 @@ function QuickCheck() {
   const [override, setOverride] = useState<IdentifierType>();
   const [pending, setPending] = useState<string>();
   const [depth, setDepth] = useState<Depth>('standard');
+  const [range, setRange] = useState({ from: '', to: '' });
   const [progress, setProgress] = useState<RunProgress>();
   const [error, setError] = useState<string>();
   const type = override ?? detectIdentifierType(value);
@@ -41,11 +43,16 @@ function QuickCheck() {
       setError('Wpisz identyfikator osoby: nick, e-mail, imię i nazwisko, adres profilu, adres krypto albo nazwę ENS.');
       return;
     }
+    const { period, error: periodError } = cleanPeriod(range.from, range.to);
+    if (periodError) {
+      setError(periodError);
+      return;
+    }
     setError(undefined);
     setPending(trimmed);
     setProgress(undefined);
     try {
-      const created = await quickCheck(trimmed, type, depth, setProgress);
+      const created = await quickCheck(trimmed, type, { depth, period }, setProgress);
       navigate(href.case(created.id));
     } catch (failure) {
       setError(errorMessage(failure));
@@ -97,7 +104,11 @@ function QuickCheck() {
           <span className="muted">Typ identyfikatora zostanie rozpoznany automatycznie.</span>
         )}
       </p>
-      <DepthSwitch depth={depth} onChange={setDepth} />
+      <details className="quick-options" open={depth === 'deep' || range.from !== '' || range.to !== '' || undefined}>
+        <summary>Opcje: tryb głęboki, okres analizy</summary>
+        <DepthSwitch depth={depth} onChange={setDepth} />
+        <PeriodFields from={range.from} to={range.to} onChange={setRange} />
+      </details>
       {isDemo && (
         <p className="quick-examples">
           Przykłady w trybie demo:{' '}

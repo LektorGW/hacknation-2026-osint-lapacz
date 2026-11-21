@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import type { Dossier, RunDiff } from '@olcys/core';
 import { api, errorMessage, runAnalysis } from '../api.ts';
 import type { Depth, RunProgress } from '../proof.ts';
-import { AnalysisProgress, DepthSwitch } from './Progress.tsx';
+import { AnalysisProgress, DepthSwitch, PeriodFields } from './Progress.tsx';
+import { cleanPeriod } from '../proof.ts';
 import type { CaseSummary, ConnectorInfo } from '../api.ts';
 import { fmtDateTime } from '../format.ts';
 import { IDENTIFIER_LABEL, STATUS_LABEL } from '../labels.ts';
@@ -20,6 +21,7 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
   const [depth, setDepth] = useState<Depth>('standard');
+  const [range, setRange] = useState({ from: '', to: '' });
   const [progress, setProgress] = useState<RunProgress>();
 
   useEffect(() => {
@@ -38,7 +40,9 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
     setRunning(true);
     try {
       setProgress(undefined);
-      await runAnalysis(caseId, [...selected], depth, setProgress);
+      const { period, error } = cleanPeriod(range.from, range.to);
+      if (error) throw new Error(error);
+      await runAnalysis(caseId, [...selected], { depth, period }, setProgress);
       toast.success('Analiza zakończona — teczka została odświeżona.');
       onDone();
     } catch (failure) {
@@ -75,6 +79,7 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
           {running ? 'Analiza w toku…' : 'Uruchom analizę'}
         </button>
         <DepthSwitch depth={depth} onChange={setDepth} disabled={running} />
+        <PeriodFields from={range.from} to={range.to} onChange={setRange} disabled={running} />
         {connectors.data && selected.size === 0 && <span className="muted">Zaznacz co najmniej jedno źródło.</span>}
       </div>
       {running && <AnalysisProgress title="Analiza w toku" progress={progress} depth={depth} />}
