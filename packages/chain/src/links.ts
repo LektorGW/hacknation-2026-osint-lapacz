@@ -160,7 +160,7 @@ export async function findLinkedAddresses(search: LinkSearch): Promise<{ links: 
   /** Kontrahent wyglądający na adres prywatny: bez etykiety, klasy i kodu kontraktu. */
   const looksPrivate = (transfer: RawTransfer) => {
     const known = describe(transfer);
-    return known.addressClass === 'unknown' && !known.label && !known.kind && isQueryableAddress(transfer.counterparty);
+    return (known.addressClass === 'unknown' || known.addressClass === 'private') && !known.label && !known.kind && isQueryableAddress(transfer.counterparty);
   };
 
   /** Przelew, na którym wolno oprzeć powiązanie: realna kwota w zweryfikowanej walucie. */
@@ -295,7 +295,7 @@ export async function findLinkedAddresses(search: LinkSearch): Promise<{ links: 
     for (const [key, items] of senders) {
       if (key === subject || clusterSet.has(key)) continue;
       const known = describe(items[0]!);
-      if (known.addressClass !== 'unknown' || known.label || known.kind) {
+      if ((known.addressClass !== 'unknown' && known.addressClass !== 'private') || known.label || known.kind) {
         services += 1;
         continue;
       }

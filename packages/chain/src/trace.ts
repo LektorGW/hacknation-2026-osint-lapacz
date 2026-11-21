@@ -652,7 +652,7 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
       stops.add(STOP.contract);
       return false;
     }
-    if (top.known.addressClass !== 'unknown' || top.known.label) {
+    if ((top.known.addressClass !== 'unknown' && top.known.addressClass !== 'private') || top.known.label) {
       stops.add(STOP.labelled);
       return false;
     }
@@ -752,7 +752,7 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
       stops.warn(mixerWarning(transfer.counterparty, known.label, transfer.txid));
       continue;
     }
-    if (known.addressClass !== 'unknown' || known.label || known.kind) continue;
+    if ((known.addressClass !== 'unknown' && known.addressClass !== 'private') || known.label || known.kind) continue;
     const group = byCounterparty.get(transfer.counterparty) ?? { weight: 0, transfers: [] };
     group.weight = Math.max(group.weight, transfer.amount * weight);
     group.transfers.push(transfer);
