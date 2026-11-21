@@ -95,6 +95,8 @@ export interface AnalysisParams {
   normalizeText?: (text: string) => string;
   /** Ilu najwyżej różnych autorów może wymieniać dane kontaktowe podmiotu, by wzmianki uznać za jego publikacje. */
   maxMentionAuthors?: number;
+  /** Po ilu niepowiązanych autorach przestajemy zbierać wzmianki o identyfikatorze w kolejnych źródłach wyszukiwawczych. */
+  mentionStopAuthors?: number;
   /** Model językowy (opcjonalny): odczyt publikacji i porównanie autorów. */
   ai?: AiAssistant;
   maxAiPublications?: number;
@@ -167,6 +169,11 @@ interface Pending {
   distance: number;
   /** Identyfikator, po którym znaleziono dokument wskazujący. */
   parent?: Identifier;
+  /**
+   * Nazwa (np. ENS) wymieniona w publikacji, a nie wskazana przez profil: jej dokumenty przyjmujemy
+   * tylko wtedy, gdy prowadzą do adresu już przypisanego podmiotowi.
+   */
+  requireKnownAddress?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -178,6 +185,14 @@ export const DEFAULT_MAX_CHAIN_ADDRESSES = 15;
 export const DEFAULT_WIDELY_CITED_AUTHORS = 10;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
 export const DEFAULT_MAX_MENTION_AUTHORS = 3;
+export const DEFAULT_MENTION_STOP_AUTHORS = 30;
+/** Od jakiej wartości śladu (punkty bazowe z korektą tożsamości) analiza blockchain adresu startuje od razu. */
+const EARLY_CHAIN_STRENGTH = 70;
+/** Ile analiz blockchain trwa jednocześnie (osobny limit — nie czekają w kolejce za wyszukiwaniem). */
+const CHAIN_CONCURRENCY = 3;
+/** Jaka część limitu czasu przypada na wyszukiwanie, a jaka na wystąpienia adresów; reszta to blockchain i ocena. */
+const SEARCH_TIME_SHARE = 0.6;
+const OCCURRENCE_TIME_SHARE = 0.8;
 /** Najwyżej tyle par profili porównuje model językowy w jednej analizie. */
 const MAX_AUTHOR_COMPARISONS = 10;
 
@@ -242,10 +257,13 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   const sightings = new Map<string, Sighting>();
 
   // Limit czasu całej analizy liczymy zegarem monotonicznym, niezależnym od wstrzykniętego `now`.
-  const deadline = performance.now() + (params.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS);
+  const startedAt = performance.now();
+  const totalMs = params.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
+  const deadline = startedAt + totalMs;
   let partial = false;
-  const expired = (what: string): boolean => {
-    if (performance.now() < deadline) return false;
+  /** `share`: jaka część limitu czasu przypada na dany rodzaj pracy — reszta zostaje na kolejne fazy. */
+  const expired = (what: string, share = 1): boolean => {
+    if (performance.now() < startedAt + totalMs * share) return false;
     if (!partial) log(`Przekroczono limit czasu całej analizy — ${what} i dalsze kroki pominięto; wynik jest częściowy.`);
     partial = true;
     return true;
@@ -347,6 +365,34 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     }
   };
 
+  // ---------- Dane blockchain: start, gdy tylko adres ma mocny ślad ----------
+
+  const resolveActivity = params.resolveActivity ?? firstWorkingProvider;
+  const chainLimited = createLimiter(CHAIN_CONCURRENCY);
+  const chainLimit = params.maxChainAddresses ?? DEFAULT_MAX_CHAIN_ADDRESSES;
+  const chainJobs = new Map<AddressGroup, Promise<void>>();
+  /** Uruchamia analizę blockchain adresu (raz); zwraca `undefined`, gdy limit adresów jest wyczerpany. */
+  const startChain = (group: AddressGroup): Promise<void> | undefined => {
+    const running = chainJobs.get(group);
+    if (running || chainJobs.size >= chainLimit) return running;
+    const job = chainLimited(async () => {
+      if (expired('analizę blockchain części adresów')) return;
+      try {
+        group.chain = await withTimeout(
+          (signal) => resolveActivity(params.chainProviders, group.network, group.address, { signal, log }),
+          // Limit obejmuje kolejne próby u wszystkich dostawców.
+          timeoutMs * Math.max(1, params.chainProviders.length),
+          params.signal,
+        );
+        if (!group.chain) log(`${group.address}: brak danych blockchain — adres pozostaje bez klasyfikacji.`);
+      } catch (error) {
+        log(`${group.address}: BŁĄD pobierania danych blockchain: ${errorText(error)}.`);
+      }
+    });
+    chainJobs.set(group, job);
+    return job;
+  };
+
   const addEvidence = (
     group: AddressGroup,
     doc: SourceDocument,
@@ -384,16 +430,48 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       matchedIdentifier: doc.matchedIdentifier,
     });
     capture(doc, contentHash);
+    // Mocny ślad: analiza łańcucha biegnie równolegle z dalszym wyszukiwaniem.
+    if (rules.base[doc.category] + rules.identityAdjustment[identity.match] >= EARLY_CHAIN_STRENGTH) void startChain(group);
   };
 
-  /** Pyta wszystkie łączniki akceptujące dany typ; błąd jednego nie zatrzymuje pozostałych. */
-  const search = async (identifier: Identifier): Promise<SourceDocument[]> => {
-    const accepting = params.connectors.filter((connector) => connector.accepts.includes(identifier.type));
+  /** Niepowiązani autorzy wymieniający identyfikator w źródłach wyszukiwawczych: identyfikator → autorzy. */
+  const citers = new Map<string, Set<string>>();
+  /** Identyfikatory, dla których przerwano zbieranie wzmianek (są powszechnie cytowane). */
+  const mentionStopped = new Set<string>();
+  const mentionStopAuthors = params.mentionStopAuthors ?? DEFAULT_MENTION_STOP_AUTHORS;
+
+  /**
+   * Pyta wszystkie łączniki akceptujące dany typ; błąd jednego nie zatrzymuje pozostałych.
+   * `directOnly` pomija źródła wyszukiwawcze (pytamy tylko źródła znające samą nazwę, np. rejestr ENS).
+   */
+  const search = async (identifier: Identifier, options: { timeShare?: number; directOnly?: boolean } = {}): Promise<SourceDocument[]> => {
+    const key = identifierKey(identifier);
+    const wanted = normalizeName(identifier.value);
+    const accepting = params.connectors.filter(
+      (connector) => connector.accepts.includes(identifier.type) && !(options.directOnly && isSearchSource(connector.id)),
+    );
     progress.connectorsTotal += accepting.length;
     const results = await Promise.all(
       accepting.map((connector) =>
         limited(async () => {
-          if (expired('wyszukiwanie w części źródeł')) return [];
+          if (expired('wyszukiwanie w części źródeł', options.timeShare ?? SEARCH_TIME_SHARE)) {
+            progress.connectorsDone++;
+            return [];
+          }
+          // Identyfikator wymienia już wielu niepowiązanych autorów — kolejne wzmianki niczego nie zmienią,
+          // a czas jest potrzebny na profile podmiotu i analizę łańcucha.
+          if (isSearchSource(connector.id) && (citers.get(key)?.size ?? 0) > mentionStopAuthors) {
+            if (!mentionStopped.has(key)) {
+              mentionStopped.add(key);
+              log(
+                `${identifier.type} „${identifier.value}”: wymienia go co najmniej ${citers.get(key)!.size} niepowiązanych autorów (próg ${mentionStopAuthors}) — ` +
+                  'dalsze źródła wyszukiwawcze pominięto dla tego identyfikatora.',
+              );
+            }
+            progress.connectorsDone++;
+            report();
+            return [];
+          }
           const context = (signal: AbortSignal): ConnectorContext => ({
             signal,
             log: (message) => log(`[${connector.id}] ${message}`),
@@ -405,6 +483,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
               params.signal,
             );
             log(`[${connector.id}] ${identifier.type} „${identifier.value}”: dokumentów ${found.length}.`);
+            if (isSearchSource(connector.id)) {
+              const authors = citers.get(key) ?? new Set<string>();
+              citers.set(key, authors);
+              for (const doc of found) {
+                const author = normalizeName(doc.author ?? '');
+                if (author && author !== wanted) authors.add(`${doc.service.toLowerCase()}|${author}`);
+              }
+            }
             return found;
           } catch (error) {
             log(`[${connector.id}] BŁĄD przy ${identifier.type} „${identifier.value}”: ${errorText(error)}. Źródło pominięte.`);
@@ -456,7 +542,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const rejected = cited.length - accepted.size;
     if (rejected > 0) {
       const services = new Set(cited.map((doc) => doc.service.toLowerCase())).size;
-      mentions.push({ identifier, documents: rejected, authors: authors.size, services });
+      mentions.push({ identifier, documents: rejected, authors: authors.size, services, ...(mentionStopped.has(identifierKey(identifier)) ? { atLeast: true } : {}) });
       log(
         `${identifier.type} „${identifier.value}”: ${rejected} publikacji ${authors.size} innych autorów w ${services} serwisach tylko wymienia ten identyfikator — ` +
           `to wzmianki${few ? '' : ' (identyfikator powszechnie cytowany)'}, nie profile podmiotu; nie przypisano ich podmiotowi.`,
@@ -483,7 +569,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       continue;
     }
     // Adres podany przez analityka jest analizowany także bez żadnej publikacji.
-    groupFor(valid.network, valid.address, valid.checksumVerified);
+    void startChain(groupFor(valid.network, valid.address, valid.checksumVerified));
     log(`Adres podany przez analityka: ${valid.address} (${valid.network}).`);
   }
 
@@ -537,6 +623,10 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       }
       if (trail.has(key)) continue;
 
+      // Nazwa ENS wymieniona w treści wpisu (a nie wskazana przez profil) często należy do kogoś innego:
+      // sprawdzamy ją tylko w źródłach znających samą nazwę i przyjmujemy, gdy prowadzi do adresu podmiotu.
+      const requireKnownAddress = identifier.type === 'ens_name' && doc.category !== 'own_profile' && doc.category !== 'cryptographic_proof';
+
       const withinDepth = step < depth;
       const withinLimit = inputKeys.size + [...trail.values()].filter((entry) => entry.followed).length < maxIdentifiers;
       const followed = withinDepth && withinLimit;
@@ -550,7 +640,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         followed,
       });
       if (followed) {
-        next.set(key, { identifier, match, distance: (identity.distance ?? 0) + 1, parent: doc.matchedIdentifier });
+        next.set(key, { identifier, match, distance: (identity.distance ?? 0) + 1, parent: doc.matchedIdentifier, ...(requireKnownAddress ? { requireKnownAddress } : {}) });
         log(`Odkryty identyfikator (krok ${step + 1}): ${identifier.type} „${identifier.value}” — wskazany w ${doc.url}.`);
       } else if (withinDepth && !limitLogged) {
         limitLogged = true;
@@ -562,10 +652,19 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   let frontier: Pending[] = personIdentifiers.map((identifier) => ({ identifier, match: 'exact_identifier', distance: 0 }));
   for (let step = 0; frontier.length > 0; step++) {
     const batches = await Promise.all(
-      frontier.map(async (item) => ({ item, docs: await search(item.identifier) })),
+      frontier.map(async (item) => ({ item, docs: await search(item.identifier, { directOnly: item.requireKnownAddress }) })),
     );
     const next = new Map<string, Pending>();
-    for (const { item, docs } of batches) {
+    for (const { item, docs: found } of batches) {
+      let docs = found;
+      if (item.requireKnownAddress) {
+        const leadsToSubject = (doc: SourceDocument) => extract(doc.text).some((address) => (groups.get(addressKey(address))?.evidence.size ?? 0) > 0);
+        docs = found.filter(leadsToSubject);
+        if (docs.length === 0) {
+          trail.get(identifierKey(item.identifier))!.followed = false;
+          log(`${item.identifier.type} „${item.identifier.value}” wymieniono w treści publikacji, ale nie prowadzi do adresu podmiotu — to cudza nazwa, pominięto.`);
+        }
+      }
       for (const doc of attributableDocuments(item.identifier, docs)) {
         // Dokument znany z wcześniejszego kroku wraca, bo sam podał identyfikator, po którym teraz
         // szukamy. To nie jest nowe potwierdzenie — zostaje pierwotna ocena.
@@ -576,7 +675,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
             ? { ...assessIdentity(doc, personIdentifiers), distance: 0 }
             : assessLinkedProfile(doc, personIdentifiers, item.match, { step, distance: item.distance, parent: item.parent });
         ingest(doc, identity, step);
-        collectDiscovered(doc, identity, step, next);
+        // Dalej śledzimy tylko identyfikatory z publikacji samego podmiotu — nie z cudzych wzmianek
+        // przyjętych ze źródła wyszukiwawczego na podstawie danych kontaktowych w treści.
+        if (!isSearchSource(doc.connectorId) || authorMatches(doc) || doc.identityMatch === 'verified_link') collectDiscovered(doc, identity, step, next);
       }
     }
     frontier = [...next.values()];
@@ -600,7 +701,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
   const checkOccurrences = async (group: AddressGroup) => {
     const key = `${group.network}:${group.address}`;
-    const occurrences = await search({ type: 'crypto_address', value: group.address });
+    const occurrences = await search({ type: 'crypto_address', value: group.address }, { timeShare: OCCURRENCE_TIME_SHARE });
     const candidateAuthors = new Set<string>();
     for (const doc of occurrences) {
       const hit = extract(doc.text).find((item) => `${item.network}:${item.address}` === key);
@@ -653,21 +754,6 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
   // ---------- Dane blockchain ----------
 
-  const resolveActivity = params.resolveActivity ?? firstWorkingProvider;
-  const fetchActivity = (group: AddressGroup) =>
-    limited(async () => {
-      try {
-        group.chain = await withTimeout(
-          (signal) => resolveActivity(params.chainProviders, group.network, group.address, { signal, log }),
-          // Limit obejmuje kolejne próby u wszystkich dostawców.
-          timeoutMs * Math.max(1, params.chainProviders.length),
-          params.signal,
-        );
-        if (!group.chain) log(`${group.address}: brak danych blockchain — adres pozostaje bez klasyfikacji.`);
-      } catch (error) {
-        log(`${group.address}: BŁĄD pobierania danych blockchain: ${errorText(error)}.`);
-      }
-    });
   // Analizę blockchain dostają najpierw adresy podane przez analityka i najlepiej udokumentowane.
   const evidenceStrength = (group: AddressGroup) =>
     Math.max(0, ...[...group.evidence.values()].map((item) => rules.base[item.category] + rules.identityAdjustment[item.identityMatch]));
@@ -680,18 +766,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       evidenceStrength(b) - evidenceStrength(a) ||
       b.evidence.size - a.evidence.size,
   );
-  const chainLimit = params.maxChainAddresses ?? DEFAULT_MAX_CHAIN_ADDRESSES;
-  const chainSkipped = new Set(ranked.slice(chainLimit));
-  if (chainSkipped.size > 0) {
-    log(`Adresów ${ranked.length}, limit analizy blockchain ${chainLimit} — ${chainSkipped.size} najsłabiej udokumentowanych pozostaje bez analizy łańcucha.`);
-  }
   report('chain');
-  await Promise.all(
-    ranked.slice(0, chainLimit).map(async (group) => {
-      if (expired('analizę blockchain części adresów')) chainSkipped.add(group);
-      else await fetchActivity(group);
-    }),
-  );
+  // Wolne miejsca w limicie dostają kolejne adresy z rankingu; część analiz mogła wystartować wcześniej.
+  for (const group of ranked) startChain(group);
+  await Promise.all(chainJobs.values());
+  const chainSkipped = new Set(ranked.filter((group) => !chainJobs.has(group) || (!group.chain && performance.now() >= deadline)));
+  if (ranked.length > chainJobs.size) {
+    log(`Adresów ${ranked.length}, limit analizy blockchain ${chainLimit} — ${ranked.length - chainJobs.size} najsłabiej udokumentowanych pozostaje bez analizy łańcucha.`);
+  }
 
   // ---------- Kontrahenci bez etykiety: czy ktoś opublikował ich adresy? ----------
 
@@ -706,7 +788,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   await Promise.all(
     counterparties.map(async (candidate) => {
       const key = addressKey(candidate);
-      for (const doc of await search({ type: 'crypto_address', value: candidate.address })) {
+      for (const doc of await search({ type: 'crypto_address', value: candidate.address }, { timeShare: OCCURRENCE_TIME_SHARE })) {
         if (!extract(doc.text).some((item) => addressKey(item) === key)) continue;
         const author = doc.author ? normalizeName(doc.author) : '';
         if (!author) continue;

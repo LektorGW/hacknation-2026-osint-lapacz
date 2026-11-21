@@ -171,7 +171,7 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
   const cited = [...input.mentions].sort((a, b) => b.authors - a.authors)[0];
   if (cited) {
     result.push({
-      text: `Identyfikator „${cited.identifier.value}” wymienia ${cited.authors} innych autorów w ${cited.services} ${plural(cited.services, 'serwisie', 'serwisach', 'serwisach')} (${cited.documents} publikacji) — to wzmianki o podmiocie, a nie jego profile; nie przypisano ich podmiotowi.`,
+      text: `Identyfikator „${cited.identifier.value}” wymienia ${cited.atLeast ? 'co najmniej ' : ''}${cited.authors} innych autorów w ${cited.services} ${plural(cited.services, 'serwisie', 'serwisach', 'serwisach')} (${cited.documents} publikacji) — to wzmianki o podmiocie, a nie jego profile; nie przypisano ich podmiotowi.`,
       layer: 'fact',
     });
   }

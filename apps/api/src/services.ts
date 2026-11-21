@@ -129,6 +129,16 @@ const KIND_BY_CLASS: Partial<Record<AddressClass, ServiceKind>> = {
 
 const EXTERNAL_KINDS: ServiceKind[] = ['exchange', 'p2p', 'payment_gateway', 'crypto_card'];
 
+/** Adres zerowy i adresy spalania: zapis emisji lub zniszczenia tokenów, nie kontrahent. */
+const TECHNICAL_ADDRESS = /^(?:0x0{40}|0x0{36}dead|0x0{35}dead0|0xdead0{36}|T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb)$/i;
+const TECHNICAL_LABEL = /adres zerowy|zero address|null address|burn|spalani|spaleni|emisja i spalanie/i;
+/** Kontrakt tokena jest nośnikiem przelewu, nie jego drugą stroną. */
+const TOKEN_CONTRACT_LABEL = /^(?:tether|usdt|usd coin|usdc|dai|binance usd|busd|wrapped|weth|wbtc|true ?usd|tusd)\b|\btoken(?: contract)?$|\(?stablecoin\)?$/i;
+
+/** Zbiorczy wpis dla kontraktów, których nie rozpoznano jako usługi. */
+export const CONTRACTS_LINK_ID = 'kontrakty-i-protokoly';
+const CONTRACTS_STRENGTH = 10;
+
 const INFERRED_LABEL = /adres wpłat giełdy „([^”]+)”/i;
 const INFERRED_WALLET = /portfela giełdy „[^”]+”\s*\(([^)\s]+)\)/i;
 
@@ -384,11 +394,16 @@ export function buildServiceLinks(input: ServiceLinkInput): ServiceLink[] {
   };
 
   const ownAddresses = new Set(input.subjectFindings.map(addressKey));
+  /** Przelewy z nierozpoznanymi kontraktami — trafią do jednego wpisu informacyjnego. */
+  const contracts: LinkTransfer[] = [];
+  const contractNetworks = new Set<Network>();
 
   for (const finding of input.subjectFindings) {
     const cashOuts = new Map<string, CashOutIndicator>(
       (finding.chain?.cashOuts ?? []).map((item) => [`${item.txid}|${item.counterparty}`, item]),
     );
+    // Kontrahent, do którego prowadzi wskaźnik wypłaty, jest usługą także przy przelewach w drugą stronę.
+    const cashOutParties = new Set((finding.chain?.cashOuts ?? []).map((item) => item.counterparty));
     for (const transfer of finding.chain?.transfers ?? []) {
       if (ownAddresses.has(addressKey({ network: finding.network, address: transfer.counterparty }))) continue;
       const cashOut = transfer.direction === 'out' ? cashOuts.get(`${transfer.txid}|${transfer.counterparty}`) : undefined;
@@ -398,9 +413,29 @@ export function buildServiceLinks(input: ServiceLinkInput): ServiceLink[] {
       const classKind = KIND_BY_CLASS[transfer.counterpartyClass];
       const fallbackKind = (cashOut ? KIND_BY_CASH_OUT[cashOut.kind] : undefined) ?? classKind ?? 'other';
       const known = label ? getCatalog().some((item) => item.pattern.test(label)) || input.matcher?.(label) !== undefined : false;
-      // Usługą jest kontrahent ze wskaźnikiem wypłaty, z klasą pośrednika albo o rozpoznanej nazwie.
       if (!cashOut && !inferred && !classKind && !known) continue;
       if (/^ENS:/i.test(label ?? '') && !cashOut) continue;
+      if (TECHNICAL_ADDRESS.test(transfer.counterparty) || TECHNICAL_LABEL.test(label ?? '')) continue;
+      // Usługą jest kontrahent ze wskaźnikiem wypłaty, giełda lub mikser według danych blockchain albo
+      // nazwa z listy usług. Pozostałe kontrakty (tokeny, hooki, nieznane protokoły) usługami nie są.
+      const recognized =
+        Boolean(cashOut) || inferred || known || cashOutParties.has(transfer.counterparty) || transfer.counterpartyClass === 'exchange' || transfer.counterpartyClass === 'mixer';
+      if (!recognized) {
+        if (!TOKEN_CONTRACT_LABEL.test(label ?? '')) {
+          contracts.push({
+            txid: transfer.txid,
+            time: transfer.time,
+            direction: transfer.direction,
+            asset: transfer.asset,
+            amount: transfer.amount,
+            subjectAddress: finding.address,
+            serviceAddress: transfer.counterparty,
+            explorerUrl: transfer.explorerUrl,
+          });
+          contractNetworks.add(finding.network);
+        }
+        continue;
+      }
 
       const service = label
         ? resolveService(label, fallbackKind, input.matcher)
@@ -507,9 +542,36 @@ export function buildServiceLinks(input: ServiceLinkInput): ServiceLink[] {
     });
   }
   // Najpierw usługi wypłat na waluty tradycyjne, w nich od najmocniejszego powiązania.
-  return links.sort(
+  links.sort(
     (a, b) => Number(isCashOutService(b.kind)) - Number(isCashOutService(a.kind)) || b.strength - a.strength || a.name.localeCompare(b.name, 'pl'),
   );
+  if (contracts.length > 0) {
+    contracts.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    const count = new Set(contracts.map((transfer) => transfer.serviceAddress)).size;
+    const outgoing = contracts.filter((transfer) => transfer.direction === 'out').length;
+    // Informacja zbiorcza na końcu listy: kontrakty nie są podmiotami, do których kieruje się zapytanie.
+    links.push({
+      id: CONTRACTS_LINK_ID,
+      name: `Kontrakty i protokoły (${count})`,
+      kind: 'defi',
+      networks: [...contractNetworks],
+      basis: [...(outgoing > 0 ? (['transfer_out'] as const) : []), ...(outgoing < contracts.length ? (['transfer_in'] as const) : [])],
+      strength: CONTRACTS_STRENGTH,
+      reasons: [
+        `Przelewy z ${count} ${plural(count, 'kontraktem', 'kontraktami', 'kontraktami')}, których nie rozpoznano jako giełdy, serwisu wymiany ani innej usługi z listy — wpis informacyjny o stałej, niskiej sile ${CONTRACTS_STRENGTH}.`,
+        'Kontrakt nie prowadzi kont klientów; nie jest adresatem zapytania.',
+      ],
+      inferredOnly: false,
+      firstSeen: contracts[0]!.time,
+      lastSeen: contracts.at(-1)!.time,
+      transfersOut: outgoing,
+      transfersIn: contracts.length - outgoing,
+      transfers: contracts,
+      mentions: [],
+      requestHints: [],
+    });
+  }
+  return links;
 }
 
 /** Jedno zdanie o powiązaniu z usługą — do kluczowych ustaleń i raportu. */

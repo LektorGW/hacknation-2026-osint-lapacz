@@ -149,3 +149,37 @@ test('teczka: usługi w kluczowych ustaleniach, priorytecie i grafie', async () 
   assert.equal(edge.weight, 100);
   assert.ok(dossier.graph.edges.some((item) => item.from === 'svc:kraken' && item.kind === 'transfer'));
 });
+
+test('kontrakty i adresy techniczne nie są usługami', async () => {
+  const contract = { counterpartyClass: 'smart_contract' as const };
+  const ZERO = '0x0000000000000000000000000000000000000000';
+  const HOOK = '0x4816c12A0000000000000000000000000000Fe2A';
+  const UNKNOWN = '0xAF6681cD000000000000000000000000BAbA765B';
+  const TOKEN = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+  const ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
+  const transfers = [
+    transfer(11, { counterparty: ZERO, counterpartyLabel: 'Adres zerowy (emisja i spalanie tokenów)', direction: 'in', time: '2024-01-01T00:00:00.000Z', amount: 5, asset: 'UNI', ...contract }),
+    transfer(12, { counterparty: HOOK, counterpartyLabel: 'CMDHook', direction: 'in', time: '2024-02-01T00:00:00.000Z', amount: 1, asset: 'ETH', ...contract }),
+    transfer(13, { counterparty: UNKNOWN, direction: 'out', time: '2024-03-01T00:00:00.000Z', amount: 2, asset: 'ETH', ...contract }),
+    // Kontrakt tokena jest nośnikiem przelewu, nie kontrahentem.
+    transfer(14, { counterparty: TOKEN, counterpartyLabel: 'Tether USD', direction: 'out', time: '2024-04-01T00:00:00.000Z', amount: 100, asset: 'USDT', ...contract }),
+    // Znany protokół wymiany z listy usług pozostaje usługą.
+    transfer(15, { counterparty: ROUTER, counterpartyLabel: 'Uniswap V2: Router 2', direction: 'out', time: '2024-05-01T00:00:00.000Z', amount: 3, asset: 'ETH', ...contract }),
+    transfer(16, { counterparty: WALLET_1, counterpartyLabel: 'Binance 14', time: '2024-06-01T00:00:00.000Z', amount: 0.3, counterpartyClass: 'exchange' }),
+  ];
+  const profile = fakeConnector('gitpub', 'gitpub.example', ['nick'], () => [{ url: 'https://gitpub.example/krypto_janek', author: 'krypto_janek', text: `Wsparcie: ${BTC_A}` }]);
+  const query = { identifiers: [nick] };
+  const dossier = dossierOf(await runAnalysis({ query, connectors: [profile], chainProviders: [chainWith({ [BTC_A]: { transfers } })] }), query);
+
+  assert.deepEqual(dossier.serviceLinks.map((link) => link.name), ['Binance', 'Uniswap', 'Kontrakty i protokoły (2)']);
+  const contracts = dossier.serviceLinks.at(-1)!;
+  assert.deepEqual([contracts.id, contracts.kind, contracts.strength], ['kontrakty-i-protokoly', 'defi', 10]);
+  // Dwa nierozpoznane kontrakty; adres zerowy i kontrakt tokena pominięte całkiem.
+  assert.deepEqual(contracts.transfers.map((item) => item.serviceAddress), [HOOK, UNKNOWN]);
+  assert.deepEqual([contracts.transfersIn, contracts.transfersOut], [1, 1]);
+  assert.deepEqual(contracts.requestHints, []);
+  assert.ok(contracts.reasons.some((reason) => reason.includes('nie jest adresatem zapytania')));
+  // Wpis zbiorczy nie jest węzłem grafu ani nie wpływa na priorytet.
+  assert.deepEqual(dossier.graph.nodes.filter((node) => node.kind === 'service').map((node) => node.label).sort(), ['Binance', 'Uniswap']);
+  assert.ok(dossier.totals.priorityReasons.some((reason) => reason.startsWith('Powiązania z usługami wypłat: 1,')));
+});

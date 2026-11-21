@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runAnalysis } from '../src/analysis.ts';
 import { createLimiter } from '../src/concurrency.ts';
-import { BTC_A, BTC_B, BTC_C, fakeConnector, fakeProvider } from './helpers.ts';
+import { BTC_A, BTC_B, BTC_C, ETH_A, fakeConnector, fakeProvider } from './helpers.ts';
 
 const nick = { type: 'nick' as const, value: 'krypto_janek' };
 
@@ -109,4 +109,106 @@ test('limit współbieżności: jednocześnie działa najwyżej tyle zadań, ile
   );
   assert.deepEqual(results, [2, 4, 6, 8, 10, 12]);
   assert.equal(peak, 2);
+});
+
+test('nazwa ENS z treści wpisu nie jest śledzona jako nazwa podmiotu, chyba że prowadzi do jego adresu', async () => {
+  const ens = { type: 'ens_name' as const, value: 'janek.eth' };
+  const resolver = fakeConnector('live-ens', 'ens.domains', ['ens_name'], (identifier) => {
+    const records: Record<string, string> = { 'janek.eth': ETH_A, 'foo.eth': BTC_B, 'janek-drugi.eth': ETH_A };
+    const address = records[identifier.value];
+    return address
+      ? [{ url: `https://app.ens.domains/${identifier.value}`, author: identifier.value, category: 'cryptographic_proof' as const, identityMatch: 'verified_link' as const, text: `Rekord adresu: ${address}`,
+          // Rekord podmiotu wskazuje jego konto — to identyfikator z profilu.
+          discoveredIdentifiers: identifier.value === 'janek.eth' ? [{ type: 'login' as const, value: 'janek_dev' }] : [] }]
+      : [];
+  });
+  const forum = fakeConnector('forum', 'forum.example', ['login'], () => [
+    {
+      url: 'https://forum.example/t/1',
+      author: 'janek_dev',
+      category: 'forum_post' as const,
+      text: 'Przykład: wyślij środki na foo.eth, a ja używam też janek-drugi.eth.',
+      discoveredIdentifiers: [{ type: 'ens_name' as const, value: 'foo.eth' }, { type: 'ens_name' as const, value: 'janek-drugi.eth' }],
+    },
+  ]);
+  // Wyszukiwarka forów nie może być pytana o nazwę z cudzej treści.
+  const deepSearch = fakeConnector('deep-search', 'inne.example', ['ens_name'], () => []);
+  const result = await runAnalysis({ query: { identifiers: [ens] }, connectors: [resolver, forum, deepSearch], chainProviders: [fakeProvider()] });
+
+  // Cudza nazwa: sprawdzona tylko w rejestrze, odrzucona, bez adresu i bez profilu.
+  assert.deepEqual(result.findings.map((finding) => finding.address), [ETH_A]);
+  assert.deepEqual(deepSearch.calls.map((call) => call.value), ['janek.eth']);
+  const byName = new Map(result.intel.trail.map((entry) => [entry.identifier.value, entry.followed]));
+  assert.deepEqual([byName.get('janek_dev'), byName.get('foo.eth'), byName.get('janek-drugi.eth')], [true, false, true]);
+  assert.ok(result.log.some((entry) => entry.message.includes('„foo.eth” wymieniono w treści publikacji, ale nie prowadzi do adresu podmiotu')));
+  assert.ok(!result.intel.sightings.some((item) => item.url.includes('foo.eth')));
+  // Druga nazwa rozwiązuje się na adres podmiotu — zostaje jako jego profil.
+  assert.ok(result.intel.sightings.some((item) => item.url === 'https://app.ens.domains/janek-drugi.eth'));
+});
+
+test('identyfikatory z cudzej wzmianki przyjętej po danych kontaktowych nie są śledzone', async () => {
+  const email = { type: 'email' as const, value: 'jan.kowalski@poczta.example' };
+  const deepSearch = fakeConnector('deep-search', 'forum.example', ['email', 'nick'], (identifier) =>
+    identifier.type === 'email'
+      ? [{ url: 'https://forum.example/t/9', author: 'ktos_inny', category: 'forum_post' as const, text: `Pisać na jan.kowalski@poczta.example, adres ${BTC_A}`, discoveredIdentifiers: [{ type: 'nick' as const, value: 'cudzy_nick' }] }]
+      : [],
+  );
+  const result = await runAnalysis({ query: { identifiers: [email] }, connectors: [deepSearch], chainProviders: [fakeProvider()] });
+
+  assert.equal(result.findings.length, 1);
+  assert.deepEqual(deepSearch.calls.map((call) => call.value), ['jan.kowalski@poczta.example']);
+  assert.deepEqual(result.intel.trail, []);
+});
+
+test('wzmianki: po przekroczeniu progu autorów kolejne źródła wyszukiwawcze są pomijane', async () => {
+  const ens = { type: 'ens_name' as const, value: 'janek.eth' };
+  const mentions = (service: string, count: number) =>
+    fakeConnector(`mon-${service}`, `${service}.example`, ['ens_name'], () =>
+      Array.from({ length: count }, (_, index) => ({ url: `https://${service}.example/p/${index}`, author: `fan_${service}_${index}`, category: 'forum_post' as const, identityMatch: 'name_only' as const, text: `podziwiam janek.eth (${index})` })),
+    );
+  const connectors = [mentions('a', 4), mentions('b', 4), mentions('c', 4), mentions('d', 4)];
+  // Jedno zapytanie naraz — kolejność źródeł jest wtedy pewna.
+  const result = await runAnalysis({ query: { identifiers: [ens] }, connectors, chainProviders: [], mentionStopAuthors: 6, concurrency: 1 });
+
+  // Po dwóch źródłach jest 8 autorów (> 6): trzecie i czwarte nie są już pytane.
+  assert.deepEqual(connectors.map((connector) => connector.calls.length), [1, 1, 0, 0]);
+  assert.deepEqual(result.intel.mentions, [{ identifier: ens, documents: 8, authors: 8, services: 2, atLeast: true }]);
+  assert.ok(result.log.some((entry) => entry.message.includes('co najmniej 8 niepowiązanych autorów (próg 6)')));
+  assert.equal(result.intel.partial, undefined);
+});
+
+test('analiza blockchain startuje równolegle z wyszukiwaniem, gdy adres ma mocny ślad', async () => {
+  const events: string[] = [];
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>((resolve) => (releaseSlow = resolve));
+  const profile = fakeConnector('gitpub', 'gitpub.example', ['nick'], (identifier) =>
+    identifier.value === 'krypto_janek'
+      ? [{ url: 'https://gitpub.example/krypto_janek', author: 'krypto_janek', text: `Wsparcie: ${BTC_A}`, discoveredIdentifiers: [{ type: 'nick' as const, value: 'drugi' }] }]
+      : [],
+  );
+  // Drugi krok wyszukiwania trwa długo — analiza łańcucha nie może na niego czekać.
+  const slow = fakeConnector('wolny', 'wolny.example', ['nick'], () => []);
+  const search = slow.search.bind(slow);
+  slow.search = async (identifier, context) => {
+    if (identifier.value === 'drugi') {
+      events.push('wolne wyszukiwanie: start');
+      await slowGate;
+      events.push('wolne wyszukiwanie: koniec');
+    }
+    return search(identifier, context);
+  };
+  const provider = {
+    ...fakeProvider(),
+    getActivity: async (network: 'bitcoin', address: string) => {
+      events.push('łańcuch: pobrano');
+      releaseSlow();
+      return fakeProvider().getActivity(network, address, { log() {} });
+    },
+  };
+  const result = await runAnalysis({ query: { identifiers: [nick] }, connectors: [profile, slow], chainProviders: [provider] });
+
+  // Dane łańcucha są gotowe, zanim skończy się wolne wyszukiwanie (które czeka właśnie na nie).
+  assert.ok(events.indexOf('łańcuch: pobrano') >= 0 && events.indexOf('łańcuch: pobrano') < events.indexOf('wolne wyszukiwanie: koniec'));
+  assert.equal(events.at(-1), 'wolne wyszukiwanie: koniec');
+  assert.equal(result.findings[0]!.chain?.profile.address, BTC_A);
 });

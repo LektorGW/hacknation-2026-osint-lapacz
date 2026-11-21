@@ -8,7 +8,7 @@ import { roundPln, shortAddress } from './format.ts';
 import { addressKey } from './intel.ts';
 import type { DiscoveryStep } from './intel.ts';
 import type { CashOutProof } from './proof.ts';
-import { isCashOutService, serviceIdOf, serviceKindLabel } from './services.ts';
+import { CONTRACTS_LINK_ID, isCashOutService, serviceIdOf, serviceKindLabel } from './services.ts';
 
 export interface GraphInput {
   subjectLabel: string;
@@ -101,6 +101,8 @@ export function buildGraph(input: GraphInput): { nodes: GraphNode[]; edges: Grap
 
   const maxPln = Math.max(1, ...input.serviceLinks.map((link) => (link.outPln ?? 0) + (link.inPln ?? 0)));
   for (const link of input.serviceLinks) {
+    // Zbiorczy wpis „Kontrakty i protokoły” jest informacją, nie usługą — nie rysujemy go.
+    if (link.id === CONTRACTS_LINK_ID) continue;
     const id = `svc:${link.id}`;
     addNode({ id, kind: 'service', label: link.name, sublabel: serviceKindLabel(link.kind), score: link.strength });
     const findingOf = (address: string) => input.findings.find((item) => item.address === address);

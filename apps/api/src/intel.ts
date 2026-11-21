@@ -70,6 +70,8 @@ export interface MentionSummary {
   documents: number;
   authors: number;
   services: number;
+  /** Zbieranie wzmianek przerwano po przekroczeniu progu — liczby są dolnym oszacowaniem („co najmniej”). */
+  atLeast?: boolean;
 }
 
 export interface RunIntel {

@@ -11,9 +11,10 @@ import type { CaseSummary, Storage } from './storage.ts';
 export type RunDepth = 'standard' | 'deep';
 
 /** Limity analizy w obu trybach — jawne, pokazywane przez API. */
-export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAddresses: number; requestTimeoutMs: number; totalTimeoutMs: number }> = {
-  standard: { discoveryDepth: 3, maxChainAddresses: 15, requestTimeoutMs: 20_000, totalTimeoutMs: 120_000 },
-  deep: { discoveryDepth: 4, maxChainAddresses: 40, requestTimeoutMs: 45_000, totalTimeoutMs: 240_000 },
+export const DEPTH_LIMITS: Record<RunDepth, { discoveryDepth: number; maxChainAddresses: number; requestTimeoutMs: number; totalTimeoutMs: number; concurrency: number }> = {
+  standard: { discoveryDepth: 3, maxChainAddresses: 15, requestTimeoutMs: 20_000, totalTimeoutMs: 120_000, concurrency: 6 },
+  // Tryb głęboki pyta setki różnych hostów — większa współbieżność nie obciąża żadnego z nich bardziej.
+  deep: { discoveryDepth: 4, maxChainAddresses: 40, requestTimeoutMs: 45_000, totalTimeoutMs: 240_000, concurrency: 24 },
 };
 
 /** Wyszukiwarka obiegająca setki forów potrzebuje więcej czasu niż pojedyncze źródło. */
@@ -102,6 +103,7 @@ export function createRunEngine(deps: RunEngineDeps): RunEngine {
         connectorTimeouts: CONNECTOR_TIMEOUTS,
         normalizeText: deps.normalizeText,
         totalTimeoutMs: limits.totalTimeoutMs,
+        concurrency: limits.concurrency,
         log: (message) => deps.log?.(run.id, message),
         onProgress: (step) => update(step),
       });
