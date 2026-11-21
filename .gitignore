@@ -11,3 +11,8 @@ build/
 .vscode/
 .data/
 .data-uszkodzona-*/
+
+# Migawka lokalnej bazy (dane spraw) — nigdy do repozytorium
+*.migawka.tar.gz
+*.migawka.tar.gz.tmp
+.data*/
