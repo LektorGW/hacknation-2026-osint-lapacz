@@ -158,6 +158,9 @@ export function resolveService(
   return { name: normalizeServiceLabel(label), kind: externalKind ?? fallbackKind };
 }
 
+/** Identyfikator usługi w teczce (`ServiceLink.id`) dla nazwy lub etykiety z danych blockchain. */
+export const serviceIdOf = (label: string, matcher?: ExternalServiceMatcher): string => serviceId(resolveService(label, 'other', matcher).name);
+
 const serviceId = (name: string): string =>
   name
     .toLowerCase()
@@ -419,6 +422,34 @@ export function buildServiceLinks(input: ServiceLinkInput): ServiceLink[] {
         ...(inferred ? { viaAddress: transfer.counterparty } : {}),
         explorerUrl: transfer.explorerUrl,
         inferred,
+      });
+    }
+  }
+
+  // Ścieżki wielokrokowe: środki dotarły do usługi przez adresy pośrednie. Pierwszy krok
+  // wychodzi z adresu podmiotu; jeśli nie jest już ujęty jako przelew do tej usługi, dopisujemy go.
+  for (const finding of input.subjectFindings) {
+    for (const trail of finding.chain?.trails ?? []) {
+      const first = trail.hops[0];
+      const last = trail.hops.at(-1);
+      if (!first || !last || trail.hops.length < 2) continue;
+      const service = resolveService(trail.serviceName, KIND_BY_CASH_OUT[trail.serviceKind], input.matcher);
+      const item = accumulator(service.name, service.kind);
+      if (item.transfers.some((transfer) => transfer.txid === first.txid)) continue;
+      item.networks.add(trail.network);
+      item.basis.add('deposit_address');
+      item.transfers.push({
+        txid: first.txid,
+        time: first.time,
+        direction: 'out',
+        asset: trail.asset,
+        amount: trail.amount,
+        ...(trail.valuePln !== undefined ? { valuePln: trail.valuePln } : {}),
+        subjectAddress: trail.sourceAddress,
+        serviceAddress: last.to,
+        viaAddress: first.to,
+        explorerUrl: first.explorerUrl,
+        inferred: true,
       });
     }
   }

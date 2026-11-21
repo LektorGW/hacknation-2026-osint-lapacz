@@ -1,7 +1,9 @@
 // Punkt startowy API: jedyne miejsce, w którym podłączane są prawdziwe łączniki
 // źródeł i dostawcy danych blockchain. Konfiguracja wyłącznie ze zmiennych środowiskowych.
 
-import { createChainProviders, getActivityFromProviders, matchService } from '@olcys/chain';
+import * as ai from '@olcys/ai';
+import * as chain from '@olcys/chain';
+import type { AiAssistant, ChainProvider } from '@olcys/core';
 import * as sources from '@olcys/sources';
 import { buildApp } from './app.ts';
 import { createDriverFromEnv, createStorage } from './storage.ts';
@@ -28,19 +30,59 @@ const monitorConnectors =
     ? [...new Set([...registered, ...connectors.filter((connector) => connector.id.startsWith('sandbox-'))])]
     : undefined;
 
+// Tryb głęboki dostawców blockchain (dłuższe ścieżki środków). Starsza wersja modułu
+// pomija nieznaną opcję — wtedy analiza głęboka korzysta z tych samych danych co standardowa.
+const createProviders = chain.createChainProviders as (config: Record<string, unknown>) => ChainProvider[];
+
+// Model językowy jest opcjonalny: brak konfiguracji w zmiennych środowiskowych = brak modelu.
+const aiConfigFromEnv = (ai as { aiConfigFromEnv?: (source: NodeJS.ProcessEnv) => unknown }).aiConfigFromEnv;
+const createAiAssistant = (ai as { createAiAssistant?: (config: unknown) => AiAssistant | null }).createAiAssistant;
+const aiConfig = typeof aiConfigFromEnv === 'function' ? aiConfigFromEnv(env) : null;
+const assistant = aiConfig && typeof createAiAssistant === 'function' ? createAiAssistant(aiConfig) : null;
+// Streszczenie całej teczki trwa dłużej niż odczyt jednej publikacji — osobny, dłuższy limit czasu.
+const summaryAssistant = assistant && typeof createAiAssistant === 'function' ? createAiAssistant({ ...(aiConfig as object), timeoutMs: 90_000 }) : null;
+// Fakty do streszczenia są anonimizowane, chyba że model działa na tej samej maszynie.
+const aiBaseUrl = String((aiConfig as { baseUrl?: string } | null)?.baseUrl ?? '');
+const aiLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(aiBaseUrl);
+const normalizeText = (sources as { normalizeAddressText?: (text: string) => string }).normalizeAddressText;
+
 const app = await buildApp({
   storage,
   connectors,
   monitorConnectors,
-  chainProviders: createChainProviders({ sandboxUrl, enableLive }),
-  resolveActivity: getActivityFromProviders,
-  matchService,
+  chainProviders: createProviders({ sandboxUrl, enableLive }),
+  deepChainProviders: createProviders({ sandboxUrl, enableLive, depth: 'deep' }),
+  resolveActivity: chain.getActivityFromProviders,
+  matchService: chain.matchService,
+  ai: assistant,
+  summaryAi: summaryAssistant,
+  aiLocal,
+  normalizeText: typeof normalizeText === 'function' ? normalizeText : undefined,
+  corpus: {
+    ...(env.CORPUS_RETENTION_DAYS ? { retentionDays: Number(env.CORPUS_RETENTION_DAYS) } : {}),
+    ...(env.CORPUS_MAX_ROWS ? { maxRows: Number(env.CORPUS_MAX_ROWS) } : {}),
+  },
   logger: true,
 });
 app.addHook('onClose', () => storage.close());
 
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => void app.close());
+// Łagodne zamykanie: najpierw Fastify (dokańcza żądania, zatrzymuje monitoring i analizy w tle),
+// potem — w `onClose` — sterownik bazy. Bez tego wbudowana baza PGlite może zostać uszkodzona.
+let closing = false;
+const shutdown = (reason: string) => {
+  if (closing) return;
+  closing = true;
+  app.log.info(`Zamykanie (${reason}): kończenie przebiegów i zamykanie bazy.`);
+  app
+    .close()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      app.log.error(error, 'Zamknięcie nie powiodło się.');
+      process.exit(1);
+    });
+};
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) {
+  process.on(signal, () => shutdown(signal));
 }
 
 await app.listen({ port, host: env.API_HOST ?? '127.0.0.1' });

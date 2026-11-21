@@ -18,6 +18,7 @@ import type { AddressReplacement } from './diff.ts';
 import type { DossierFinding, DossierView } from './dossier.ts';
 import { formatAmount as amount, formatPln as pln, shortAddress as short } from './format.ts';
 import { NETWORK_LABEL, STYLE, calc, dateTime, esc, fact, inference, layerTag, link } from './report-html.ts';
+import { renderProofSection } from './report-proof.ts';
 import { renderServiceSection } from './report-service.ts';
 import type { CaseSummary } from './storage.ts';
 
@@ -323,6 +324,12 @@ function renderRejected(finding: DossierFinding): string {
 function renderKeyFindings(dossier: DossierView): string {
   return `<div class="ustalenia">
     <h3>Kluczowe ustalenia</h3>
+    ${dossier.partial ? '<p><strong>Uwaga: analiza została przerwana limitem czasu — wynik jest częściowy.</strong></p>' : ''}
+    ${
+      dossier.summary
+        ? `<p><em>Streszczenie wygenerowane przez model językowy (${esc(dossier.summary.model)}, wersja polecenia ${esc(dossier.summary.promptVersion)}) z ustaleń poniżej — nie jest samodzielnym ustaleniem:</em><br>${esc(dossier.summary.text)}</p>`
+        : ''
+    }
     <ol>${dossier.keyFindings.map((item) => `<li>${layerTag(item.layer)} ${esc(item.text)}</li>`).join('')}</ol>
     <p><span class="priorytet">Priorytet sprawy: ${dossier.totals.priority}/100</span></p>
     <ul>${dossier.totals.priorityReasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>
@@ -500,6 +507,9 @@ ${renderKeyFindings(dossier)}
 
 <h2>Ustalenie osoby</h2>
 ${renderPersons(dossier)}
+
+<h2>Dowód spieniężenia</h2>
+${renderProofSection(dossier.cashOutProof)}
 
 <h2>Powiązania z giełdami, portfelami i usługami</h2>
 ${renderServiceSection(dossier.serviceLinks)}

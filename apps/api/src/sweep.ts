@@ -43,7 +43,7 @@ interface AuthorGroup {
 }
 
 /** Zależności pełnej analizy jednego autora — wspólne dla przeglądu źródeł i monitoringu. */
-export interface AuthorAnalysisParams extends Pick<AnalysisParams, 'chainProviders' | 'resolveActivity' | 'rules' | 'timeoutMs' | 'signal'> {
+export interface AuthorAnalysisParams extends Pick<AnalysisParams, 'chainProviders' | 'resolveActivity' | 'rules' | 'timeoutMs' | 'signal' | 'ai' | 'normalizeText'> {
   connectors: SourceConnector[];
   now?: () => Date;
   matchService?: ExternalServiceMatcher;
@@ -69,6 +69,8 @@ export async function analyzeAuthor(
     rules: params.rules,
     timeoutMs: params.timeoutMs,
     signal: params.signal,
+    ai: params.ai,
+    normalizeText: params.normalizeText,
     now,
   });
   const finishedAt = now().toISOString();

@@ -73,7 +73,7 @@ test('sprawa → analiza → raport HTML i pakiet JSON', async () => {
   const run = runResponse.json();
   assert.equal(run.status, 'completed');
   // Bez wskazania łączników działają tylko domyślnie włączone.
-  assert.deepEqual(run.connectors, ['github']);
+  assert.deepEqual(run.connectors, ['github', 'corpus']);
   assert.deepEqual(run.findings.map((finding: { address: string }) => finding.address).sort(), [BTC_A, BTC_B, BTC_EXCHANGE].sort());
   assert.equal(run.findings.at(-1).address, BTC_EXCHANGE);
 

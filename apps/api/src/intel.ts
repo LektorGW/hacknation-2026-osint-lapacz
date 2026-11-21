@@ -53,6 +53,25 @@ export interface DiscoveryStep {
   followed: boolean;
 }
 
+/** Porównanie stylu wypowiedzi dwóch profili przez model językowy — słaba przesłanka. */
+export interface AuthorComparison {
+  /** Identyfikatory profili (`ProfileCard.id`). */
+  a: string;
+  b: string;
+  /** Na ile (0–100) wypowiedzi mógł napisać ten sam autor. */
+  likelihood: number;
+  reasons: string[];
+  model: string;
+}
+
+/** Identyfikator wymieniany w publikacjach innych osób — wzmianki, nie profile podmiotu. */
+export interface MentionSummary {
+  identifier: Identifier;
+  documents: number;
+  authors: number;
+  services: number;
+}
+
 export interface RunIntel {
   version: 1;
   discoveryDepth: number;
@@ -60,6 +79,12 @@ export interface RunIntel {
   trail: DiscoveryStep[];
   /** Kontrahenci bez etykiety sprawdzeni w źródłach (`network:address`). */
   checkedCounterparties: string[];
+  /** Wyniki porównań autorów dla par profili o wiązaniu „możliwym, ale niepotwierdzonym”. */
+  authorComparisons?: AuthorComparison[];
+  /** Analiza przerwana limitem czasu — wynik częściowy. */
+  partial?: boolean;
+  /** Wzmianki o identyfikatorach podmiotu w publikacjach innych autorów (nieprzypisane podmiotowi). */
+  mentions?: MentionSummary[];
 }
 
 export const sightingKey = (item: { url: string; archivedAt?: string }): string => `${item.url}|${item.archivedAt ?? ''}`;

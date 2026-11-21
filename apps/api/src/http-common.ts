@@ -3,8 +3,11 @@
 // i moduły tras nie importowały się nawzajem.
 
 import { readFileSync } from 'node:fs';
-import type { AnalysisRun, ChainProvider, Identifier, ScoreRules, SourceConnector } from '@olcys/core';
+import type { AiAssistant, AnalysisRun, ChainProvider, Identifier, ScoreRules, SourceConnector } from '@olcys/core';
+import type { AiUsage } from './ai-rules.ts';
 import type { ActivityResolver } from './analysis.ts';
+import type { CorpusSettings } from './corpus.ts';
+import type { DEPTH_LIMITS, RunDepth, RunEngine } from './runs.ts';
 import type { DossierView } from './dossier.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { Monitor, MonitorTimers } from './monitor.ts';
@@ -20,6 +23,20 @@ export interface AppDeps {
   rules?: ScoreRules;
   /** Rozpoznawanie usług po etykiecie adresu (np. `matchService` z `@olcys/chain`); bez niego działa lista lokalna. */
   matchService?: ExternalServiceMatcher;
+  /** Dostawcy danych blockchain dla analizy głębokiej (dłuższe ścieżki środków); domyślnie `chainProviders`. */
+  deepChainProviders?: ChainProvider[];
+  /** Model językowy (opcjonalny). Bez niego wszystko liczą same reguły. */
+  ai?: AiAssistant | null;
+  /** Asystent do streszczeń (np. z dłuższym limitem czasu); domyślnie `ai`. */
+  summaryAi?: AiAssistant | null;
+  /** Model działa na tej samej maszynie — fakty do streszczenia nie muszą być anonimizowane. */
+  aiLocal?: boolean;
+  /** Normalizacja nietypowych zapisów adresów w treści przed ich wykrywaniem. */
+  normalizeText?: (text: string) => string;
+  /** Przechowywanie indeksu publikacji: liczba dni i limit wierszy. */
+  corpus?: Partial<CorpusSettings>;
+  /** Nadpisanie limitów analizy (testy). */
+  runLimits?: Partial<(typeof DEPTH_LIMITS)[RunDepth]>;
   /** Źródła objęte cyklicznym monitoringiem; domyślnie wszystkie łączniki z metodą `discover`. */
   monitorConnectors?: SourceConnector[];
   /** Podmiana odliczania czasu harmonogramu monitoringu (testy). */
@@ -62,8 +79,12 @@ export interface RouteContext {
   requireRun(id: string): Promise<AnalysisRun>;
   connectorInfo(): ConnectorInfo[];
   /** Łączniki wskazane w żądaniu albo domyślnie włączone; nieznany identyfikator to błąd 400. */
-  selectConnectors(ids?: string[]): SourceConnector[];
-  executeRun(caseSummary: CaseSummary, connectorIds?: string[]): Promise<AnalysisRun>;
+  selectConnectors(ids?: string[], depth?: RunDepth): SourceConnector[];
+  executeRun(caseSummary: CaseSummary, connectorIds?: string[], depth?: RunDepth): Promise<AnalysisRun>;
+  runs: RunEngine;
+  /** Model językowy z licznikiem wywołań; `undefined`, gdy nie jest skonfigurowany. */
+  ai?: { assistant: AiAssistant; usage: AiUsage };
+  corpusSettings: CorpusSettings;
   /** Sprawdza i porządkuje identyfikatory z żądania. */
   cleanIdentifiers(identifiers: Identifier[]): Identifier[];
   /** Teczka analizy z pamięci podręcznej albo złożona od nowa. */

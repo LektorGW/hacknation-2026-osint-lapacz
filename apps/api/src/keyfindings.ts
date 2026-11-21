@@ -4,12 +4,18 @@
 
 import type { Dossier, Finding, PersonCandidate, ProfileCard, RelatedPerson, ServiceLink, SourceCategory } from '@olcys/core';
 import type { AddressReplacement } from './diff.ts';
-import { formatDate, plural, roundPln, shortAddress } from './format.ts';
+import { formatAmount, formatDate, plural, roundPln, shortAddress } from './format.ts';
+import type { MentionSummary } from './intel.ts';
+import type { CashOutProof } from './proof.ts';
 import { describeServiceLink, isCashOutService } from './services.ts';
 
 type KeyFinding = Dossier['keyFindings'][number];
 
 export interface KeyFindingsInput {
+  /** Wzmianki o identyfikatorach podmiotu u innych autorów. */
+  mentions: MentionSummary[];
+  /** Dowód spieniężenia — gdy jest, jego zdania idą zaraz po ustaleniu osoby. */
+  proofs: CashOutProof[];
   persons: PersonCandidate[];
   profiles: ProfileCard[];
   serviceLinks: ServiceLink[];
@@ -84,6 +90,30 @@ function serviceSentences(links: ServiceLink[]): KeyFinding[] {
   return result;
 }
 
+/** Zdania o dowodzie spieniężenia: wiele ścieżek z jednego adresu do jednej usługi to jedno zdanie. */
+function proofFindings(proofs: CashOutProof[]): KeyFinding[] {
+  const groups = new Map<string, CashOutProof[]>();
+  for (const proof of proofs) {
+    const key = `${proof.address}|${proof.serviceName}`;
+    groups.set(key, [...(groups.get(key) ?? []), proof]);
+  }
+  return [...groups.values()].slice(0, 2).map((group) => {
+    const [best] = group;
+    if (group.length === 1) return { text: best!.statement, layer: best!.layer };
+    const assets = new Set(group.map((proof) => proof.trail.asset));
+    const amount = assets.size === 1 ? ` łącznie ${formatAmount(group.reduce((sum, proof) => sum + proof.trail.amount, 0))} ${best!.trail.asset}` : '';
+    const valued = group.filter((proof) => proof.trail.valuePln !== undefined);
+    const value = valued.length > 0 ? ` (ok. ${roundPln(valued.reduce((sum, proof) => sum + proof.trail.valuePln!, 0))})` : '';
+    const lowest = Math.min(...group.map((proof) => proof.combinedConfidence));
+    return {
+      text:
+        `Udokumentowano ${group.length} ${plural(group.length, 'przekazanie', 'przekazania', 'przekazań')}${amount}${value} z adresu ${shortAddress(best!.address)} do usługi ${best!.serviceName} — ` +
+        `łączna pewność ustalenia ${lowest === best!.combinedConfidence ? `${lowest}%` : `od ${lowest}% do ${best!.combinedConfidence}%`}.`,
+      layer: group.some((proof) => proof.layer === 'inference') ? ('inference' as const) : ('calculation' as const),
+    };
+  });
+}
+
 function addressSentence(best: (Finding & { subjectProbability?: number }) | undefined): KeyFinding[] {
   if (!best || best.evidence.length === 0) return [];
   const places = [...new Set(best.evidence.map((item) => `${PLACE[item.category]} ${item.service}`))];
@@ -100,7 +130,8 @@ function addressSentence(best: (Finding & { subjectProbability?: number }) | und
 export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
   const active = input.findings.filter((finding) => !finding.confidence.excluded);
   const best = [...active].sort((a, b) => b.confidence.score - a.confidence.score)[0];
-  const result: KeyFinding[] = [...personSentences(input), ...serviceSentences(input.serviceLinks), ...addressSentence(best)];
+  const proofSentences = proofFindings(input.proofs);
+  const result: KeyFinding[] = [...personSentences(input), ...proofSentences, ...serviceSentences(input.serviceLinks), ...addressSentence(best)];
 
   const years = Object.entries(input.cashOutPlnByYear).sort(([a], [b]) => a.localeCompare(b));
   const total = years.reduce((sum, [, value]) => sum + value, 0);
@@ -134,6 +165,14 @@ export function buildKeyFindings(input: KeyFindingsInput): KeyFinding[] {
     result.push({
       text: `Wskazano ${input.relatedPersons.length} ${plural(input.relatedPersons.length, 'osobę potencjalnie powiązaną', 'osoby potencjalnie powiązane', 'osób potencjalnie powiązanych')} (najsilniej: „${top.handle}”, siła ${top.strength}/100) — to wskazówka do weryfikacji, nie ustalenie.`,
       layer: 'inference',
+    });
+  }
+
+  const cited = [...input.mentions].sort((a, b) => b.authors - a.authors)[0];
+  if (cited) {
+    result.push({
+      text: `Identyfikator „${cited.identifier.value}” wymienia ${cited.authors} innych autorów w ${cited.services} ${plural(cited.services, 'serwisie', 'serwisach', 'serwisach')} (${cited.documents} publikacji) — to wzmianki o podmiocie, a nie jego profile; nie przypisano ich podmiotowi.`,
+      layer: 'fact',
     });
   }
 

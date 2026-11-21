@@ -18,9 +18,13 @@ import type {
   MonitorStatus,
   SourceConnector,
   SourceDocument,
+  TextInsight,
   WatchHit,
 } from '@olcys/core';
+import { AI_RULES } from './ai-rules.ts';
 import { mapLimit } from './concurrency.ts';
+import { pruneCorpus, toCorpusDocument } from './corpus.ts';
+import type { CorpusSettings } from './corpus.ts';
 import { normalize } from './identity.ts';
 import { SIGNAL_RULES, polishNexus, suspicion } from './signals.ts';
 import type { Storage } from './storage.ts';
@@ -37,6 +41,8 @@ export interface MonitorDeps extends Omit<AuthorAnalysisParams, 'signal' | 'now'
   storage: Storage;
   /** Źródła objęte monitoringiem; domyślnie wszystkie łączniki z metodą `discover`. */
   monitorConnectors?: SourceConnector[];
+  /** Przechowywanie indeksu publikacji; bez tego pobrane publikacje nie są zapisywane. */
+  corpus?: CorpusSettings;
   now: () => Date;
   timers?: MonitorTimers;
   log?: (message: string, error?: unknown) => void;
@@ -79,6 +85,48 @@ export interface Monitor {
   start(): Promise<void>;
   /** Zatrzymuje harmonogram i czeka na koniec trwającego przebiegu (przerywając analizy). */
   stop(): Promise<void>;
+}
+
+/** Trafienie z odczytem modelu językowego (lokalne rozszerzenie kontraktu `WatchHit`). */
+export type MonitorHit = WatchHit & {
+  /** Tłumaczenie treści na polski, gdy publikacja jest w innym języku (z modelu). */
+  translationPl?: string;
+  insight?: TextInsight;
+};
+
+/**
+ * Łączy odczyt modelu z ocenami z reguł: związek z Polską to większa z dwóch ocen (z przesłankami
+ * obu), a oferta odczytana przez model uzupełnia sygnały obrotu. Wszystko, co pochodzi z modelu,
+ * jest tak oznaczone.
+ */
+export function mergeInsight(hit: WatchHit, insight: TextInsight): MonitorHit {
+  const source = `Model ${insight.model}`;
+  const merged: MonitorHit = { ...hit, insight };
+  if (insight.polishNexus) {
+    merged.polishNexus = {
+      score: Math.max(hit.polishNexus.score, insight.polishNexus.score),
+      reasons: [...hit.polishNexus.reasons, ...insight.polishNexus.reasons.map((reason) => `${source}: ${reason}`)],
+    };
+  }
+  if (insight.offer) {
+    const { offer } = insight;
+    const side = { sell: 'sprzedaż', buy: 'kupno', exchange: 'wymiana', accepts_payment: 'przyjmowanie płatności' }[offer.side];
+    const details = [
+      offer.amount !== undefined ? `kwota ${offer.amount.toLocaleString('pl-PL')}${offer.currency ? ` ${offer.currency}` : offer.asset ? ` ${offer.asset}` : ''}` : offer.asset,
+      offer.paymentMethods.length > 0 ? `płatność: ${offer.paymentMethods.join(', ')}` : undefined,
+      offer.location ? `miejscowość: ${offer.location}` : undefined,
+    ].filter(Boolean);
+    // Punkty za ofertę dolicza się tylko wtedy, gdy reguły same jej nie wykryły.
+    const missed = !hit.suspicion.reasons.some((reason) => reason.startsWith('Oferta kupna'));
+    const points = missed ? SIGNAL_RULES.suspicionWeights.tradeOffer! : 0;
+    merged.suspicion = {
+      score: Math.min(100, hit.suspicion.score + points),
+      reasons: [...hit.suspicion.reasons, `${source}: oferta (${side})${details.length > 0 ? ` — ${details.join('; ')}` : ''}${insight.quote ? `. Cytat: „${insight.quote}”` : ''}${points > 0 ? ` (+${points})` : ''}`],
+    };
+  }
+  if (hit.language === 'und' && insight.language) merged.language = insight.language;
+  if (insight.translationPl) merged.translationPl = insight.translationPl;
+  return merged;
 }
 
 export class UnknownSourceError extends Error {}
@@ -126,6 +174,8 @@ export function createMonitor(deps: MonitorDeps): Monitor {
   const log = deps.log ?? (() => {});
   const sources = (deps.monitorConnectors ?? deps.connectors).filter(canDiscover);
   const thresholds = SIGNAL_RULES.thresholds;
+  const normalizeText = deps.normalizeText ?? ((text: string) => text);
+  const extract = (text: string) => extractAddresses(normalizeText(text));
 
   let current: Promise<WatchHit[]> | undefined;
   let timer: unknown;
@@ -215,13 +265,17 @@ export function createMonitor(deps: MonitorDeps): Monitor {
 
     // Trafienia dotknięte w tym przebiegu: klucz autora → trafienie i informacja, czy jest nowe.
     const touched = new Map<string, { hit: WatchHit; created: boolean }>();
+    /** Publikacja, z której pochodzi bieżąca wizytówka trafienia — do odczytu przez model. */
+    const leadDocument = new Map<string, SourceDocument>();
     for (const { source, documents } of batches) {
       const unseen = new Set(await storage.filterUnseenUrls(documents.map((doc) => doc.url)));
       const stats = state.sources[source.id]!;
+      const fresh: SourceDocument[] = [];
       for (const doc of documents) {
         if (!unseen.delete(doc.url)) continue;
+        fresh.push(doc);
         stats.documentsSeen++;
-        const addresses = extractAddresses(doc.text).map((item) => ({ address: item.address, network: item.network }));
+        const addresses = extract(doc.text).map((item) => ({ address: item.address, network: item.network }));
         const nexus = polishNexus(doc);
         const suspect = suspicion(doc);
         const signalled = nexus.score >= thresholds.hitPolishNexus && suspect.score >= thresholds.hitSuspicion;
@@ -239,7 +293,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
           title: doc.title,
           ...(author ? { author } : {}),
           ...(doc.publishedAt ? { publishedAt: doc.publishedAt } : {}),
-          excerpt: (extractAddresses(doc.text)[0]?.context ?? doc.text).replace(/\s+/g, ' ').trim().slice(0, 300),
+          excerpt: (extract(doc.text)[0]?.context ?? doc.text).replace(/\s+/g, ' ').trim().slice(0, 300),
           language: nexus.language,
           addresses,
           polishNexus: { score: nexus.score, reasons: nexus.reasons },
@@ -248,12 +302,14 @@ export function createMonitor(deps: MonitorDeps): Monitor {
         };
         if (!known) {
           touched.set(key, { hit: candidate, created: true });
+          leadDocument.set(key, doc);
           stats.hits++;
           continue;
         }
         // Kolejny post tego samego autora: zostaje wyżej oceniona publikacja, adresy się sumują.
         const previous = known.hit;
         const lead = sumOf(candidate) > sumOf(previous) ? candidate : previous;
+        if (lead === candidate) leadDocument.set(key, doc);
         const merged = [...previous.addresses];
         for (const item of addresses) {
           if (!merged.some((existing) => existing.address === item.address)) merged.push(item);
@@ -271,7 +327,27 @@ export function createMonitor(deps: MonitorDeps): Monitor {
           },
         });
       }
+      // Każda nowa publikacja trafia do indeksu własnego — także ta, która nie jest trafieniem.
+      if (deps.corpus) await storage.saveCorpusDocuments(fresh.map((doc) => toCorpusDocument(doc, normalizeText)));
       await storage.markUrlsSeen(documents.map((doc) => doc.url), startedAt);
+    }
+
+    // Model językowy (opcjonalny) czyta najwyżej ocenione trafienia; jego odczyt uzupełnia oceny z reguł.
+    if (deps.ai) {
+      const { ai } = deps;
+      const queue = [...touched.entries()]
+        .filter(([key]) => leadDocument.has(key))
+        .sort(([, a], [, b]) => compareHits(a.hit, b.hit))
+        .slice(0, AI_RULES.maxPublicationsPerMonitorRun);
+      await mapLimit(queue, AI_RULES.concurrency, async ([key, item]) => {
+        const doc = leadDocument.get(key)!;
+        try {
+          const insight = await ai.analyzePublication({ text: doc.text, address: item.hit.addresses[0]?.address, author: item.hit.author, title: doc.title });
+          if (insight) touched.set(key, { ...item, hit: mergeInsight(item.hit, insight) });
+        } catch (error) {
+          log(`Odczyt publikacji ${doc.url} przez model nie powiódł się — zostają oceny z reguł.`, error);
+        }
+      });
     }
     for (const [key, { hit }] of touched) await storage.saveHit(hit, key);
 
@@ -289,6 +365,11 @@ export function createMonitor(deps: MonitorDeps): Monitor {
       } catch (error) {
         log(`Automatyczna analiza autora „${hit.author}” nie powiodła się.`, error);
       }
+    }
+
+    if (deps.corpus) {
+      const removed = await pruneCorpus(storage, deps.corpus, now());
+      if (removed > 0) log(`Indeks publikacji: usunięto ${removed} wpisów ponad okres przechowywania lub limit.`);
     }
 
     // Statystyki i czas przebiegu zapisujemy na aktualnych ustawieniach — mogły się zmienić w trakcie.

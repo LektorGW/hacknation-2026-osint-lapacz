@@ -240,7 +240,7 @@ test('przegląd źródeł: ranking wytypowanych podmiotów i założenie sprawy'
   const sweep = response.json();
   assert.equal(sweep.status, 'completed');
   assert.equal(sweep.documentsScanned, 4);
-  assert.deepEqual(sweep.connectors, ['gitpub', 'targ']);
+  assert.deepEqual(sweep.connectors, ['gitpub', 'targ', 'corpus']);
   // Dokument bez autora i dokument bez adresu nie tworzą wskazań.
   assert.deepEqual(sweep.leads.map((lead: { handle: string }) => lead.handle), ['sprzedawca_dwa', 'sprzedawca_jeden']);
   const [first, second] = sweep.leads;

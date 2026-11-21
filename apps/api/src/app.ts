@@ -7,7 +7,8 @@ import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { DEFAULT_RULES, validateAddress } from '@olcys/core';
 import type { AnalysisRun, Identifier, IdentifierType, SourceConnector } from '@olcys/core';
-import { runAnalysis } from './analysis.ts';
+import { anonymizeFacts, trackAi } from './ai-rules.ts';
+import { DEFAULT_CORPUS_MAX_ROWS, DEFAULT_CORPUS_RETENTION_DAYS, createCorpusConnector } from './corpus.ts';
 import { detectReplacements, diffRuns } from './diff.ts';
 import { buildDossier } from './dossier.ts';
 import type { DossierView } from './dossier.ts';
@@ -18,6 +19,8 @@ import { createMonitor } from './monitor.ts';
 import { registerMonitorRoutes } from './monitor-routes.ts';
 import { looksLikePersonName } from './persons.ts';
 import { renderReportHtml } from './report.ts';
+import { createRunEngine } from './runs.ts';
+import type { RunDepth } from './runs.ts';
 import type { ConnectorInfo } from './report.ts';
 import type { CaseSummary, Storage } from './storage.ts';
 import { registerSweepRoutes } from './sweep-routes.ts';
@@ -45,9 +48,33 @@ export function detectIdentifierType(value: string): IdentifierType {
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const { storage, connectors, chainProviders } = deps;
+  const { storage, chainProviders } = deps;
   const rules = deps.rules ?? DEFAULT_RULES;
   const now = deps.now ?? (() => new Date());
+  // Indeks własny jest zawsze dostępny jako źródło: analiza korzysta ze wszystkiego, co widział monitoring.
+  const connectors: SourceConnector[] = [...deps.connectors, createCorpusConnector(storage)];
+  const corpusSettings = {
+    retentionDays: deps.corpus?.retentionDays ?? DEFAULT_CORPUS_RETENTION_DAYS,
+    maxRows: deps.corpus?.maxRows ?? DEFAULT_CORPUS_MAX_ROWS,
+  };
+  const ai = deps.ai ? trackAi(deps.ai) : undefined;
+  const summarizer = deps.summaryAi ? trackAi(deps.summaryAi) : undefined;
+
+  /** Dane sprawy, które nie mogą trafić do zewnętrznego modelu w postaci jawnej. */
+  const sensitiveTerms = (dossier: DossierView): Parameters<typeof anonymizeFacts>[1] => [
+    ...[dossier.subject.name, ...dossier.subject.knownNames, ...dossier.persons.flatMap((person) => [person.fullName ?? '', ...person.nameVariants])].map((value) => ({ kind: 'OSOBA' as const, value })),
+    ...dossier.subject.identifiers.map(({ identifier }) => ({
+      kind: identifier.type === 'email' ? ('EMAIL' as const) : identifier.type === 'crypto_address' ? ('ADRES' as const) : identifier.type === 'full_name' ? ('OSOBA' as const) : ('NICK' as const),
+      value: identifier.value,
+    })),
+    ...dossier.profiles.flatMap((profile) => [
+      { kind: 'NICK' as const, value: profile.handle ?? '' },
+      ...(profile.attributes.emails ?? []).map((value) => ({ kind: 'EMAIL' as const, value })),
+      ...(profile.attributes.phones ?? []).map((value) => ({ kind: 'TELEFON' as const, value })),
+    ]),
+    ...dossier.relatedPersons.map((person) => ({ kind: 'NICK' as const, value: person.handle })),
+    ...dossier.findings.map((finding) => ({ kind: 'ADRES' as const, value: finding.address })),
+  ];
   const app = Fastify({ logger: deps.logger ?? false });
 
   await app.register(cors, { origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE'] });
@@ -85,12 +112,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return found;
   };
 
-  const selectConnectors = (connectorIds?: string[]): SourceConnector[] => {
+  /** Źródła dołączane w trybie głębokim: wyszukiwarka forów i źródła monitoringu z wyszukiwaniem. */
+  const isDeepSource = (connector: SourceConnector) =>
+    (connector.id === 'deep-search' || connector.id.startsWith('mon-')) && connector.accepts.length > 0;
+
+  const selectConnectors = (connectorIds?: string[], depth: RunDepth = 'standard'): SourceConnector[] => {
     const unknown = (connectorIds ?? []).filter((id) => !connectors.some((connector) => connector.id === id));
     if (unknown.length > 0) throw new HttpError(400, `Nieznane łączniki: ${unknown.join(', ')}.`);
-    return connectorIds
-      ? connectors.filter((connector) => connectorIds.includes(connector.id))
-      : connectors.filter((connector) => connector.enabledByDefault);
+    return connectors.filter(
+      (connector) =>
+        (connectorIds ? connectorIds.includes(connector.id) : connector.enabledByDefault) || (depth === 'deep' && isDeepSource(connector)),
+    );
   };
 
   const cleanIdentifiers = (raw: Identifier[]): Identifier[] => {
@@ -126,53 +158,43 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       now: now(),
       matchService: deps.matchService,
     });
+    if (ai && dossier.keyFindings.length > 0) {
+      // Streszczenie powstaje wyłącznie z gotowych ustaleń; błąd modelu zostawia teczkę bez streszczenia.
+      const texts = dossier.keyFindings.map((item) => item.text);
+      const summarize = (facts: string[]) => (summarizer ?? ai).assistant.summarize(facts);
+      if (deps.aiLocal) dossier.summary = await summarize(texts);
+      else {
+        // Model poza tą maszyną dostaje fakty bez danych osobowych i adresów; znaczniki wracają po odpowiedzi.
+        const { facts, restore } = anonymizeFacts(texts, sensitiveTerms(dossier));
+        const summary = await summarize(facts);
+        dossier.summary = summary ? { ...summary, text: restore(summary.text) } : null;
+      }
+    }
     if (run.status === 'completed') dossiers.set(run.id, dossier);
     return dossier;
   };
 
-  /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
-  const executeRun = async (caseSummary: CaseSummary, connectorIds?: string[]): Promise<AnalysisRun> => {
-    const selected = selectConnectors(connectorIds);
+  // ---------- Wykonywanie analiz (tryb standardowy i głęboki, także w tle) ----------
 
-    const run: AnalysisRun = {
-      id: randomUUID(),
-      caseId: caseSummary.id,
-      startedAt: now().toISOString(),
-      status: 'running',
-      query: caseSummary.query,
-      connectors: selected.map((connector) => connector.id),
-      findings: [],
-      log: [],
-    };
-    await storage.saveRun(run);
-    try {
-      const result = await runAnalysis({
-        query: caseSummary.query,
-        connectors: selected,
-        chainProviders,
-        resolveActivity: deps.resolveActivity,
-        rules,
-        now,
-        log: (message) => app.log.info({ runId: run.id }, message),
-      });
-      run.findings = result.findings;
-      run.log = result.log;
-      run.status = 'completed';
-      run.finishedAt = now().toISOString();
-      await storage.saveRun(run);
-      await storage.saveDocuments(run.id, result.documents);
-      await storage.saveRunIntel(run.id, result.intel);
-      // Nowa analiza zmienia też powiązania między sprawami w teczkach innych spraw.
-      invalidateDossiers();
-    } catch (error) {
-      run.status = 'failed';
-      run.finishedAt = now().toISOString();
-      run.log.push({ time: run.finishedAt, message: `Analiza przerwana błędem: ${error instanceof Error ? error.message : String(error)}` });
-      await storage.saveRun(run);
-      throw error;
-    }
-    return run;
-  };
+  const runs = createRunEngine({
+    storage,
+    chainProviders,
+    deepChainProviders: deps.deepChainProviders,
+    resolveActivity: deps.resolveActivity,
+    rules,
+    now,
+    ai: ai?.assistant,
+    normalizeText: deps.normalizeText,
+    limits: deps.runLimits,
+    log: (runId, message) => app.log.info({ runId }, message),
+    // Nowa analiza zmienia też powiązania między sprawami w teczkach innych spraw.
+    onCompleted: invalidateDossiers,
+  });
+  app.addHook('preClose', () => runs.stop());
+
+  /** Wykonuje analizę sprawy i zapisuje wynik wraz z kopiami treści. */
+  const executeRun = (caseSummary: CaseSummary, connectorIds?: string[], depth: RunDepth = 'standard'): Promise<AnalysisRun> =>
+    runs.execute(caseSummary, { connectors: selectConnectors(connectorIds, depth), depth });
 
   // ---------- Harmonogram cyklicznych analiz (w pamięci procesu) ----------
 
@@ -194,7 +216,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // ---------- Trasy ----------
 
-  app.get('/api/health', async () => ({ status: 'ok', version: TOOL_VERSION, time: now().toISOString() }));
+  app.get('/api/health', async () => {
+    const database = (await storage.ping()) ? 'ok' : 'error';
+    return { status: database === 'ok' ? 'ok' : 'degraded', version: TOOL_VERSION, time: now().toISOString(), database };
+  });
 
   app.get('/api/connectors', async () => connectorInfo());
 
@@ -235,7 +260,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     withSchedule(await requireCase(request.params.id)),
   );
 
-  app.post<{ Params: { id: string }; Body?: { connectors?: string[] } }>(
+  app.post<{ Params: { id: string }; Body?: { connectors?: string[]; depth?: RunDepth; async?: boolean } }>(
     '/api/cases/:id/runs',
     {
       schema: {
@@ -245,16 +270,44 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           additionalProperties: false,
           properties: {
             connectors: { type: 'array', maxItems: 50, items: { type: 'string', minLength: 1, maxLength: 100 } },
+            depth: { type: 'string', enum: ['standard', 'deep'] },
+            async: { type: 'boolean' },
           },
         },
       },
     },
     async (request, reply) => {
       const caseSummary = await requireCase(request.params.id);
-      const run = await executeRun(caseSummary, request.body?.connectors);
+      const depth = request.body?.depth ?? 'standard';
+      if (request.body?.async) {
+        // Analiza liczy się w tle; postęp pod /api/runs/:id/progress, wynik pod /api/runs/:id.
+        const { run } = await runs.start(caseSummary, { connectors: selectConnectors(request.body.connectors, depth), depth });
+        return reply.code(202).send({ id: run.id, status: run.status });
+      }
+      const run = await executeRun(caseSummary, request.body?.connectors, depth);
       return reply.code(201).send(run);
     },
   );
+
+  app.get<{ Params: { id: string } }>('/api/runs/:id/progress', { schema: { params: idParams } }, async (request) => {
+    const live = runs.progress(request.params.id);
+    if (live) return live;
+    // Analiza z wcześniejszego uruchomienia serwera: znamy tylko jej stan końcowy.
+    const run = (await requireRun(request.params.id)) as AnalysisRun & { depth?: RunDepth };
+    return {
+      runId: run.id,
+      caseId: run.caseId,
+      status: run.status,
+      depth: run.depth ?? 'standard',
+      stage: run.status === 'completed' ? 'done' : run.status === 'failed' ? 'failed' : 'search',
+      connectorsDone: 0,
+      connectorsTotal: 0,
+      documents: new Set(run.findings.flatMap((finding) => finding.evidence.map((item) => item.url))).size,
+      addresses: run.findings.length,
+      startedAt: run.startedAt,
+      updatedAt: run.finishedAt ?? run.startedAt,
+    };
+  });
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', { schema: { params: idParams } }, async (request) =>
     requireRun(request.params.id),
@@ -374,7 +427,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // ---------- Jedno wywołanie: identyfikator → sprawa → analiza → teczka ----------
 
-  app.post<{ Body: { value: string; type?: IdentifierType } }>(
+  app.post<{ Body: { value: string; type?: IdentifierType; depth?: RunDepth; async?: boolean } }>(
     '/api/quick',
     {
       schema: {
@@ -385,6 +438,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           properties: {
             value: { type: 'string', minLength: 1, maxLength: 200 },
             type: { type: 'string', enum: IDENTIFIER_TYPES },
+            depth: { type: 'string', enum: ['standard', 'deep'] },
+            async: { type: 'boolean' },
           },
         },
       },
@@ -394,7 +449,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       if (!value) throw new HttpError(400, 'Identyfikator nie może być pusty.');
       const identifiers = cleanIdentifiers([{ type: request.body.type ?? detectIdentifierType(value), value }]);
       const created = await storage.createCase(value, { identifiers }, now().toISOString());
-      const run = await executeRun(created);
+      const depth = request.body.depth ?? 'standard';
+      if (request.body.async) {
+        const { run } = await runs.start(created, { connectors: selectConnectors(undefined, depth), depth });
+        return reply.code(202).send({ case: created, run: { id: run.id, status: run.status } });
+      }
+      const run = await executeRun(created, undefined, depth);
       return reply.code(201).send({ case: withSchedule(await requireCase(created.id)), dossier: await loadDossier(run) });
     },
   );
@@ -409,6 +469,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     resolveActivity: deps.resolveActivity,
     rules,
     matchService: deps.matchService,
+    ai: ai?.assistant,
+    normalizeText: deps.normalizeText,
+    corpus: corpusSettings,
     now,
     timers: deps.monitorTimers,
     log: (message, error) => (error ? app.log.error({ err: error }, message) : app.log.info(message)),
@@ -432,6 +495,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     loadDossier,
     invalidateDossiers,
     monitor,
+    runs,
+    ai,
+    corpusSettings,
   };
   registerDossierRoutes(app, context);
   registerSweepRoutes(app, context);

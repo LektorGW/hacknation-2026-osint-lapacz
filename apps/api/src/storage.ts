@@ -4,7 +4,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
-import type { AnalysisRun, AnalystDecision, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
+import type { AnalysisRun, AnalystDecision, ProfileAttributes, SourceCategory, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
 import type { CapturedDocument } from './analysis.ts';
 import type { RunIntel } from './intel.ts';
 
@@ -44,6 +44,33 @@ export interface LeadAnalysis {
   log: AnalysisRun['log'];
   documents: CapturedDocument[];
   intel: RunIntel;
+}
+
+/** Publikacja w indeksie własnym (`corpus`) wraz z adresami wykrytymi w treści. */
+export interface CorpusDocument {
+  url: string;
+  service: string;
+  connectorId: string;
+  author?: string;
+  publishedAt?: string;
+  fetchedAt: string;
+  title: string;
+  text: string;
+  contentHash: string;
+  category: SourceCategory;
+  profile?: ProfileAttributes;
+  addresses: { network: string; address: string }[];
+}
+
+/** Zapytanie do indeksu: dokładny adres, dokładny autor albo fraza w treści. */
+export type CorpusQuery = { address: string } | { author: string } | { phrase: string };
+
+export interface CorpusStats {
+  documents: number;
+  addresses: number;
+  services: number;
+  oldestFetchedAt?: string;
+  newestFetchedAt?: string;
 }
 
 /** Minimalny wspólny interfejs sterowników bazy. */
@@ -90,6 +117,14 @@ export interface Storage {
   listHits(): Promise<WatchHit[]>;
   saveHitAnalysis(id: string, analysis: LeadAnalysis): Promise<void>;
   getHitAnalysis(id: string): Promise<LeadAnalysis | null>;
+  /** Dopisuje publikacje do indeksu; znane adresy URL są pomijane. */
+  saveCorpusDocuments(documents: CorpusDocument[]): Promise<void>;
+  searchCorpus(query: CorpusQuery, limit: number): Promise<CorpusDocument[]>;
+  /** Usuwa publikacje starsze niż `olderThan` oraz najstarsze ponad `maxRows`; zwraca liczbę usuniętych. */
+  pruneCorpus(olderThan: string, maxRows: number): Promise<number>;
+  corpusStats(): Promise<CorpusStats>;
+  /** Czy baza odpowiada. */
+  ping(): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -126,6 +161,22 @@ export function createDriverFromEnv(env: NodeJS.ProcessEnv): Promise<SqlDriver> 
 }
 
 const SCHEMA_SQL = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
+
+const CHUNK = 200;
+
+/** Dzieli listę na paczki — zapytania z listą wartości mają ograniczoną liczbę parametrów. */
+function chunks<T>(items: T[], size: number): T[][] {
+  const parts: T[][] = [];
+  for (let index = 0; index < items.length; index += size) parts.push(items.slice(index, index + size));
+  return parts;
+}
+
+/** `$n, $n+1, …` dla `count` parametrów; `casts` dopisuje rzutowanie do wskazanych pozycji (od zera). */
+const placeholders = (count: number, start: number, casts: Record<number, string> = {}): string =>
+  Array.from({ length: count }, (_, index) => `$${start + index}${casts[index] ?? ''}`).join(', ');
+
+/** Nazwa autora do porównań: bez `@`, małe litery. */
+const authorKey = (author: string): string => author.trim().replace(/^@/, '').toLowerCase();
 
 const toIso = (value: unknown): string => (value instanceof Date ? value.toISOString() : String(value));
 const optional = (value: unknown): string | undefined => (value == null ? undefined : String(value));
@@ -361,17 +412,19 @@ export function createStorage(driver: SqlDriver): Storage {
     },
 
     async filterUnseenUrls(urls) {
-      const unseen: string[] = [];
-      for (const url of new Set(urls)) {
-        const rows = await driver.query('SELECT 1 FROM monitor_seen WHERE url = $1', [url]);
-        if (rows.length === 0) unseen.push(url);
+      const unique = [...new Set(urls)];
+      const seen = new Set<string>();
+      for (const part of chunks(unique, CHUNK)) {
+        const rows = await driver.query(`SELECT url FROM monitor_seen WHERE url IN (${placeholders(part.length, 1)})`, part);
+        for (const row of rows) seen.add(String(row.url));
       }
-      return unseen;
+      return unique.filter((url) => !seen.has(url));
     },
 
     async markUrlsSeen(urls, seenAt) {
-      for (const url of new Set(urls)) {
-        await driver.query('INSERT INTO monitor_seen (url, seen_at) VALUES ($1, $2) ON CONFLICT DO NOTHING', [url, seenAt]);
+      for (const part of chunks([...new Set(urls)], CHUNK)) {
+        const values = part.map((_, index) => `($${index + 2}, $1)`).join(', ');
+        await driver.query(`INSERT INTO monitor_seen (url, seen_at) VALUES ${values} ON CONFLICT DO NOTHING`, [seenAt, ...part]);
       }
     },
 
@@ -405,6 +458,104 @@ export function createStorage(driver: SqlDriver): Storage {
     async getHitAnalysis(id) {
       const [row] = await driver.query('SELECT analysis FROM monitor_hits WHERE id = $1', [id]);
       return row?.analysis ? (row.analysis as LeadAnalysis) : null;
+    },
+
+    async saveCorpusDocuments(documents) {
+      // Przy powtórzonym adresie URL zostaje pierwsza publikacja.
+      const unique = [...new Map([...documents].reverse().map((doc) => [doc.url, doc])).values()].reverse();
+      // Wiersze wstawiamy paczkami — monitoring dopisuje tysiące publikacji na cykl.
+      for (const part of chunks(unique, 50)) {
+        const columns = 12;
+        const values = part.map((_, row) => `(${placeholders(columns, row * columns + 1, { 11: '::jsonb' })})`).join(', ');
+        await driver.query(
+          `INSERT INTO corpus (url, service, connector_id, author, author_key, published_at, fetched_at, title, content, content_hash, category, profile)
+           VALUES ${values} ON CONFLICT (url) DO NOTHING`,
+          part.flatMap((doc) => [
+            doc.url,
+            doc.service,
+            doc.connectorId,
+            doc.author ?? null,
+            doc.author ? authorKey(doc.author) : null,
+            doc.publishedAt ?? null,
+            doc.fetchedAt,
+            doc.title,
+            // PostgreSQL nie przyjmuje znaku NUL w tekście.
+            doc.text.replaceAll('\u0000', ''),
+            doc.contentHash,
+            doc.category,
+            doc.profile ? JSON.stringify(doc.profile) : null,
+          ]),
+        );
+        const addresses = part.flatMap((doc) => doc.addresses.map((item) => [doc.url, item.network, item.address]));
+        for (const rows of chunks(addresses, 200)) {
+          const tuples = rows.map((_, row) => `(${placeholders(3, row * 3 + 1)})`).join(', ');
+          await driver.query(`INSERT INTO corpus_addresses (url, network, address) VALUES ${tuples} ON CONFLICT DO NOTHING`, rows.flat());
+        }
+      }
+    },
+
+    async searchCorpus(query, limit) {
+      const where =
+        'address' in query
+          ? 'url IN (SELECT url FROM corpus_addresses WHERE address = $1)'
+          : 'author' in query
+            ? 'author_key = $1'
+            : "content ILIKE '%' || $1 || '%' ESCAPE '\\'";
+      const value =
+        'address' in query ? query.address : 'author' in query ? authorKey(query.author) : query.phrase.replace(/[\\%_]/g, (char) => `\\${char}`);
+      const rows = await driver.query(`SELECT * FROM corpus WHERE ${where} ORDER BY fetched_at DESC, url LIMIT $2`, [value, limit]);
+      if (rows.length === 0) return [];
+      const urls = rows.map((row) => String(row.url));
+      const addressRows = await driver.query(
+        `SELECT url, network, address FROM corpus_addresses WHERE url IN (${placeholders(urls.length, 1)}) ORDER BY address`,
+        urls,
+      );
+      return rows.map((row) => ({
+        url: String(row.url),
+        service: String(row.service),
+        connectorId: String(row.connector_id),
+        ...(row.author == null ? {} : { author: String(row.author) }),
+        ...(row.published_at == null ? {} : { publishedAt: String(row.published_at) }),
+        fetchedAt: toIso(row.fetched_at),
+        title: String(row.title),
+        text: String(row.content),
+        contentHash: String(row.content_hash),
+        category: String(row.category) as SourceCategory,
+        ...(row.profile == null ? {} : { profile: row.profile as ProfileAttributes }),
+        addresses: addressRows.filter((item) => item.url === row.url).map((item) => ({ network: String(item.network), address: String(item.address) })),
+      }));
+    },
+
+    async pruneCorpus(olderThan, maxRows) {
+      const old = await driver.query('DELETE FROM corpus WHERE fetched_at < $1 RETURNING url', [olderThan]);
+      const excess = await driver.query(
+        `DELETE FROM corpus WHERE url IN (SELECT url FROM corpus ORDER BY fetched_at DESC, url OFFSET $1) RETURNING url`,
+        [maxRows],
+      );
+      return old.length + excess.length;
+    },
+
+    async corpusStats() {
+      const [row] = await driver.query(
+        `SELECT COUNT(*) AS documents, COUNT(DISTINCT service) AS services, MIN(fetched_at) AS oldest, MAX(fetched_at) AS newest FROM corpus`,
+      );
+      const [addresses] = await driver.query('SELECT COUNT(DISTINCT address) AS total FROM corpus_addresses');
+      return {
+        documents: Number(row?.documents ?? 0),
+        addresses: Number(addresses?.total ?? 0),
+        services: Number(row?.services ?? 0),
+        ...(row?.oldest == null ? {} : { oldestFetchedAt: toIso(row.oldest) }),
+        ...(row?.newest == null ? {} : { newestFetchedAt: toIso(row.newest) }),
+      };
+    },
+
+    async ping() {
+      try {
+        await driver.query('SELECT 1');
+        return true;
+      } catch {
+        return false;
+      }
     },
 
     close: () => driver.close(),

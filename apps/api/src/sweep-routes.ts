@@ -39,6 +39,8 @@ export function registerSweepRoutes(app: FastifyInstance, context: RouteContext)
         limit: request.body?.limit ?? DEFAULT_SWEEP_LIMIT,
         now,
         matchService: deps.matchService,
+        ai: context.ai?.assistant,
+        normalizeText: deps.normalizeText,
       });
       await storage.saveSweep(sweep);
       for (const [leadId, analysis] of analyses) await storage.saveLeadAnalysis(sweep.id, leadId, analysis);

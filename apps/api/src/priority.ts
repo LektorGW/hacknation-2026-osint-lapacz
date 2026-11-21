@@ -11,7 +11,9 @@
 //       najwyżej 100 (pełna skala od 1 mln zł). Logarytm, bo różnica między 10 a 100 tys. zł
 //       jest dla sprawy ważniejsza niż między 1,0 a 1,1 mln zł.
 //   U — powiązania z usługami wypłat (giełdy, P2P, bramki, karty): siła najmocniejszego
-//       powiązania + 10 za każdą kolejną taką usługę, najwyżej 100; brak = 0.
+//       powiązania + 10 za każdą kolejną taką usługę, najwyżej 100; brak = 0. Gdy jest
+//       udokumentowana ścieżka środków (dowód spieniężenia), U nie jest niższe niż łączna
+//       pewność najpewniejszego ustalenia.
 //   A — aktualność ostatniej możliwej wypłaty: 100 do roku wstecz, potem liniowo do 0
 //       po 5 latach (okres przedawnienia zobowiązań podatkowych); brak wypłat = 0.
 //   Z — niezależne źródła (różne serwisy) najlepszego adresu: 100·min(3, liczba)/3.
@@ -43,7 +45,7 @@ export const PRIORITY_RULES = {
   components: {
     confidence: 'P — pewność najlepszego niewykluczonego adresu: średnia Wskaźnika Pewności i łącznego prawdopodobieństwa, że adres należy do osoby ze sprawy (0–100).',
     scale: 'S — skala szacowanych wypłat w PLN: 100·log10(1+PLN)/log10(1+1 000 000), najwyżej 100.',
-    services: 'U — powiązania z usługami wypłat: siła najmocniejszego powiązania + 10 za każdą kolejną usługę, najwyżej 100.',
+    services: 'U — powiązania z usługami wypłat: siła najmocniejszego powiązania + 10 za każdą kolejną usługę, najwyżej 100; nie mniej niż łączna pewność najpewniejszego ustalenia z dowodu spieniężenia.',
     recency: 'A — aktualność ostatniej możliwej wypłaty: 100 do roku wstecz, liniowo do 0 po 5 latach; brak wypłat = 0.',
     sources: 'Z — niezależne źródła najlepszego adresu: 100·min(3, liczba)/3.',
   },
@@ -60,6 +62,8 @@ export interface PriorityInput {
   independentSources: number;
   /** Siły powiązań (0–100) z usługami wypłat na waluty tradycyjne. */
   serviceStrengths: number[];
+  /** Łączna pewność najpewniejszego ustalenia z dowodu spieniężenia (jeśli są ścieżki środków). */
+  proofConfidence?: number;
   now: Date;
 }
 
@@ -93,8 +97,9 @@ export function computePriority(input: PriorityInput): PriorityResult {
   const sources = (100 * Math.min(PRIORITY_RULES.sourcesFull, sourceCount)) / PRIORITY_RULES.sourcesFull;
 
   const strengths = [...input.serviceStrengths].sort((a, b) => b - a);
-  const services =
+  const fromLinks =
     strengths.length === 0 ? 0 : Math.min(100, strengths[0]! + (strengths.length - 1) * PRIORITY_RULES.extraServicePoints);
+  const services = Math.max(fromLinks, input.proofConfidence ?? 0);
 
   const priority = Math.round(
     weights.confidence * confidence +
@@ -111,7 +116,9 @@ export function computePriority(input: PriorityInput): PriorityResult {
     pln > 0
       ? `Skala szacowanych wypłat: ${roundPln(pln)} → ${Math.round(scale)}/100 w skali logarytmicznej (pełna skala od 1 mln zł) × ${weight(weights.scale)} = ${points(weights.scale * scale)} pkt.`
       : 'Skala szacowanych wypłat: nie stwierdzono wypłat z adresów powiązanych — 0 pkt.',
-    strengths.length === 0
+    input.proofConfidence !== undefined && input.proofConfidence >= fromLinks
+      ? `Dowód spieniężenia: udokumentowana ścieżka środków do usługi, łączna pewność ustalenia ${input.proofConfidence}% → ${Math.round(services)}/100 × ${weight(weights.services)} = ${points(weights.services * services)} pkt.`
+      : strengths.length === 0
       ? 'Powiązania z usługami wypłat (giełdy, P2P, bramki, karty): nie stwierdzono — 0 pkt.'
       : `Powiązania z usługami wypłat: ${strengths.length}, najmocniejsze ${strengths[0]}/100 → ${Math.round(services)}/100 × ${weight(weights.services)} = ${points(weights.services * services)} pkt.`,
     ageDays === undefined
@@ -146,6 +153,7 @@ export function summarizeFindings(
   analystAddresses: Set<string>,
   now: Date,
   serviceLinks: ServiceLink[] = [],
+  proofConfidence?: number,
 ): FindingsSummary {
   const active = findings.filter((finding) => !finding.confidence.excluded);
   const linked = active.filter(
@@ -167,6 +175,7 @@ export function summarizeFindings(
     lastCashOutAt,
     independentSources: new Set((best?.evidence ?? []).map((item) => item.service.toLowerCase())).size,
     serviceStrengths: serviceLinks.filter((link) => isCashOutService(link.kind)).map((link) => link.strength),
+    proofConfidence,
     now,
   });
   return {

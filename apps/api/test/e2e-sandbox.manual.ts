@@ -1,38 +1,62 @@
-// Ręczna próba całości na piaskownicy (nie jest częścią `node --test test/*.test.ts`).
-// Wymaga działającej piaskownicy: SANDBOX_URL (domyślnie http://localhost:4100).
-// Nie otwiera portu — aplikacja jest wywoływana przez `app.inject`, baza żyje w pamięci.
+// Ręczna próba całości (nie jest częścią `node --test test/*.test.ts`). Nie otwiera portu —
+// aplikacja jest wywoływana przez `app.inject`, baza żyje w pamięci.
 //   node test/e2e-sandbox.manual.ts [identyfikator ...]
+// Zmienne: SANDBOX_URL (domyślnie http://localhost:4100; `off` wyłącza piaskownicę),
+//   LIVE=1 — źródła w prawdziwym internecie, DEPTH=deep — analiza głęboka,
+//   SWEEP=<limit> — przegląd źródeł, MONITOR=1 — przebieg monitoringu.
 
-import { createChainProviders, getActivityFromProviders, matchService } from '@olcys/chain';
-import { createConnectors } from '@olcys/sources';
+import * as chain from '@olcys/chain';
+import * as sources from '@olcys/sources';
+import type { ChainProvider } from '@olcys/core';
 import { buildApp } from '../src/app.ts';
 import { createPgliteDriver, createStorage } from '../src/storage.ts';
 
-const sandboxUrl = process.env.SANDBOX_URL ?? 'http://localhost:4100';
+const sandboxUrl = process.env.SANDBOX_URL === 'off' ? undefined : (process.env.SANDBOX_URL ?? 'http://localhost:4100');
+const enableLive = process.env.LIVE === '1';
+const depth = process.env.DEPTH === 'deep' ? 'deep' : 'standard';
 const storage = createStorage(await createPgliteDriver());
 await storage.migrate();
+const createProviders = chain.createChainProviders as (config: Record<string, unknown>) => ChainProvider[];
 const app = await buildApp({
   storage,
-  connectors: createConnectors({ sandboxUrl }),
-  chainProviders: createChainProviders({ sandboxUrl }),
-  resolveActivity: getActivityFromProviders,
-  matchService,
+  connectors: sources.createConnectors({ sandboxUrl, enableLive, githubToken: process.env.GITHUB_TOKEN || undefined }),
+  chainProviders: createProviders({ sandboxUrl, enableLive }),
+  deepChainProviders: createProviders({ sandboxUrl, enableLive, depth: 'deep' }),
+  resolveActivity: chain.getActivityFromProviders,
+  matchService: chain.matchService,
+  normalizeText: (sources as { normalizeAddressText?: (text: string) => string }).normalizeAddressText,
 });
 
-const values = process.env.MONITOR || process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['kwrzosek_dev', 'Kacper Wrzosek', 'marek88', 'm.zielonka@skrzynka.example'];
+const defaults = ['kwrzosek_dev', 'Kacper Wrzosek', 'marek88', 'm.zielonka@skrzynka.example'];
+const values = process.env.MONITOR || process.argv.slice(2).length > 0 ? process.argv.slice(2) : defaults;
 for (const value of values) {
   const started = Date.now();
-  const response = await app.inject({ method: 'POST', url: '/api/quick', payload: { value } });
-  const { dossier } = response.json();
-  console.log(`\n=== ${value} (HTTP ${response.statusCode}, ${Date.now() - started} ms) ===`);
-  for (const person of dossier.persons) {
+  const response = await app.inject({ method: 'POST', url: '/api/quick', payload: { value, depth } });
+  const body = response.json();
+  console.log(`\n=== ${value} [${depth}] (HTTP ${response.statusCode}, ${Date.now() - started} ms) ===`);
+  if (!body.dossier) {
+    console.log(JSON.stringify(body));
+    continue;
+  }
+  const { dossier } = body;
+  const run = (await app.inject(`/api/runs/${dossier.runId}`)).json();
+  console.log(`  łączniki: ${run.connectors.length}; wpisów dziennika: ${run.log.length}; wynik częściowy: ${dossier.partial}`);
+  for (const person of dossier.persons.slice(0, 6)) {
     console.log(`  osoba: ${person.fullName ?? '—'} ${person.probability}% profile=${person.profileIds.join(', ')} adresy=${JSON.stringify(person.addresses)}`);
   }
-  for (const finding of dossier.findings) console.log(`  adres: ${finding.address} ${finding.confidence.score}%${finding.confidence.excluded ? ' (wykluczony)' : ''}`);
-  for (const link of dossier.serviceLinks) console.log(`  usługa: ${link.name} [${link.kind}] siła ${link.strength} ${link.basis.join('+')} out=${link.outPln ?? '—'} PLN`);
-  for (const person of dossier.relatedPersons) console.log(`  powiązana: ${person.handle} ${person.strength} ${person.relations.map((item: { kind: string }) => item.kind).join(',')}`);
+  if (dossier.persons.length > 6) console.log(`  … oraz ${dossier.persons.length - 6} dalszych kandydatów`);
+  for (const mention of dossier.mentions) console.log(`  wzmianki: ${mention.identifier.type} „${mention.identifier.value}” — ${mention.documents} publikacji, ${mention.authors} autorów, ${mention.services} serwisów`);
+  for (const finding of dossier.findings.slice(0, 12)) {
+    console.log(`  adres: ${finding.address} ${finding.confidence.score}% (osoba–adres ${finding.subjectProbability}%)${finding.confidence.excluded ? ' wykluczony' : ''}${finding.widelyCited ? ' powszechnie cytowany' : ''}${finding.chainSkipped ? ' bez łańcucha' : ''} cytujących=${finding.unrelatedPublishers}`);
+    for (const note of finding.annotations ?? []) console.log(`      · ${note.slice(0, 200)}`);
+  }
+  if (dossier.findings.length > 12) console.log(`  … oraz ${dossier.findings.length - 12} dalszych adresów`);
+  for (const proof of dossier.cashOutProof.slice(0, 5)) console.log(`  dowód: ${proof.statement} [${proof.tier}, ${proof.addressBasis}]`);
+  for (const link of dossier.serviceLinks.slice(0, 10)) console.log(`  usługa: ${link.name} [${link.kind}] siła ${link.strength} ${link.basis.join('+')} out=${link.outPln ?? '—'} PLN`);
+  for (const person of dossier.relatedPersons.slice(0, 5)) console.log(`  powiązana: ${person.handle} ${person.strength} ${person.relations.map((item: { kind: string }) => item.kind).join(',')}`);
   console.log(`  priorytet ${dossier.totals.priority}, graf ${dossier.graph.nodes.length}/${dossier.graph.edges.length}, oś czasu ${dossier.timeline.length}`);
   for (const item of dossier.keyFindings) console.log(`  • [${item.layer}] ${item.text}`);
+  if (process.env.LOG) for (const entry of run.log.filter((item: { message: string }) => /BŁĄD|limit|wzmianki|Pominięto/.test(item.message)).slice(0, 25)) console.log(`  dziennik: ${entry.message.slice(0, 220)}`);
 }
 
 if (process.env.SWEEP) {
@@ -44,17 +68,11 @@ if (process.env.SWEEP) {
 if (process.env.MONITOR) {
   const started = Date.now();
   const { status, newHits } = (await app.inject({ method: 'POST', url: '/api/monitor/run' })).json();
-  console.log(`
-=== monitoring (${Date.now() - started} ms): źródeł ${status.sources.length}, dokumentów ${status.totals.documentsSeen}, trafień ${status.totals.hits}, analiz ${status.totals.analyzed} ===`);
-  for (const source of status.sources) console.log(`  źródło ${source.connectorId}: dokumentów ${source.documentsSeen}, trafień ${source.hits}${source.lastError ? `, BŁĄD ${source.lastError}` : ''}`);
-  for (const hit of newHits) {
+  console.log(`\n=== monitoring (${Date.now() - started} ms): źródeł ${status.sources.length}, dokumentów ${status.totals.documentsSeen}, trafień ${status.totals.hits}, analiz ${status.totals.analyzed} ===`);
+  for (const hit of newHits.slice(0, 15)) {
     console.log(`  ${hit.polishNexus.score}+${hit.suspicion.score} [${hit.language}] ${hit.status} ${hit.author ?? '—'} @ ${hit.service} adresów ${hit.addresses.length}${hit.lead ? ` → priorytet ${hit.lead.priority}, wynik ${hit.lead.topScore}%` : ''}`);
   }
-  const top = newHits[0];
-  if (top) {
-    console.log('  przesłanki najwyższego trafienia:');
-    for (const reason of [...top.polishNexus.reasons, ...top.suspicion.reasons]) console.log(`    ${reason}`);
-  }
+  console.log(`  indeks publikacji: ${JSON.stringify((await app.inject('/api/corpus/stats')).json())}`);
   const again = (await app.inject({ method: 'POST', url: '/api/monitor/run' })).json();
   console.log(`  drugi przebieg: nowych trafień ${again.newHits.length}`);
 }

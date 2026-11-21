@@ -4,14 +4,20 @@
 
 import { createHash } from 'node:crypto';
 import { computeConfidence, DEFAULT_RULES, extractAddresses, validateAddress } from '@olcys/core';
+import { AI_RULES } from './ai-rules.ts';
+import type { InsightEvidence } from './ai-rules.ts';
 import { createLimiter } from './concurrency.ts';
 import { unlabeledCounterparties } from './counterparties.ts';
-import { assessIdentity, assessLinkedProfile, matchRank, normalize as normalizeName } from './identity.ts';
+import { buildProfileNodes } from './entity.ts';
+import { assessIdentity, assessLinkedProfile, isUniqueType, matchRank, normalize as normalizeName } from './identity.ts';
 import type { IdentityAssessment } from './identity.ts';
 import { addressKey, sightingKey } from './intel.ts';
 import { mentionsInDocument } from './services.ts';
-import type { DiscoveryStep, RunIntel, Sighting, SightingRole } from './intel.ts';
+import type { AuthorComparison, DiscoveryStep, MentionSummary, RunIntel, Sighting, SightingRole } from './intel.ts';
+import { comparablePairs } from './persons.ts';
 import type {
+  AiAssistant,
+  AnalysisRun,
   ChainActivity,
   ChainProvider,
   ConnectorContext,
@@ -72,10 +78,69 @@ export interface AnalysisParams {
   maxCounterparties?: number;
   /** Ile zapytań do źródeł i dostawców może trwać jednocześnie. */
   concurrency?: number;
+  /** Najwyżej tyle adresów dostaje analizę blockchain (najlepiej udokumentowane najpierw). */
+  maxChainAddresses?: number;
+  /** Od ilu niepowiązanych autorów adres uznajemy za powszechnie cytowany i nikomu go nie przypisujemy. */
+  widelyCitedAuthors?: number;
+  /** Limit czasu całej analizy; po jego upływie zwracany jest wynik częściowy. */
+  totalTimeoutMs?: number;
+  /**
+   * Czy łącznik jest źródłem wyszukiwawczym (dopasowuje po fragmencie treści). Jego dokument
+   * jest przypisywany osobie tylko przy zgodnym autorze albo unikalnym identyfikatorze w treści.
+   */
+  isSearchSource?: (connectorId: string) => boolean;
+  /** Limit czasu zapytania dla wybranych łączników (np. wyszukiwarka wielu forów potrzebuje więcej). */
+  connectorTimeouts?: Record<string, number>;
+  /** Sprowadza nietypowe zapisy adresów w treści do postaci wykrywalnej (np. ze spacjami); domyślnie bez zmian. */
+  normalizeText?: (text: string) => string;
+  /** Ilu najwyżej różnych autorów może wymieniać dane kontaktowe podmiotu, by wzmianki uznać za jego publikacje. */
+  maxMentionAuthors?: number;
+  /** Model językowy (opcjonalny): odczyt publikacji i porównanie autorów. */
+  ai?: AiAssistant;
+  maxAiPublications?: number;
+  /** Odbiorca postępu — do pokazania analitykowi w trakcie długiej analizy. */
+  onProgress?: (progress: AnalysisProgress) => void;
+}
+
+export type AnalysisStage = 'search' | 'occurrences' | 'chain' | 'counterparties' | 'ai' | 'scoring';
+
+export interface AnalysisProgress {
+  stage: AnalysisStage;
+  /** Zakończone i wszystkie dotąd zlecone zapytania do łączników (łącznik × identyfikator). */
+  connectorsDone: number;
+  connectorsTotal: number;
+  documents: number;
+  addresses: number;
+}
+
+/** Adres w wyniku analizy z lokalnymi adnotacjami (poza kontraktem `Finding`). */
+export type AnalysisFinding = Omit<Finding, 'evidence'> & {
+  evidence: InsightEvidence[];
+  /** Adres cytowany przez bardzo wielu autorów — nie jest przypisywany osobie. */
+  widelyCited?: boolean;
+  /** Analizę blockchain pominięto z powodu limitu adresów albo czasu. */
+  chainSkipped?: boolean;
+  notes?: string[];
+};
+
+/** Domyślnie: indeks własny, wyszukiwarka forów, źródła monitoringu i wszystko z „search” w nazwie. */
+export const defaultIsSearchSource = (connectorId: string): boolean =>
+  connectorId === 'corpus' || connectorId === 'deep-search' || connectorId.startsWith('mon-') || connectorId.includes('search');
+
+/** Adres publikacji do porównań: bez `www.`, fragmentu, parametrów śledzących i końcowego ukośnika. */
+export function canonicalUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    for (const key of [...url.searchParams.keys()]) if (/^(utm_|fbclid$|gclid$|ref_src$)/i.test(key)) url.searchParams.delete(key);
+    return `${url.protocol}//${url.hostname.toLowerCase().replace(/^www\./, '')}${url.port ? `:${url.port}` : ''}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+  } catch {
+    return raw.trim();
+  }
 }
 
 export interface AnalysisResult {
-  findings: Finding[];
+  findings: AnalysisFinding[];
   log: { time: string; message: string }[];
   documents: CapturedDocument[];
   /** Profile, ścieżka odkrywania i publikacje innych osób — materiał do teczki. */
@@ -86,9 +151,11 @@ interface AddressGroup {
   address: string;
   network: Network;
   checksumVerified: boolean;
-  evidence: Map<string, StoredEvidence>;
+  evidence: Map<string, InsightEvidence>;
   /** Autorzy publikujący adres, których nie da się powiązać z podmiotem. */
   unrelatedAuthors: Set<string>;
+  /** Wiedza o adresie z publikacji bez autora (np. serwisy ostrzegające) — adnotacje, nie ślady osoby. */
+  notes: string[];
   chain?: ChainActivity;
 }
 
@@ -107,12 +174,27 @@ export const DEFAULT_DISCOVERY_DEPTH = 3;
 export const DEFAULT_MAX_IDENTIFIERS = 40;
 export const DEFAULT_MAX_COUNTERPARTIES = 10;
 export const DEFAULT_CONCURRENCY = 6;
+export const DEFAULT_MAX_CHAIN_ADDRESSES = 15;
+export const DEFAULT_WIDELY_CITED_AUTHORS = 10;
+export const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
+export const DEFAULT_MAX_MENTION_AUTHORS = 3;
+/** Najwyżej tyle par profili porównuje model językowy w jednej analizie. */
+const MAX_AUTHOR_COMPARISONS = 10;
 
 export const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 
 const identifierKey = (identifier: Identifier) => `${identifier.type}:${identifier.value.trim().toLowerCase()}`;
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Liczba niepowiązanych publikujących brana do oceny. Dowód kryptograficzny albo potwierdzona
+ * tożsamość profilu ma pierwszeństwo przed liczbą cytujących: adres znanej osoby cytuje wielu,
+ * co nie podważa jego własności.
+ */
+export function effectiveUnrelatedPublishers(evidence: StoredEvidence[], unrelatedPublishers: number): number {
+  return evidence.some((item) => item.category === 'cryptographic_proof' || item.identityMatch === 'verified_link') ? 0 : unrelatedPublishers;
+}
 
 /** Wykonuje zapytanie z limitem czasu; przerwanie przekazuje też do wywoływanego kodu. */
 async function withTimeout<T>(
@@ -151,15 +233,53 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     params.log?.(message);
   };
 
+  const normalizeText = params.normalizeText ?? ((text: string) => text);
+  /** Adresy w treści — po sprowadzeniu nietypowych zapisów do postaci wykrywalnej. */
+  const extract = (text: string) => extractAddresses(normalizeText(text));
+
   const groups = new Map<string, AddressGroup>();
   const documents = new Map<string, CapturedDocument>();
   const sightings = new Map<string, Sighting>();
+
+  // Limit czasu całej analizy liczymy zegarem monotonicznym, niezależnym od wstrzykniętego `now`.
+  const deadline = performance.now() + (params.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS);
+  let partial = false;
+  const expired = (what: string): boolean => {
+    if (performance.now() < deadline) return false;
+    if (!partial) log(`Przekroczono limit czasu całej analizy — ${what} i dalsze kroki pominięto; wynik jest częściowy.`);
+    partial = true;
+    return true;
+  };
+
+  const progress: AnalysisProgress = { stage: 'search', connectorsDone: 0, connectorsTotal: 0, documents: 0, addresses: 0 };
+  const report = (stage?: AnalysisStage) => {
+    if (stage) progress.stage = stage;
+    progress.documents = sightings.size;
+    progress.addresses = groups.size;
+    params.onProgress?.({ ...progress });
+  };
+
+  // Ten sam post widziany przez różne łączniki: jeden adres publikacji i jedna kopia treści.
+  const isSearchSource = params.isSearchSource ?? defaultIsSearchSource;
+  const firstUrl = new Map<string, string>();
+  const contentSeen = new Map<string, string>();
+  const dedupe = (doc: SourceDocument): SourceDocument | undefined => {
+    const canonical = canonicalUrl(doc.url);
+    const known = firstUrl.get(canonical);
+    if (!known) firstUrl.set(canonical, doc.url);
+    const url = known ?? doc.url;
+    const contentKey = `${doc.service.toLowerCase()}|${normalizeName(doc.author ?? '')}|${doc.archivedAt ?? ''}|${sha256Hex(doc.text)}`;
+    const sameContentAt = contentSeen.get(contentKey);
+    if (sameContentAt && sameContentAt !== canonical) return undefined;
+    contentSeen.set(contentKey, canonical);
+    return url === doc.url ? doc : { ...doc, url };
+  };
 
   const groupFor = (network: Network, address: string, checksumVerified: boolean): AddressGroup => {
     const key = `${network}:${address}`;
     let group = groups.get(key);
     if (!group) {
-      group = { address, network, checksumVerified, evidence: new Map(), unrelatedAuthors: new Set() };
+      group = { address, network, checksumVerified, evidence: new Map(), unrelatedAuthors: new Set(), notes: [] };
       groups.set(key, group);
     }
     // Wystarczy jedno wystąpienie z poprawną sumą kontrolną.
@@ -269,9 +389,11 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   /** Pyta wszystkie łączniki akceptujące dany typ; błąd jednego nie zatrzymuje pozostałych. */
   const search = async (identifier: Identifier): Promise<SourceDocument[]> => {
     const accepting = params.connectors.filter((connector) => connector.accepts.includes(identifier.type));
+    progress.connectorsTotal += accepting.length;
     const results = await Promise.all(
       accepting.map((connector) =>
         limited(async () => {
+          if (expired('wyszukiwanie w części źródeł')) return [];
           const context = (signal: AbortSignal): ConnectorContext => ({
             signal,
             log: (message) => log(`[${connector.id}] ${message}`),
@@ -279,7 +401,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           try {
             const found = await withTimeout(
               (signal) => connector.search(identifier, context(signal)),
-              timeoutMs,
+              params.connectorTimeouts?.[connector.id] ?? timeoutMs,
               params.signal,
             );
             log(`[${connector.id}] ${identifier.type} „${identifier.value}”: dokumentów ${found.length}.`);
@@ -287,11 +409,60 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           } catch (error) {
             log(`[${connector.id}] BŁĄD przy ${identifier.type} „${identifier.value}”: ${errorText(error)}. Źródło pominięte.`);
             return [];
+          } finally {
+            progress.connectorsDone++;
+            report();
           }
         }),
       ),
     );
-    return results.flat();
+    const unique: SourceDocument[] = [];
+    let duplicates = 0;
+    for (const doc of results.flat()) {
+      const kept = dedupe(doc);
+      if (kept) unique.push(kept);
+      else duplicates++;
+    }
+    if (duplicates > 0) log(`Pominięto ${duplicates} powtórzeń tej samej treści pod innym adresem (${identifier.type} „${identifier.value}”).`);
+    return unique;
+  };
+
+  /** Czy autor dokumentu to nazwa, po której dokument znaleziono (a nie ktoś, kto ją tylko wymienia). */
+  const authorMatches = (doc: SourceDocument): boolean => {
+    const matched = normalizeName(doc.matchedIdentifier.value);
+    const names = [doc.profile?.handle, doc.author, doc.profile?.displayName].filter((value): value is string => Boolean(value));
+    return names.some((name) => normalizeName(name) === matched);
+  };
+
+  const mentions: MentionSummary[] = [];
+  const maxMentionAuthors = params.maxMentionAuthors ?? DEFAULT_MAX_MENTION_AUTHORS;
+
+  /**
+   * Źródło wyszukiwawcze dopasowuje po fragmencie treści, więc zwraca też cudze wzmianki
+   * o podmiocie. Dokument jest publikacją podmiotu, gdy zgadza się autor albo gdy — przy
+   * niewielu autorach — treść zawiera dane kontaktowe podane przez analityka (e-mail,
+   * komunikator). Nazwa wymieniana przez wielu autorów to „nazwa powszechnie cytowana”.
+   */
+  const attributableDocuments = (identifier: Identifier, docs: SourceDocument[]): SourceDocument[] => {
+    const isMention = (doc: SourceDocument) => isSearchSource(doc.connectorId) && doc.identityMatch !== 'verified_link' && !authorMatches(doc);
+    const cited = docs.filter(isMention);
+    if (cited.length === 0) return docs;
+    const authors = new Set(cited.map((doc) => `${doc.service.toLowerCase()}|${normalizeName(doc.author ?? doc.url)}`));
+    const contacts = params.query.identifiers
+      .filter((item) => (item.type === 'email' || item.type === 'messenger_id') && item.value.trim().length >= 4)
+      .map((item) => item.value.trim().toLowerCase());
+    const few = authors.size <= maxMentionAuthors;
+    const accepted = new Set(cited.filter((doc) => few && contacts.some((contact) => doc.text.toLowerCase().includes(contact))));
+    const rejected = cited.length - accepted.size;
+    if (rejected > 0) {
+      const services = new Set(cited.map((doc) => doc.service.toLowerCase())).size;
+      mentions.push({ identifier, documents: rejected, authors: authors.size, services });
+      log(
+        `${identifier.type} „${identifier.value}”: ${rejected} publikacji ${authors.size} innych autorów w ${services} serwisach tylko wymienia ten identyfikator — ` +
+          `to wzmianki${few ? '' : ' (identyfikator powszechnie cytowany)'}, nie profile podmiotu; nie przypisano ich podmiotowi.`,
+      );
+    }
+    return docs.filter((doc) => !isMention(doc) || accepted.has(doc));
   };
 
   // ---------- Identyfikatory wejściowe ----------
@@ -325,7 +496,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   // ---------- Wyszukiwanie krok po kroku: identyfikatory podane, potem odkryte ----------
 
   const ingest = (doc: SourceDocument, identity: IdentityAssessment, step: number) => {
-    const detected = extractAddresses(doc.text);
+    const detected = extract(doc.text);
     noteSighting(doc, identity, 'subject', step, detected.map(addressKey));
     if (detected.length === 0) return;
     const contentHash = sha256Hex(doc.text);
@@ -395,7 +566,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     );
     const next = new Map<string, Pending>();
     for (const { item, docs } of batches) {
-      for (const doc of docs) {
+      for (const doc of attributableDocuments(item.identifier, docs)) {
         // Dokument znany z wcześniejszego kroku wraca, bo sam podał identyfikator, po którym teraz
         // szukamy. To nie jest nowe potwierdzenie — zostaje pierwotna ocena.
         const seen = sightings.get(sightingKey(doc));
@@ -432,7 +603,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const occurrences = await search({ type: 'crypto_address', value: group.address });
     const candidateAuthors = new Set<string>();
     for (const doc of occurrences) {
-      const hit = extractAddresses(doc.text).find((item) => `${item.network}:${item.address}` === key);
+      const hit = extract(doc.text).find((item) => `${item.network}:${item.address}` === key);
       if (!hit) continue;
       if ([...group.evidence.values()].some((item) => item.url === doc.url && item.archivedAt === doc.archivedAt)) continue;
       const contentHash = sha256Hex(doc.text);
@@ -464,7 +635,10 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         noteSighting(doc, { match: 'same_handle', reasons: [] }, 'co_publisher', 0, [key]);
         log(`Adres ${group.address} publikuje też niepowiązany autor „${doc.author}”: ${doc.url}.`);
       } else {
-        log(`Adres ${group.address} występuje w ${doc.url} bez wskazanego autora — nie wliczono do publikujących.`);
+        // Publikacja bez autora (np. serwis ostrzegający przed oszustwami) to wiedza o adresie, nie ślad osoby.
+        const note = `Wiedza o adresie z serwisu ${doc.service}: „${doc.title}” (${doc.url}) — publikacja bez autora, nie jest śladem osoby.`;
+        if (!group.notes.includes(note)) group.notes.push(note);
+        log(`Adres ${group.address} występuje w ${doc.url} bez wskazanego autora — odnotowano jako wiedzę o adresie, nie wliczono do publikujących.`);
       }
     }
     if (candidateAuthors.size > 1) {
@@ -474,6 +648,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       log(`Adres ${group.address} publikuje ${candidateAuthors.size} różnych autorów — przypisanie niejednoznaczne.`);
     }
   };
+  report('occurrences');
   await Promise.all([...groups.values()].map(checkOccurrences));
 
   // ---------- Dane blockchain ----------
@@ -493,7 +668,30 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         log(`${group.address}: BŁĄD pobierania danych blockchain: ${errorText(error)}.`);
       }
     });
-  await Promise.all([...groups.values()].map(fetchActivity));
+  // Analizę blockchain dostają najpierw adresy podane przez analityka i najlepiej udokumentowane.
+  const evidenceStrength = (group: AddressGroup) =>
+    Math.max(0, ...[...group.evidence.values()].map((item) => rules.base[item.category] + rules.identityAdjustment[item.identityMatch]));
+  const analystKeys = new Set(
+    params.query.identifiers.filter((item) => item.type === 'crypto_address').map((item) => item.value.trim().toLowerCase()),
+  );
+  const ranked = [...groups.values()].sort(
+    (a, b) =>
+      Number(analystKeys.has(b.address.toLowerCase())) - Number(analystKeys.has(a.address.toLowerCase())) ||
+      evidenceStrength(b) - evidenceStrength(a) ||
+      b.evidence.size - a.evidence.size,
+  );
+  const chainLimit = params.maxChainAddresses ?? DEFAULT_MAX_CHAIN_ADDRESSES;
+  const chainSkipped = new Set(ranked.slice(chainLimit));
+  if (chainSkipped.size > 0) {
+    log(`Adresów ${ranked.length}, limit analizy blockchain ${chainLimit} — ${chainSkipped.size} najsłabiej udokumentowanych pozostaje bez analizy łańcucha.`);
+  }
+  report('chain');
+  await Promise.all(
+    ranked.slice(0, chainLimit).map(async (group) => {
+      if (expired('analizę blockchain części adresów')) chainSkipped.add(group);
+      else await fetchActivity(group);
+    }),
+  );
 
   // ---------- Kontrahenci bez etykiety: czy ktoś opublikował ich adresy? ----------
 
@@ -501,6 +699,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     (group) => !rules.excludedClasses.includes(group.chain?.profile.addressClass ?? 'unknown'),
   );
   const counterparties = unlabeledCounterparties(subjectGroups, new Set(groups.keys())).slice(0, maxCounterparties);
+  report('counterparties');
   if (counterparties.length > 0) {
     log(`Sprawdzanie kontrahentów bez etykiety (największych wartością): ${counterparties.length}.`);
   }
@@ -508,7 +707,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     counterparties.map(async (candidate) => {
       const key = addressKey(candidate);
       for (const doc of await search({ type: 'crypto_address', value: candidate.address })) {
-        if (!extractAddresses(doc.text).some((item) => addressKey(item) === key)) continue;
+        if (!extract(doc.text).some((item) => addressKey(item) === key)) continue;
         const author = doc.author ? normalizeName(doc.author) : '';
         if (!author) continue;
         if (knownNames.has(author)) {
@@ -524,14 +723,37 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
 
   // ---------- Wskaźnik Pewności ----------
 
-  const findings: Finding[] = [];
+  report('scoring');
+  const widelyCitedFrom = params.widelyCitedAuthors ?? DEFAULT_WIDELY_CITED_AUTHORS;
+  const findings: AnalysisFinding[] = [];
   for (const group of groups.values()) {
     const evidence = [...group.evidence.values()];
     const unrelatedPublishers = group.unrelatedAuthors.size;
-    const confidence = computeConfidence(
-      { evidence, addressClass: group.chain?.profile.addressClass ?? 'unknown', unrelatedPublishers },
-      rules,
-    );
+    const counted = effectiveUnrelatedPublishers(evidence, unrelatedPublishers);
+    let confidence = computeConfidence({ evidence, addressClass: group.chain?.profile.addressClass ?? 'unknown', unrelatedPublishers: counted }, rules);
+    const notes: string[] = [...group.notes];
+    if (counted !== unrelatedPublishers && unrelatedPublishers >= rules.sharedAddressThreshold) {
+      notes.push(
+        `Adres wymienia także ${unrelatedPublishers} innych autorów; własność potwierdza dowód kryptograficzny lub potwierdzona tożsamość profilu, ` +
+          'więc cytowania nie obniżają wyniku.',
+      );
+    }
+    const widelyCited = counted >= widelyCitedFrom;
+    if (widelyCited && !confidence.excluded) {
+      // Adres darowizn projektu albo adres z FAQ giełdy: publikuje go wielu autorów, więc nie wskazuje osoby.
+      const explanation =
+        `Adres powszechnie cytowany: publikuje go ${unrelatedPublishers} niepowiązanych autorów (próg ${widelyCitedFrom}). ` +
+        'Nie jest przypisywany żadnej osobie; odnotowano jedynie fakt publikacji.';
+      notes.push(explanation);
+      confidence = {
+        score: 0,
+        tier: [...rules.tiers].sort((a, b) => a.min - b.min)[0]!.label,
+        excluded: true,
+        ledger: [...confidence.ledger, { rule: 'exclusion.widely_cited', delta: -confidence.score, running: 0, explanation, evidenceIds: evidence.map((item) => item.id) }],
+        nextSteps: [],
+      };
+    }
+    if (chainSkipped.has(group)) notes.push('Nie analizowano łańcucha: adres poza limitem liczby adresów albo czasu analizy.');
     findings.push({
       address: group.address,
       network: group.network,
@@ -540,15 +762,78 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       confidence,
       chain: group.chain,
       unrelatedPublishers,
+      ...(widelyCited ? { widelyCited } : {}),
+      ...(chainSkipped.has(group) ? { chainSkipped: true } : {}),
+      ...(notes.length > 0 ? { notes } : {}),
     });
     log(
       `${group.address}: Wskaźnik Pewności ${confidence.score}% (${confidence.tier})` +
         `${confidence.excluded ? ' — adres wykluczony' : ''}; śladów ${evidence.length}.`,
     );
   }
-
   sortFindings(findings);
-  log(`Koniec analizy: adresów ${findings.length}.`);
+
+  // ---------- Model językowy (opcjonalny): odczyt publikacji i porównanie autorów ----------
+
+  let authorComparisons: AuthorComparison[] | undefined;
+  if (params.ai && !expired('odczyt publikacji przez model')) {
+    report('ai');
+    const { ai } = params;
+    const aiLimited = createLimiter(AI_RULES.concurrency);
+    const textOf = (item: { url: string; contentHash?: string }) =>
+      [...documents.values()].find((doc) => doc.url === item.url && (!item.contentHash || doc.contentHash === item.contentHash))?.text;
+
+    // Najpierw ślady najmocniejsze: to one decydują o wyniku.
+    const queue = findings
+      .flatMap((finding) => finding.evidence.map((item) => ({ finding, item, value: rules.base[item.category] + rules.identityAdjustment[item.identityMatch] })))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, params.maxAiPublications ?? AI_RULES.maxPublicationsPerAnalysis);
+    let read = 0;
+    await Promise.all(
+      queue.map(({ finding, item }) =>
+        aiLimited(async () => {
+          const text = textOf(item);
+          if (!text || performance.now() >= deadline) return;
+          try {
+            const insight = await ai.analyzePublication({ text, address: finding.address, author: item.author, title: item.title });
+            if (insight) {
+              item.insight = insight;
+              read++;
+            }
+          } catch (error) {
+            log(`[model ${ai.model}] BŁĄD odczytu ${item.url}: ${errorText(error)}. Ślad oceniony samymi regułami.`);
+          }
+        }),
+      ),
+    );
+    log(`[model ${ai.model}] odczytano publikacji: ${read} z ${queue.length} (odczyt jest sugestią; o wyniku decydują reguły).`);
+
+    const nodes = buildProfileNodes({ findings } as unknown as AnalysisRun, [...sightings.values()]);
+    const comparisons: AuthorComparison[] = [];
+    await Promise.all(
+      comparablePairs(nodes, findings, rules)
+        .slice(0, MAX_AUTHOR_COMPARISONS)
+        .map(({ a, b }) =>
+          aiLimited(async () => {
+            const texts = (node: (typeof nodes)[number]) => node.sightings.map(textOf).filter((text): text is string => Boolean(text));
+            const [left, right] = [texts(a), texts(b)];
+            if (left.length === 0 || right.length === 0 || performance.now() >= deadline) return;
+            try {
+              const result = await ai.compareAuthors(left, right);
+              if (result) comparisons.push({ a: a.card.id, b: b.card.id, likelihood: result.likelihood, reasons: result.reasons, model: result.model });
+            } catch (error) {
+              log(`[model ${ai.model}] BŁĄD porównania autorów ${a.card.id} / ${b.card.id}: ${errorText(error)}.`);
+            }
+          }),
+        ),
+    );
+    if (comparisons.length > 0) {
+      authorComparisons = comparisons;
+      log(`[model ${ai.model}] porównano styl autorów dla par profili: ${comparisons.length} (słaba przesłanka, nie łączy profili).`);
+    }
+  }
+
+  log(`Koniec analizy: adresów ${findings.length}${partial ? ' (wynik częściowy — limit czasu)' : ''}.`);
 
   return {
     findings,
@@ -560,6 +845,9 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       sightings: [...sightings.values()],
       trail: [...trail.values()],
       checkedCounterparties: counterparties.map(addressKey),
+      ...(authorComparisons ? { authorComparisons } : {}),
+      ...(partial ? { partial } : {}),
+      ...(mentions.length > 0 ? { mentions } : {}),
     },
   };
 }

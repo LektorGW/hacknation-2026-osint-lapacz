@@ -23,7 +23,9 @@ import type { Decision, Finding, Identifier, IdentityMatch, PersonCandidate, Sco
 import type { ProfileNode } from './entity.ts';
 import { plural } from './format.ts';
 import { isCommonHandle, isUniqueType, matchRank, normalize } from './identity.ts';
+import { AI_RULES } from './ai-rules.ts';
 import { addressKey, sightingKey } from './intel.ts';
+import type { AuthorComparison } from './intel.ts';
 import { normalizeProfileUrl } from './diff.ts';
 
 export const PERSON_RULES = {
@@ -81,6 +83,8 @@ const sentence = (text: string): string => `${text.replace(/[.\s]+$/, '')}.`;
 
 export interface PersonsInput {
   nodes: ProfileNode[];
+  /** Porównania autorów z modelu językowego (opcjonalne) — tylko dodatkowa słaba przesłanka. */
+  authorComparisons?: AuthorComparison[];
   /** Identyfikatory podane przez analityka. */
   identifiers: Identifier[];
   /** Adresy analizy przed korektami — do wiązania „ten sam adres” i oceny osoba–adres. */
@@ -289,17 +293,38 @@ const BASE_BY_MATCH: Record<IdentityMatch, { points: number; text: string }> = {
   name_only: { points: PERSON_RULES.probability.name_only, text: 'zgodne tylko imię i nazwisko — możliwy imiennik' },
 };
 
+/** Adresy, które nie świadczą o tej samej osobie: współdzielone albo należące do pośredników. */
+const sharedAddressKeys = (findings: Finding[], rules: ScoreRules): Set<string> =>
+  new Set(
+    findings
+      .filter((finding) => finding.unrelatedPublishers >= rules.sharedAddressThreshold || rules.excludedClasses.includes(finding.chain?.profile.addressClass ?? 'unknown'))
+      .map(addressKey),
+  );
+
+/**
+ * Pary profili o wiązaniu „możliwym, ale niepotwierdzonym” (waga poniżej progu łączenia) —
+ * tylko dla nich pytamy model językowy o podobieństwo stylu.
+ */
+export function comparablePairs(nodes: ProfileNode[], findings: Finding[], rules: ScoreRules): { a: ProfileNode; b: ProfileNode; weight: number }[] {
+  const shared = sharedAddressKeys(findings, rules);
+  const { minTieWeight, maxTieWeight } = AI_RULES.authorComparison;
+  const pairs: { a: ProfileNode; b: ProfileNode; weight: number }[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const { weight } = pairTie(nodes[i]!, nodes[j]!, shared);
+      if (weight >= minTieWeight && weight <= maxTieWeight) pairs.push({ a: nodes[i]!, b: nodes[j]!, weight });
+    }
+  }
+  return pairs;
+}
+
 export function resolvePersons(input: PersonsInput): PersonsResult {
   const { nodes, rules } = input;
   const rules_ = PERSON_RULES.probability;
   const count = nodes.length;
   const ANCHOR = count;
 
-  const sharedAddresses = new Set(
-    input.findings
-      .filter((finding) => finding.unrelatedPublishers >= rules.sharedAddressThreshold || rules.excludedClasses.includes(finding.chain?.profile.addressClass ?? 'unknown'))
-      .map(addressKey),
-  );
+  const sharedAddresses = sharedAddressKeys(input.findings, rules);
 
   // ---------- Wiązania ----------
   const rejected = nodes.map((node) => input.decisions.get(node.card.id) === 'rejected');
@@ -312,6 +337,17 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
     for (let j = i + 1; j < count; j++) {
       if (rejected[i] || rejected[j]) continue;
       const tie = pairTie(nodes[i]!, nodes[j]!, sharedAddresses);
+      const ids = [nodes[i]!.card.id, nodes[j]!.card.id];
+      const comparison = input.authorComparisons?.find((item) => ids.includes(item.a) && ids.includes(item.b) && item.a !== item.b);
+      const { minTieWeight, maxTieWeight, maxBonus } = AI_RULES.authorComparison;
+      if (comparison && tie.weight >= minTieWeight && tie.weight <= maxTieWeight) {
+        // Model może dołożyć słabą przesłankę, ale nigdy sam nie przenosi wiązania ponad próg łączenia.
+        const bonus = Math.min(maxBonus, Math.round((comparison.likelihood / 100) * maxBonus), PERSON_RULES.joinThreshold - 1 - tie.weight);
+        if (bonus > 0) {
+          tie.weight += bonus;
+          tie.reasons.push(`model ${comparison.model}: podobny styl wypowiedzi (${comparison.likelihood}%) — słaba przesłanka, nie łączy profili (waga ${bonus})`);
+        }
+      }
       if (tie.weight > 0) pairs.set(`${i}|${j}`, tie);
     }
   }
@@ -415,6 +451,13 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
       const tiesToOthers = draft.indexes
         .filter((other) => other !== index && pair(index, other).weight >= PERSON_RULES.joinThreshold)
         .map((other) => `Wiązanie z profilem ${nodes[other]!.card.service}: ${pair(index, other).reasons.join('; ')}.`);
+      // Wiązania poniżej progu z udziałem modelu pokazujemy jako informację — profile pozostają osobno.
+      for (let other = 0; other < count; other++) {
+        const tie = pair(index, other);
+        if (other !== index && tie.weight < PERSON_RULES.joinThreshold && tie.reasons.some((reason) => reason.startsWith('model '))) {
+          tiesToOthers.push(`Możliwe, ale niepotwierdzone wiązanie z profilem ${nodes[other]!.card.id} (waga ${tie.weight}, poniżej progu ${PERSON_RULES.joinThreshold}): ${tie.reasons.join('; ')}.`);
+        }
+      }
       const topTie = Math.max(0, ...draft.indexes.filter((other) => other !== index).map((other) => pair(index, other).weight));
 
       let match = node.base.match;

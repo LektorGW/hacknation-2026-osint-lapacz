@@ -13,16 +13,21 @@ import type {
   ScoreRules,
   StoredEvidence,
 } from '@olcys/core';
-import { sortFindings } from './analysis.ts';
+import { insightEffect } from './ai-rules.ts';
+import type { InsightEvidence } from './ai-rules.ts';
+import { effectiveUnrelatedPublishers, sortFindings } from './analysis.ts';
+import type { AnalysisFinding } from './analysis.ts';
 import { detectReplacements } from './diff.ts';
 import { buildProfileNodes, decisionMatchesProfile, sightingsOf } from './entity.ts';
 import { formatDate } from './format.ts';
 import { buildGraph } from './graph.ts';
 import { addressKey, sightingKey } from './intel.ts';
-import type { RunIntel } from './intel.ts';
+import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
 import { resolvePersons } from './persons.ts';
 import { summarizeFindings } from './priority.ts';
+import { buildCashOutProof } from './proof.ts';
+import type { CashOutProof } from './proof.ts';
 import { buildRelatedPersons } from './relations.ts';
 import type { OtherCase, RelatedPersonView } from './relations.ts';
 import { buildServiceLinks, detectServiceMentions } from './services.ts';
@@ -31,7 +36,13 @@ import type { CaseSummary, DecisionRecord } from './storage.ts';
 import { buildTimeline } from './timeline.ts';
 
 /** Adres w teczce: wynik względem osoby głównej plus adnotacje o korektach. */
-export type DossierFinding = Finding & {
+export type DossierFinding = Omit<Finding, 'evidence'> & {
+  /** Ślady z opcjonalnym odczytem publikacji przez model językowy (`insight`). */
+  evidence: InsightEvidence[];
+  /** Adres cytowany przez bardzo wielu autorów — nikomu nieprzypisany. */
+  widelyCited?: boolean;
+  /** Analizę blockchain pominięto (limit adresów albo czasu). */
+  chainSkipped?: boolean;
   /**
    * Łączne prawdopodobieństwo (0–100), że adres należy do OSOBY ZE SPRAWY: prawdopodobieństwo
    * kandydata głównego × prawdopodobieństwo adresu u tego kandydata / 100.
@@ -40,7 +51,7 @@ export type DossierFinding = Finding & {
   /** Dlaczego wynik różni się od zapisanego w analizie (inna osoba, decyzja analityka). */
   annotations?: string[];
   /** Ślady pominięte w ocenie — widoczne dla analityka, ale nieliczone. */
-  excludedEvidence?: StoredEvidence[];
+  excludedEvidence?: InsightEvidence[];
   decision?: Decision;
 };
 
@@ -63,6 +74,14 @@ export interface DossierView extends Dossier {
   relatedPersons: RelatedPersonView[];
   decisions: DecisionRecord[];
   totals: Dossier['totals'] & { cashOutPlnTotal: number };
+  /** Dowód spieniężenia: ustalenia „osoba → adres → ścieżka → usługa”, od najpewniejszego. Puste, gdy brak ścieżek. */
+  cashOutProof: CashOutProof[];
+  /** Streszczenie wygenerowane przez model z kluczowych ustaleń; `null` bez modelu. */
+  summary: { text: string; model: string; promptVersion: string } | null;
+  /** Analiza przerwana limitem czasu — wynik częściowy. */
+  partial: boolean;
+  /** Identyfikatory podmiotu wymieniane w publikacjach innych autorów — wzmianki, nie profile. */
+  mentions: MentionSummary[];
 }
 
 export interface DossierInput {
@@ -78,7 +97,7 @@ export interface DossierInput {
 }
 
 /** Obowiązuje najnowsza decyzja dla danego celu; wcześniejsze zostają tylko w rejestrze. */
-function latestDecisions(decisions: DecisionRecord[], target: DecisionRecord['target']): DecisionRecord[] {
+function latestDecisions(decisions: DecisionRecord[], target: string): DecisionRecord[] {
   const byKey = new Map<string, DecisionRecord>();
   for (const decision of decisions) {
     if (decision.target === target) byKey.set(decision.key.trim().toLowerCase(), decision);
@@ -107,6 +126,7 @@ export function buildDossier(input: DossierInput): DossierView {
     findings: run.findings,
     decisions: profileDecisions,
     rules,
+    authorComparisons: input.intel?.authorComparisons,
   });
   const main = persons[0];
   const mainProfileIds = new Set(main && main.probability > 0 ? main.profileIds : []);
@@ -116,13 +136,31 @@ export function buildDossier(input: DossierInput): DossierView {
   const nodeOfDoc = new Map(nodes.flatMap((node) => node.sightings.map((item) => [sightingKey(item), node] as const)));
   const addressDecisions = new Map(latestDecisions(input.decisions, 'address').map((decision) => [decision.key.trim().toLowerCase(), decision]));
 
-  const findings: DossierFinding[] = run.findings.map((finding) => {
-    const kept: StoredEvidence[] = [];
-    const dropped: StoredEvidence[] = [];
-    const annotations: string[] = [];
+  // Decyzja dla pojedynczego śladu: „potwierdzony” cofa wpływ modelu, „odrzucony” wyłącza ślad.
+  const evidenceDecisions = new Map(latestDecisions(input.decisions, 'evidence').map((decision) => [decision.key.trim().toLowerCase(), decision]));
+
+  const findings: DossierFinding[] = (run.findings as AnalysisFinding[]).map((finding) => {
+    const kept: InsightEvidence[] = [];
+    const dropped: InsightEvidence[] = [];
+    const annotations: string[] = [...(finding.notes ?? [])];
+    /** Ślady wyłączone odczytem modelu — do osobnego wpisu w księdze. */
+    const byModel: { evidence: InsightEvidence; note: string }[] = [];
     for (const evidence of finding.evidence) {
       const node = nodeOfDoc.get(sightingKey(evidence));
-      if (!node) kept.push(evidence);
+      const own = evidenceDecisions.get(evidence.id.toLowerCase());
+      const effect = insightEffect(evidence);
+      if (effect?.categoryNote && !annotations.includes(effect.categoryNote)) annotations.push(effect.categoryNote);
+      if (own?.decision === 'rejected') {
+        dropped.push(evidence);
+        annotations.push(`Pominięto ślad ${evidence.url} odrzucony przez analityka — ${decisionNote(own)}.`);
+      } else if (effect?.effect === 'excludes' && own?.decision !== 'confirmed' && node?.card.decision !== 'confirmed') {
+        dropped.push(evidence);
+        byModel.push({ evidence, note: effect.note });
+        annotations.push(`${effect.note} Ślad: ${evidence.url}. Decyzja analityka „potwierdzony” dla śladu lub profilu cofa ten wpływ.`);
+      } else if (effect?.effect === 'excludes') {
+        annotations.push(`Odczyt modelu dla śladu ${evidence.url} pominięto decyzją analityka — ślad jest wliczany.`);
+        kept.push(node ? { ...evidence, identityMatch: node.card.identityMatch, identityReasons: node.card.identityReasons } : evidence);
+      } else if (!node) kept.push(evidence);
       else if (!mainProfileIds.has(node.card.id)) {
         dropped.push(evidence);
         const note =
@@ -131,13 +169,44 @@ export function buildDossier(input: DossierInput): DossierView {
             : `Pominięto ślad z profilu ${node.card.id}, zaliczonego do innego kandydata (${personOfProfile.get(node.card.id)}) — nie podnosi wyniku osoby głównej.`;
         if (!annotations.includes(note)) annotations.push(note);
       } else {
+        if (effect?.effect === 'confirms') annotations.push(`${effect.note} Ślad: ${evidence.url}.`);
         kept.push({ ...evidence, identityMatch: node.card.identityMatch, identityReasons: node.card.identityReasons });
       }
     }
-    let confidence = computeConfidence(
-      { evidence: kept, addressClass: finding.chain?.profile.addressClass ?? 'unknown', unrelatedPublishers: finding.unrelatedPublishers },
-      rules,
-    );
+    const addressClass = finding.chain?.profile.addressClass ?? 'unknown';
+    // Dowód kryptograficzny lub potwierdzony profil ma pierwszeństwo przed liczbą cytujących adres.
+    const unrelatedPublishers = effectiveUnrelatedPublishers(kept, finding.unrelatedPublishers);
+    let confidence = computeConfidence({ evidence: kept, addressClass, unrelatedPublishers }, rules);
+    if (byModel.length > 0 && !confidence.excluded) {
+      // Wpływ modelu jest jawny: różnica względem wyniku liczonego z tymi śladami.
+      const withModelEvidence = computeConfidence(
+        { evidence: [...kept, ...byModel.map((item) => item.evidence)], addressClass, unrelatedPublishers },
+        rules,
+      );
+      confidence = {
+        ...confidence,
+        ledger: [
+          ...confidence.ledger,
+          {
+            rule: 'ai.ownership',
+            delta: confidence.score - withModelEvidence.score,
+            running: confidence.score,
+            explanation: `Ślady niewliczone po odczycie modelu językowego (${byModel.length}): ${byModel.map((item) => item.note).join(' ')}`,
+            evidenceIds: byModel.map((item) => item.evidence.id),
+          },
+        ],
+      };
+    }
+    const widelyCited = finding.confidence.ledger.find((entry) => entry.rule === 'exclusion.widely_cited');
+    if (widelyCited && !confidence.excluded && unrelatedPublishers > 0) {
+      confidence = {
+        score: 0,
+        tier: [...rules.tiers].sort((a, b) => a.min - b.min)[0]!.label,
+        excluded: true,
+        ledger: [...confidence.ledger, { ...widelyCited, delta: -confidence.score }],
+        nextSteps: [],
+      };
+    }
 
     const decision = addressDecisions.get(addressKey(finding).toLowerCase()) ?? addressDecisions.get(finding.address.toLowerCase());
     if (decision?.decision === 'rejected') {
@@ -194,6 +263,8 @@ export function buildDossier(input: DossierInput): DossierView {
       ...(main?.fullName ? [main.fullName] : []),
     ]),
   ].slice(0, 10);
+  const linkedKeys = new Set(linked.map(addressKey));
+  const cashOutProof = buildCashOutProof({ findings, linkedKeys, analystAddresses, main });
   const serviceLinks = buildServiceLinks({
     subjectFindings: linked,
     publishedServiceFindings: findings.filter((finding) => finding.confidence.ledger[0]?.rule === 'exclusion.address_class'),
@@ -201,7 +272,7 @@ export function buildDossier(input: DossierInput): DossierView {
     accountNames,
     matcher: input.matchService,
   });
-  const summary = summarizeFindings(findings, analystAddresses, input.now, serviceLinks);
+  const summary = summarizeFindings(findings, analystAddresses, input.now, serviceLinks, cashOutProof[0]?.combinedConfidence);
 
   // ---------- Reszta obrazu ----------
   const trail = input.intel?.trail ?? [];
@@ -242,6 +313,10 @@ export function buildDossier(input: DossierInput): DossierView {
     findings,
     relatedPersons,
     serviceLinks,
+    cashOutProof,
+    summary: null,
+    partial: input.intel?.partial === true,
+    mentions: input.intel?.mentions ?? [],
     graph: buildGraph({
       subjectLabel: main?.fullName ?? caseSummary.name,
       caseName: caseSummary.name,
@@ -252,8 +327,9 @@ export function buildDossier(input: DossierInput): DossierView {
       serviceLinks,
       relatedPersons,
       trail,
+      proofs: cashOutProof,
     }),
-    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements }),
+    timeline: buildTimeline({ linked, profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)), replacements, proofs: cashOutProof }),
     totals: {
       linkedAddresses: summary.linkedAddresses,
       excludedAddresses: summary.excludedAddresses,
@@ -265,6 +341,8 @@ export function buildDossier(input: DossierInput): DossierView {
     },
     decisions: input.decisions,
     keyFindings: buildKeyFindings({
+      mentions: input.intel?.mentions ?? [],
+      proofs: cashOutProof,
       persons,
       profiles,
       serviceLinks,

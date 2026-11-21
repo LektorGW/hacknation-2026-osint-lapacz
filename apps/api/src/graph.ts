@@ -7,7 +7,8 @@ import type { ProfileNode } from './entity.ts';
 import { roundPln, shortAddress } from './format.ts';
 import { addressKey } from './intel.ts';
 import type { DiscoveryStep } from './intel.ts';
-import { isCashOutService, serviceKindLabel } from './services.ts';
+import type { CashOutProof } from './proof.ts';
+import { isCashOutService, serviceIdOf, serviceKindLabel } from './services.ts';
 
 export interface GraphInput {
   subjectLabel: string;
@@ -20,6 +21,8 @@ export interface GraphInput {
   serviceLinks: ServiceLink[];
   relatedPersons: RelatedPerson[];
   trail: DiscoveryStep[];
+  /** Dowód spieniężenia: ścieżki środków rysowane krok po kroku. */
+  proofs?: CashOutProof[];
 }
 
 const identifierNodeId = (identifier: Identifier) => `id:${identifier.type}:${identifier.value.trim().toLowerCase()}`;
@@ -138,6 +141,32 @@ export function buildGraph(input: GraphInput): { nodes: GraphNode[]; edges: Grap
         weight: link.strength,
       });
     }
+  }
+
+  // Ścieżki środków: adres podmiotu → adresy pośrednie → usługa, każda krawędź to jeden krok.
+  for (const proof of input.proofs ?? []) {
+    const { trail } = proof;
+    const service = `svc:${serviceIdOf(trail.serviceName)}`;
+    addNode({ id: service, kind: 'service', label: trail.serviceName, sublabel: 'usługa na końcu ścieżki środków', score: trail.confidence });
+    let from = `addr:${trail.network}:${trail.sourceAddress}`;
+    if (proof.cluster) {
+      addNode({ id: from, kind: 'address', label: shortAddress(trail.sourceAddress), sublabel: 'adres z klastra portfela (heurystyka)', score: proof.personAddressProbability });
+      addEdge({ from: `addr:${trail.network}:${proof.cluster.seed}`, to: from, kind: 'related', label: proof.cluster.reason, inferred: true });
+    }
+    trail.hops.forEach((hop, index) => {
+      const final = index === trail.hops.length - 1;
+      const to = final ? service : `addr:${trail.network}:${hop.to}`;
+      if (!final) addNode({ id: to, kind: 'address', label: shortAddress(hop.to), sublabel: hop.toLabel ?? 'adres pośredni na ścieżce środków', url: hop.explorerUrl });
+      addEdge({
+        from,
+        to,
+        kind: 'cash_out',
+        label: `krok ${index + 1}: ${hop.amount.toLocaleString('pl-PL', { maximumFractionDigits: 8 })} ${hop.asset}`,
+        weight: trail.confidence,
+        ...(hop.inferred || final ? { inferred: true } : {}),
+      });
+      from = to;
+    });
   }
 
   for (const person of input.relatedPersons) {

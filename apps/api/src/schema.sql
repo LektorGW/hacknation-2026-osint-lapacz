@@ -91,3 +91,33 @@ CREATE TABLE IF NOT EXISTS monitor_hits (
   data         JSONB NOT NULL,
   analysis     JSONB
 );
+
+-- Własny indeks publikacji: wszystko, co monitoring kiedykolwiek pobrał. Analiza osoby i adresu
+-- przeszukuje go bez wychodzenia do sieci (łącznik wewnętrzny `corpus`).
+CREATE TABLE IF NOT EXISTS corpus (
+  url           TEXT PRIMARY KEY,
+  service       TEXT NOT NULL,
+  connector_id  TEXT NOT NULL,
+  author        TEXT,
+  author_key    TEXT,
+  published_at  TEXT,
+  fetched_at    TIMESTAMPTZ NOT NULL,
+  title         TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  content_hash  TEXT NOT NULL,
+  category      TEXT NOT NULL,
+  profile       JSONB
+);
+
+CREATE INDEX IF NOT EXISTS corpus_author_idx ON corpus (author_key);
+
+CREATE INDEX IF NOT EXISTS corpus_fetched_idx ON corpus (fetched_at);
+
+CREATE TABLE IF NOT EXISTS corpus_addresses (
+  url      TEXT NOT NULL REFERENCES corpus (url) ON DELETE CASCADE,
+  network  TEXT NOT NULL,
+  address  TEXT NOT NULL,
+  PRIMARY KEY (url, network, address)
+);
+
+CREATE INDEX IF NOT EXISTS corpus_addresses_address_idx ON corpus_addresses (address);

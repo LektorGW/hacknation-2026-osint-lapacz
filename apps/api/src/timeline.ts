@@ -5,6 +5,7 @@
 import type { Finding, ProfileCard, TimelineEvent } from '@olcys/core';
 import type { AddressReplacement } from './diff.ts';
 import { formatAmount, shortAddress } from './format.ts';
+import type { CashOutProof } from './proof.ts';
 
 /** Najwyżej tyle zwykłych przelewów (największych kwotą) trafia na oś; wypłaty zawsze wszystkie. */
 export const MAX_TIMELINE_TRANSFERS = 300;
@@ -14,6 +15,8 @@ export interface TimelineInput {
   linked: Finding[];
   profiles: ProfileCard[];
   replacements: AddressReplacement[];
+  /** Dowód spieniężenia: dotarcie środków do usługi przez adresy pośrednie. */
+  proofs?: CashOutProof[];
 }
 
 export function buildTimeline(input: TimelineInput): TimelineEvent[] {
@@ -95,6 +98,22 @@ export function buildTimeline(input: TimelineInput): TimelineEvent[] {
       address: replacement.to,
       url: replacement.url,
       layer: 'fact',
+    });
+  }
+
+  for (const proof of input.proofs ?? []) {
+    const last = proof.trail.hops.at(-1);
+    // Ścieżka jednokrokowa to zwykły przelew do usługi — jest już na osi jako możliwa wypłata.
+    if (!last || proof.trail.hops.length < 2) continue;
+    events.push({
+      time: last.time,
+      kind: 'cash_out',
+      title: `Środki dotarły do usługi ${proof.trail.serviceName}: ${formatAmount(proof.trail.amount)} ${proof.trail.asset} (ścieżka w ${proof.trail.hops.length} krokach)`,
+      detail: `${proof.statement} Początek ścieżki: adres ${shortAddress(proof.address)}.`,
+      address: proof.address,
+      ...(proof.trail.valuePln !== undefined ? { valuePln: proof.trail.valuePln } : {}),
+      url: last.explorerUrl,
+      layer: proof.layer,
     });
   }
 

@@ -8,7 +8,11 @@ import type { OtherCase } from '../src/relations.ts';
 import type { DecisionRecord } from '../src/storage.ts';
 import type {
   AddressClass,
+  AddressCluster,
+  AiAssistant,
   AnalysisRun,
+  CashOutTrail,
+  TextInsight,
   CashOutIndicator,
   ChainActivity,
   ChainProvider,
@@ -208,7 +212,7 @@ export function cashOut(source: Transfer, valuePln: number, extra: Partial<CashO
 
 /** Dostawca z ręcznie opisaną aktywnością wybranych adresów; pozostałe są prywatne i bez przelewów. */
 export function chainWith(
-  activities: Record<string, { transfers?: Transfer[]; cashOuts?: CashOutIndicator[]; addressClass?: AddressClass; label?: string }>,
+  activities: Record<string, { transfers?: Transfer[]; cashOuts?: CashOutIndicator[]; addressClass?: AddressClass; label?: string; trails?: CashOutTrail[]; cluster?: AddressCluster }>,
 ): ChainProvider {
   return {
     id: 'atrapa-chain',
@@ -225,6 +229,8 @@ export function chainWith(
         transfers: spec.transfers ?? [],
         cashOuts,
         cashOutPlnByYear: byYear,
+        ...(spec.trails ? { trails: spec.trails } : {}),
+        ...(spec.cluster ? { cluster: spec.cluster } : {}),
       };
     },
   };
@@ -250,4 +256,35 @@ export function dossierOf(
 
 export function decision(target: 'profile' | 'address', key: string, value: 'confirmed' | 'rejected', note?: string): DecisionRecord {
   return { id: `d-${target}-${key}-${value}`, caseId: 'sprawa-1', target, key, decision: value, note, decidedAt: '2026-11-21T10:00:00.000Z', author: 'analityk' };
+}
+
+// ---------- Atrapa modelu językowego ----------
+
+export interface FakeAi extends AiAssistant {
+  calls: { publications: { text: string; address?: string; author?: string }[]; summaries: string[][]; comparisons: number };
+}
+
+/** Model zwracający odczyt wskazany przez test; domyślnie „nie wiadomo, czyj adres”. */
+export function fakeAi(read: (input: { text: string; address?: string; author?: string }) => Partial<TextInsight> | null | Error = () => ({})): FakeAi {
+  const calls: FakeAi['calls'] = { publications: [], summaries: [], comparisons: 0 };
+  return {
+    id: 'atrapa',
+    model: 'atrapa-1',
+    description: 'Atrapa modelu do testów — nic nie opuszcza procesu.',
+    calls,
+    async analyzePublication(input) {
+      calls.publications.push(input);
+      const result = read(input);
+      if (result instanceof Error) throw result;
+      return result === null ? null : { ownership: 'unclear', language: 'pl', quote: '', model: 'atrapa-1', promptVersion: 'p1', ...result };
+    },
+    async summarize(facts) {
+      calls.summaries.push(facts);
+      return { text: `Streszczenie ${facts.length} ustaleń.`, model: 'atrapa-1', promptVersion: 's1' };
+    },
+    async compareAuthors() {
+      calls.comparisons++;
+      return { likelihood: 80, reasons: ['podobne zwroty'], model: 'atrapa-1' };
+    },
+  };
 }

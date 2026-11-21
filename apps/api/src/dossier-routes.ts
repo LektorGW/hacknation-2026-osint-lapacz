@@ -4,11 +4,14 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Decision, Identifier } from '@olcys/core';
-import { DEFAULT_MAX_IDENTIFIERS } from './analysis.ts';
+import { AI_RULES } from './ai-rules.ts';
+import { DEFAULT_MAX_IDENTIFIERS, DEFAULT_WIDELY_CITED_AUTHORS } from './analysis.ts';
 import { HttpError, TOOL_VERSION, idParams, identifierItems } from './http-common.ts';
 import type { RouteContext } from './http-common.ts';
 import { PERSON_RULES } from './persons.ts';
 import { PRIORITY_RULES } from './priority.ts';
+import { PROOF_RULES } from './proof.ts';
+import { DEPTH_LIMITS } from './runs.ts';
 import { RELATION_STRENGTH } from './relations.ts';
 import { renderServiceRequestHtml } from './report-service.ts';
 import { SERVICE_STRENGTH_RULES } from './services.ts';
@@ -40,6 +43,9 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     services: SERVICE_STRENGTH_RULES,
     relations: RELATION_STRENGTH,
     signals: SIGNAL_RULES,
+    ai: AI_RULES,
+    proof: PROOF_RULES,
+    analysis: { depth: DEPTH_LIMITS, widelyCitedAuthors: DEFAULT_WIDELY_CITED_AUTHORS },
   }));
 
   app.get<{ Params: { id: string } }>('/api/runs/:id/dossier', { schema: { params: idParams } }, async (request) =>
@@ -57,7 +63,7 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
     return storage.listDecisions(request.params.id);
   });
 
-  app.post<{ Params: { id: string }; Body: { target: 'profile' | 'address'; key: string; decision: Decision; note?: string } }>(
+  app.post<{ Params: { id: string }; Body: { target: 'profile' | 'address' | 'evidence'; key: string; decision: Decision; note?: string } }>(
     '/api/cases/:id/decisions',
     {
       schema: {
@@ -67,7 +73,8 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
           required: ['target', 'key', 'decision'],
           additionalProperties: false,
           properties: {
-            target: { type: 'string', enum: ['profile', 'address'] },
+            // `evidence`: decyzja dla pojedynczego śladu (klucz = identyfikator śladu), np. cofnięcie wpływu modelu.
+            target: { type: 'string', enum: ['profile', 'address', 'evidence'] },
             key: { type: 'string', minLength: 1, maxLength: 500 },
             decision: { type: 'string', enum: ['confirmed', 'rejected'] },
             note: { type: 'string', maxLength: 2000 },
@@ -83,7 +90,7 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
       const record: DecisionRecord = {
         id: randomUUID(),
         caseId: caseSummary.id,
-        target: request.body.target,
+        target: request.body.target as DecisionRecord['target'],
         key,
         decision: request.body.decision,
         ...(note ? { note } : {}),
@@ -176,6 +183,28 @@ export function registerDossierRoutes(app: FastifyInstance, context: RouteContex
       })),
     };
   });
+
+  // ---------- Indeks publikacji i model językowy ----------
+
+  app.get('/api/corpus/stats', async () => ({ ...(await storage.corpusStats()), ...context.corpusSettings }));
+
+  app.get('/api/ai', async () =>
+    context.ai
+      ? {
+          enabled: true,
+          provider: context.ai.assistant.id,
+          model: context.ai.assistant.model,
+          description: context.ai.assistant.description,
+          usage: context.ai.usage,
+        }
+      : {
+          enabled: false,
+          provider: null,
+          model: null,
+          description: 'Model językowy nie jest skonfigurowany — wszystkie wyniki liczą wyłącznie jawne reguły.',
+          usage: { analyzePublication: 0, summarize: 0, compareAuthors: 0, errors: 0 },
+        },
+  );
 
   // ---------- Materiał do zapytania do usługi ----------
 
