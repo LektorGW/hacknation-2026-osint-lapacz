@@ -39,6 +39,10 @@ export interface TraceOptions extends DepositOptions {
    * dłuższy czas obniża pewność ścieżki.
    */
   utxoHoldHours?: number;
+  /** Bitcoin: ile wyjść jednej transakcji wypływu najwyżej śledzimy osobno. */
+  maxBranches?: number;
+  /** Bitcoin: wyjście jest „istotne”, gdy ma co najmniej taką część wartości wypływu (0–1). */
+  minBranchShare?: number;
 }
 
 export const DEFAULT_TRACE_OPTIONS: Required<TraceOptions> = {
@@ -48,6 +52,8 @@ export const DEFAULT_TRACE_OPTIONS: Required<TraceOptions> = {
   swapForwardHours: 72,
   clusterLimit: DEFAULT_CLUSTER_LIMIT,
   utxoHoldHours: 30 * 24,
+  maxBranches: 4,
+  minBranchShare: 0.05,
 };
 
 /** Ścieżka przed wyceną w PLN. */
@@ -58,6 +64,11 @@ export interface TraceResult {
   /** Jednokrokowe przypadki „adres wpłat giełdy” w dotychczasowym formacie wskaźników. */
   deposits: InferredDeposit[];
   limitations: string[];
+  /**
+   * Pytania do wyjaśnienia poza łańcuchem dla ścieżek, które urwały się bez wyniku —
+   * przede wszystkim: dokąd trafiła największa część środków. `txid` to przelew z portfela podmiotu.
+   */
+  openQuestions: { txid: string; text: string }[];
 }
 
 // ---------- Wzór pewności ----------
@@ -371,7 +382,8 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
   const trails: TracedTrail[] = [];
   const deposits: InferredDeposit[] = [];
   const stops = new StopLog();
-  if (!options.enabled) return { trails, deposits, limitations: [] };
+  const questions: TraceResult['openQuestions'] = [];
+  if (!options.enabled) return { trails, deposits, limitations: [], openQuestions: questions };
 
   const describe = (transfer: RawTransfer) =>
     classify(network, transfer.counterparty, {
@@ -525,6 +537,14 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
     const active = (txCount === undefined && node.more) || (txCount !== undefined && txCount > options.maxNodeTxCount);
     const stopActive = () => {
       stops.add(STOP.activity(txCount, options.maxNodeTxCount));
+      const first = state.hops[0]!;
+      questions.push({
+        txid: first.txid,
+        text:
+          `${formatAmount(carried)} ${asset} z przelewu ${first.txid} (${first.time.slice(0, 10)}) trafiło na adres ${current} ` +
+          `o ${txCount ?? 'co najmniej kilkudziesięciu'} transakcjach — prawdopodobnie usługa bez publicznej etykiety (giełda, kantor, pośrednik). ` +
+          'Ustalenie, do kogo należy ten adres, wskazałoby, gdzie środki mogły zostać spieniężone.',
+      });
       return false;
     };
 
@@ -740,6 +760,9 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
   }
   const candidates = [...byCounterparty.entries()].sort((a, b) => b[1].weight - a[1].weight);
   const selected = candidates.slice(0, options.maxCandidates);
+  const weightOf = (list: typeof candidates) =>
+    list.reduce((sum, [, group]) => sum + group.transfers.reduce((part, item) => part + item.amount * ORDER_WEIGHTS[item.asset.toUpperCase()]!, 0), 0);
+  const coverage = candidates.length > selected.length && weightOf(candidates) > 0 ? Math.round((weightOf(selected) / weightOf(candidates)) * 100) : 100;
 
   for (const start of starts) {
     if (stoppedBy) break;
@@ -787,7 +810,8 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
   } else if (candidates.length > selected.length) {
     limitations.push(
       `Dalszą drogę środków sprawdzono tylko dla ${selected.length} z ${candidates.length} kontrahentów bez etykiety ` +
-        '(odbiorcy największych przelewów) — pozostałe przelewy mogły prowadzić na giełdę.',
+        `(odbiorcy największych przelewów; ok. ${coverage}% wartości wypływów do adresów bez etykiety, liczone zgrubnymi wagami walut) — ` +
+        'pozostałe przelewy mogły prowadzić na giełdę.',
     );
   }
   if (deposits.length > 0) {
@@ -798,7 +822,7 @@ export async function traceAccountFlows(search: AccountTraceSearch): Promise<Tra
     );
   }
   limitations.push(...traceSummary(trails, options));
-  return { trails, deposits, limitations };
+  return { trails, deposits, limitations, openQuestions: questions };
 }
 
 // ---------- Model UTXO: Bitcoin ----------
@@ -853,7 +877,8 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
       reason: `heurystyka wspólnych wejść: środki tego adresu wydano razem ze środkami adresu podmiotu w transakcji ${item.txid}`,
     });
   }
-  if (!options.enabled) return { trails, deposits, limitations: [], clusterAddresses };
+  const questions: TraceResult['openQuestions'] = [];
+  if (!options.enabled) return { trails, deposits, limitations: [], clusterAddresses, openQuestions: questions };
 
   let stoppedBy: string | undefined;
   let lookupBroken = false;
@@ -908,19 +933,43 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     }
   }
 
-  /** `true`, gdy adres pośredni ma zbyt dużą aktywność, by go śledzić. */
-  async function tooActive(address: string, txs: UtxoTx[]): Promise<boolean> {
+  const activity = new Map<string, number | undefined>();
+
+  /** Skąd pochodzą środki na badanej gałęzi: transakcja wypływu z portfela i udział gałęzi w jej wartości. */
+  interface Origin {
+    txid: string;
+    time: string;
+    percent: number;
+  }
+
+  /** `true`, gdy adres pośredni ma zbyt dużą aktywność, by go śledzić; zapisuje pytanie, dokąd trafiły środki. */
+  async function tooActive(address: string, txs: UtxoTx[], origin?: Origin, satoshi?: number): Promise<boolean> {
     if (txs.length < pageSize) return false;
-    let count: number | undefined;
-    if (budget.take()) {
+    if (!activity.has(address)) {
+      // Bez budżetu na sprawdzenie liczby transakcji nie przesądzamy, że to usługa — przerywamy śledzenie.
+      if (!budget.take()) {
+        stoppedBy = `wyczerpano budżet ${budget.limit} żądań na jedną analizę adresu`;
+        return true;
+      }
       try {
-        count = await search.fetchTxCount(address);
+        activity.set(address, await search.fetchTxCount(address));
       } catch (error) {
         if (search.signal?.aborted) throw error;
+        activity.set(address, undefined);
       }
     }
+    const count = activity.get(address);
     if (count !== undefined && count <= options.maxNodeTxCount) return false;
     stops.add(STOP.activity(count, options.maxNodeTxCount));
+    if (origin) {
+      questions.push({
+        txid: origin.txid,
+        text:
+          `${origin.percent}% wartości wypływu ${origin.txid} (${origin.time.slice(0, 10)}${satoshi ? `; ${satoshi / SATOSHI} BTC` : ''}) trafiło na adres ${address} ` +
+          `o ${count ?? `co najmniej ${pageSize}`} transakcjach — prawdopodobnie usługa bez publicznej etykiety (giełda, kantor, mikser). ` +
+          'Ustalenie, do kogo należy ten adres, wskazałoby, gdzie środki mogły zostać spieniężone.',
+      });
+    }
     return true;
   }
 
@@ -982,12 +1031,12 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
   }
 
   /** Reguły (a) i (c): adres pośredni, który otrzymał wyjście `fundTx:index`. */
-  async function follow(address: string, fundTx: UtxoTx, index: number, satoshi: number, state: PathState, originSatoshi: number, leftAt: string, visited: Set<string>): Promise<void> {
+  async function follow(address: string, fundTx: UtxoTx, index: number, satoshi: number, state: PathState, originSatoshi: number, leftAt: string, visited: Set<string>, origin: Origin): Promise<void> {
     if (stoppedBy) return;
     if (state.hops.length >= options.maxHops) return stops.add(STOP.depth);
     const txs = await history(address);
     if (!txs) return;
-    if (await tooActive(address, txs)) return;
+    if (await tooActive(address, txs, origin, satoshi)) return;
     const spend = spendOf(txs, fundTx, index, address);
     const since = txTime(fundTx);
     if (!spend || hoursBetween(since, txTime(spend)) > options.utxoHoldHours) return stops.add(STOP.unspent);
@@ -1001,6 +1050,7 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     const merged = otherInputs > 0 ? `; transakcja łączy też środki z ${otherInputs} innych adresów` : '';
     const hours = formatHours(hoursBetween(since, txTime(spend)));
 
+    const partial = new Set<string>();
     for (const { output } of outputs.slice(0, 2)) {
       const to = output.scriptpubkey_address!;
       const known = await resolve(to);
@@ -1010,11 +1060,14 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
         const quickSweep = hoursBetween(since, txTime(spend)) <= options.windowHours && output.value! >= satoshi * options.minForwardedShare;
         const step: TrailStep = firstIntermediate && quickSweep && service.kind === 'exchange_deposit' ? 'deposit_sweep' : 'passthrough';
         const amount = Math.min(satoshi, output.value!);
+        const part = (amount / satoshi) * 100;
+        const percent = part >= 1 ? `${Math.round(part)}%` : `${part.toLocaleString('pl-PL', { maximumFractionDigits: 2 })}%`;
         const reason =
           step === 'deposit_sweep'
             ? `adres ${short(address)} bez publicznej etykiety został po ${hours} h zamieciony do portfela giełdy „${service.name}” — prawdopodobny indywidualny adres wpłat klienta giełdy (reguła: zamiecenie adresu wpłat)${merged}`
-            : `adres ${short(address)} po ${hours} h wydał otrzymane wyjście, przekazując ${Math.round((amount / satoshi) * 100)}% jego kwoty do usługi „${service.name}” ` +
-              `(reguła: adres przelotowy; powiązanie ścisłe — wydano dokładnie to wyjście)${merged}`;
+            : `adres ${short(address)} po ${hours} h wydał otrzymane wyjście, przekazując ${percent} jego kwoty do usługi „${service.name}” ` +
+              `(reguła: adres przelotowy; powiązanie ścisłe — wydano dokładnie to wyjście` +
+              `${part < options.minForwardedShare * 100 ? '; do usługi trafiła tylko CZĘŚĆ środków — reszta poszła dalej' : ''})${merged}`;
         finish(
           { ...state, hops: [...state.hops, hop(spend, address, to, amount, known, { inferred: true, reason })], steps: [...state.steps, step] },
           service,
@@ -1022,13 +1075,16 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
           originSatoshi,
           leftAt,
         );
-        return;
+        // Gdy do usługi trafiła niemal całość, ścieżka jest zamknięta; przy drobnej płatności idziemy dalej za resztą.
+        if (output.value! >= satoshi * options.minForwardedShare) return;
+        partial.add(to);
+        continue;
       }
       if (known.addressClass === 'mixer') return stops.warn(mixerWarning(to, known.label, spend.txid));
       if (stoppedBy) return;
     }
 
-    const top = outputs[0];
+    const top = outputs.find(({ output }) => !partial.has(output.scriptpubkey_address!));
     if (!top || top.output.value! < satoshi * options.minForwardedShare) return stops.add(outputs.length > 0 ? STOP.split : STOP.unspent);
     const to = top.output.scriptpubkey_address!;
     const amount = Math.min(satoshi, top.output.value!);
@@ -1042,6 +1098,7 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
       originSatoshi,
       leftAt,
       new Set([...visited, address]),
+      origin,
     );
   }
 
@@ -1067,8 +1124,15 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     const contributed = (tx.vin ?? []).filter((input) => input.prevout?.scriptpubkey_address === from).reduce((sum, input) => sum + (input.prevout?.value ?? 0), 0);
     const coFunded = (tx.vin ?? []).some((input) => input.prevout?.scriptpubkey_address !== from);
 
-    let followed = false;
-    for (const { output, position } of payments.slice(0, 2)) {
+    // Każde istotne wyjście (nie tylko największe) jest osobną gałęzią — do limitu gałęzi.
+    const paid = payments.reduce((sum, { output }) => sum + (output.value ?? 0), 0);
+    const branches = payments.filter(({ output }, rank) => rank < 2 || (output.value ?? 0) >= paid * options.minBranchShare).slice(0, Math.max(2, options.maxBranches));
+    if (payments.length > branches.length) {
+      const skipped = payments.slice(branches.length).reduce((sum, { output }) => sum + (output.value ?? 0), 0);
+      if (skipped >= paid * options.minBranchShare) stops.add(`pominięto mniejsze wyjścia transakcji wypływu ponad limit ${options.maxBranches} gałęzi`);
+    }
+    let followed = 0;
+    for (const { output, position } of branches) {
       if (stoppedBy) return;
       const to = output.scriptpubkey_address!;
       const known = await resolve(to);
@@ -1090,10 +1154,10 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
         stops.warn(mixerWarning(to, known.label, tx.txid));
         continue;
       }
-      // Dalej śledzimy tylko największą płatność — to ona decyduje o obrazie wypłaty.
-      if (!followed && known.addressClass === 'unknown' && !known.label) {
-        followed = true;
-        await follow(to, tx, position, output.value!, next, output.value!, leftAt, new Set([from]));
+      if (followed < options.maxBranches && known.addressClass === 'unknown' && !known.label) {
+        followed += 1;
+        const origin = { txid: state.hops[0]?.txid ?? tx.txid, time: state.hops[0]?.time ?? leftAt, percent: paid > 0 ? Math.round((output.value! / paid) * 100) : 100 };
+        await follow(to, tx, position, output.value!, next, output.value!, leftAt, new Set([from]), origin);
       }
     }
 
@@ -1133,8 +1197,12 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
       .filter((tx) => tx.status?.confirmed && (tx.vin ?? []).some((input) => input.prevout?.scriptpubkey_address === address))
       .sort((a, b) => externalValue(b) - externalValue(a));
 
+  // Do śledzenia wybieramy NAJWIĘKSZE wartościowo wypływy w analizowanym zakresie, nie najnowsze.
   const subjectSpends = spendsFrom(search.txs, search.address);
   const selected = subjectSpends.slice(0, options.maxCandidates);
+  const inflowCount = search.txs.filter((tx) => tx.status?.confirmed && !(tx.vin ?? []).some((input) => input.prevout?.scriptpubkey_address === search.address)).length;
+  const outflowTotal = subjectSpends.reduce((sum, tx) => sum + externalValue(tx), 0);
+  const selectedTotal = selected.reduce((sum, tx) => sum + externalValue(tx), 0);
   let examined = 0;
   for (const tx of selected) {
     if (stoppedBy) break;
@@ -1154,7 +1222,9 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
       member.reason += ' — UWAGA: adres ma bardzo dużą aktywność, więc może należeć do usługi lub pochodzić z transakcji wspólnej; przynależność do portfela podmiotu jest wątpliwa';
       continue;
     }
-    for (const tx of spendsFrom(txs, member.address).filter((item) => !processed.has(item.txid)).slice(0, MAX_CLUSTER_SPENDS)) {
+    // Transakcje, w których wydawane są też środki adresu podmiotu, to jego własne wypływy — nie liczymy ich drugi raz z adresu klastra.
+    const subjectIsInput = (item: UtxoTx) => (item.vin ?? []).some((input) => input.prevout?.scriptpubkey_address === search.address);
+    for (const tx of spendsFrom(txs, member.address).filter((item) => !processed.has(item.txid) && !subjectIsInput(item)).slice(0, MAX_CLUSTER_SPENDS)) {
       if (stoppedBy) break;
       await ownSpend(tx, member.address, { hops: [], steps: ['cluster'], changeHeuristics: [] });
     }
@@ -1172,6 +1242,14 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
         'pozostałe mogły prowadzić na giełdę.',
     );
   }
+  if (subjectSpends.length > 0) {
+    limitations.push(
+      `Wypływy z adresu w analizowanym zakresie: ${subjectSpends.length} transakcji wychodzących na łącznie ${round8(outflowTotal / SATOSHI)} BTC do obcych adresów ` +
+        `(przy ${inflowCount} transakcjach przychodzących). Do śledzenia wybrano ${selected.length} największych wartościowo — ` +
+        `${outflowTotal > 0 ? Math.round((selectedTotal / outflowTotal) * 100) : 100}% wartości wypływów` +
+        (stoppedBy ? `, z czego faktycznie zbadano ${examined}.` : '.'),
+    );
+  }
   if (deposits.length > 0) {
     limitations.push(
       `Wskaźniki „prawdopodobny adres wpłat na giełdę” (${deposits.length}) są WNIOSKOWANIEM z dalszej drogi środków ` +
@@ -1184,5 +1262,5 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     );
   }
   limitations.push(...traceSummary(trails, options));
-  return { trails, deposits, limitations, clusterAddresses };
+  return { trails, deposits, limitations, clusterAddresses, openQuestions: questions };
 }

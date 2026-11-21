@@ -12,6 +12,8 @@ import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
 import { traceUtxoFlows } from '../trace.ts';
 import type { TracedTrail } from '../trace.ts';
+import { describeRange, inHistoryRange, planHistory, traceBudgetLimit } from '../history.ts';
+import type { HistoryOptions } from '../history.ts';
 import { ChainProviderError, RequestBudget, fetchJson } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -49,6 +51,10 @@ export interface EsploraProviderConfig extends ActivityOptions {
   requestBudget?: number;
   /** Czy badać dalszą drogę środków (prawdopodobne adresy wpłat na giełdy); domyślnie nie. */
   followDeposits?: boolean;
+  /** Domyślny zakres historii; kontekst wywołania może go zmienić dla pojedynczego adresu. */
+  history?: HistoryOptions;
+  /** Zapasowy eksplorator sieci głównej z tym samym API (np. `https://mempool.space`) — używany, gdy podstawowy zwróci błąd przy stronicowaniu. */
+  fallbackSiteUrl?: string;
 }
 
 /**
@@ -105,6 +111,8 @@ export class EsploraProvider implements ChainProvider {
   labelLookup: LabelLookup | undefined;
   requestBudget: number;
   followDeposits: boolean;
+  history: HistoryOptions;
+  fallbackSiteUrl: string | undefined;
 
   constructor(config: EsploraProviderConfig) {
     this.id = config.id;
@@ -123,6 +131,8 @@ export class EsploraProvider implements ChainProvider {
     this.labelLookup = config.labelLookup;
     this.requestBudget = config.requestBudget ?? DEFAULT_REQUEST_BUDGET;
     this.followDeposits = config.followDeposits ?? false;
+    this.history = config.history ?? {};
+    this.fallbackSiteUrl = config.fallbackSiteUrl?.replace(/\/+$/, '');
   }
 
   supports(network: Network): boolean {
@@ -136,8 +146,10 @@ export class EsploraProvider implements ChainProvider {
     }
     const api = `${site}/api/address/${encodeURIComponent(address)}`;
     const request = { source: this.label, signal: context.signal };
-    const budget = new RequestBudget(this.requestBudget);
+    const budget = new RequestBudget(traceBudgetLimit(context, this.requestBudget));
     const labels = this.options.labels ?? getDefaultLabels();
+    const plan = planHistory(context, this.history);
+    const full = plan.mode === 'full';
 
     budget.take();
     const summary = await fetchJson<EsploraAddress>(this.fetchImpl, api, request);
@@ -153,12 +165,54 @@ export class EsploraProvider implements ChainProvider {
     }
     const unconfirmed = firstPage.filter((tx) => !tx.status?.confirmed).length;
     let txs = firstPage.filter((tx) => tx.status?.confirmed);
-    if (txs.length === PAGE_SIZE && stats.tx_count > PAGE_SIZE) {
-      budget.take();
-      const next = await fetchJson<EsploraTx[]>(this.fetchImpl, `${api}/txs/chain/${txs.at(-1)!.txid}`, request);
-      if (Array.isArray(next)) txs = [...txs, ...next];
+
+    // Kolejne strony (po 25, od najnowszych): w trybie `recent` jedna, w trybie `full` — aż do końca
+    // historii, limitu żądań albo wyjścia poza początek analizowanego okresu.
+    let lastPageSize = txs.length;
+    let historyRequests = stats.tx_count > 0 ? 1 : 0;
+    let stoppedBy: string | undefined;
+    let usedFallback = false;
+    const fallback = network === 'bitcoin' && this.fallbackSiteUrl !== site ? this.fallbackSiteUrl : undefined;
+    while (lastPageSize === PAGE_SIZE && stats.tx_count > txs.length && (full || txs.length < TRANSACTION_LIMIT)) {
+      const oldest = (txs.at(-1)!.status?.block_time ?? 0) * 1000;
+      if (plan.since !== undefined && oldest < plan.since) {
+        stoppedBy = `dalsze transakcje są starsze niż początek analizowanego okresu (${describeRange(plan)})`;
+        break;
+      }
+      if (full ? !plan.budget.take() : !budget.take()) {
+        stoppedBy = `limit ${plan.budget.limit} żądań o kolejne strony historii`;
+        break;
+      }
+      const path = `/api/address/${encodeURIComponent(address)}/txs/chain/${txs.at(-1)!.txid}`;
+      let next: EsploraTx[];
+      try {
+        next = await fetchJson<EsploraTx[]>(this.fetchImpl, `${site}${path}`, request);
+      } catch (error) {
+        if (context.signal?.aborted) throw error;
+        const reason = error instanceof Error ? error.message : String(error);
+        if (!fallback) {
+          stoppedBy = `błąd przy pobieraniu kolejnej strony historii — ${reason}`;
+          break;
+        }
+        // Ten sam interfejs API ma drugi publiczny eksplorator — kontynuujemy od tego samego miejsca.
+        try {
+          next = await fetchJson<EsploraTx[]>(this.fetchImpl, `${fallback}${path}`, { ...request, source: `${this.label} (zapas: ${fallback})` });
+          usedFallback = true;
+        } catch (second) {
+          if (context.signal?.aborted) throw second;
+          stoppedBy = `błąd przy pobieraniu kolejnej strony historii — ${reason}; zapasowy eksplorator też nie odpowiedział`;
+          break;
+        }
+      }
+      if (!Array.isArray(next)) break;
+      historyRequests += 1;
+      lastPageSize = next.length;
+      txs = [...txs, ...next];
     }
-    txs = txs.slice(0, TRANSACTION_LIMIT);
+    if (!full) txs = txs.slice(0, TRANSACTION_LIMIT);
+    const fetchedCount = txs.length;
+    const ranged = plan.since !== undefined || plan.until !== undefined;
+    if (ranged) txs = txs.filter((tx) => inHistoryRange(plan, (tx.status?.block_time ?? 0) * 1000));
 
     const asset = NATIVE_ASSET[network];
     const transfers: RawTransfer[] = [];
@@ -172,12 +226,21 @@ export class EsploraProvider implements ChainProvider {
       'Bitcoin: kontrahent transakcji jest uproszczeniem — dla wypłat to odbiorca największej kwoty, ' +
         'dla wpłat pierwszy adres nadawcy. Transakcja może mieć wielu nadawców i odbiorców; zweryfikuj ją w eksploratorze.',
     ];
-    const complete = stats.tx_count <= txs.length;
-    if (!complete) {
+    const complete = stats.tx_count <= fetchedCount && !ranged;
+    if (full) {
       limitations.push(
-        `Pobrano ${txs.length} najnowszych z ${stats.tx_count} transakcji (limit ${TRANSACTION_LIMIT}). ` +
-          'Starsze przelewy i wypłaty nie są uwzględnione.',
+        `Tryb pełnej historii: pobrano ${fetchedCount} z ${stats.tx_count} transakcji adresu w ${historyRequests} żądaniach` +
+          (stoppedBy ? ` — stronicowanie przerwano: ${stoppedBy}. Starsze przelewy i wypłaty nie są uwzględnione.` : ' (cała historia).') +
+          (usedFallback ? ` Część stron pobrano z zapasowego eksploratora ${fallback}.` : ''),
       );
+    } else if (stats.tx_count > fetchedCount) {
+      limitations.push(
+        `Pobrano ${fetchedCount} najnowszych z ${stats.tx_count} transakcji (limit ${TRANSACTION_LIMIT}). ` +
+          'Starsze przelewy i wypłaty nie są uwzględnione — pełną historię włącza opcja `history: \'full\'`.',
+      );
+    }
+    if (ranged) {
+      limitations.push(`Analiza ograniczona do okresu ${describeRange(plan)}: uwzględniono ${txs.length} z ${fetchedCount} pobranych transakcji.`);
     }
     if (unconfirmed > 0) {
       limitations.push(`Pominięto ${unconfirmed} transakcji oczekujących na potwierdzenie.`);
@@ -209,6 +272,7 @@ export class EsploraProvider implements ChainProvider {
 
     let inferredDeposits: InferredDeposit[] = [];
     let trails: TracedTrail[] = [];
+    let openQuestions: { txid: string; text: string }[] = [];
     let clusterAddresses: { address: string; reason: string; txid?: string }[] = [];
     const traceOptions = { ...this.options.deposit, ...this.options.trace };
     if (mainnet) {
@@ -236,6 +300,7 @@ export class EsploraProvider implements ChainProvider {
       });
       inferredDeposits = found.deposits;
       trails = found.trails;
+      openQuestions = found.openQuestions;
       clusterAddresses = found.clusterAddresses;
       limitations.push(...found.limitations);
     }
@@ -250,6 +315,7 @@ export class EsploraProvider implements ChainProvider {
         ...(subjectLabel ? { labelSource: lookup!.sourceName } : {}),
         inferredDeposits,
         trails,
+        openQuestions,
         ...(mainnet ? { cluster: { seed: address, network, addresses: clusterAddresses, method: CLUSTER_METHOD_UTXO } } : {}),
         txCount: stats.tx_count,
         totalReceived: stats.funded_txo_sum / SATOSHI,

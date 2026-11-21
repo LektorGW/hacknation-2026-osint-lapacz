@@ -3,7 +3,7 @@
 // oraz `pg` (zewnętrzny serwer wskazany przez DATABASE_URL).
 
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { AnalysisRun, AnalystDecision, ProfileAttributes, SourceCategory, SubjectQuery, Sweep, WatchHit } from '@olcys/core';
 import type { CapturedDocument } from './analysis.ts';
 import type { RunIntel } from './intel.ts';
@@ -131,15 +131,70 @@ export interface Storage {
 /** PGlite: `dataDir` wskazuje katalog danych; bez niego baza żyje tylko w pamięci. */
 export async function createPgliteDriver(dataDir?: string): Promise<SqlDriver> {
   const { PGlite } = await import('@electric-sql/pglite');
-  if (dataDir) mkdirSync(dataDir, { recursive: true });
-  const db = new PGlite(dataDir);
-  await db.waitReady;
+  if (!dataDir) {
+    const memory = new PGlite();
+    await memory.waitReady;
+    return {
+      async query(sql, params) {
+        return (await memory.query<Record<string, unknown>>(sql, params)).rows;
+      },
+      close: () => memory.close(),
+    };
+  }
+
+  // Katalog danych PGlite bywa uszkadzany przez nagłe zatrzymanie procesu. Dlatego obok
+  // trzymamy migawkę całej bazy: zapisywaną co kilka minut i przy zamknięciu, a przy
+  // nieudanym otwarciu odtwarzaną w miejsce uszkodzonego katalogu.
+  const snapshotFile = `${dataDir}.migawka.tar.gz`;
+  mkdirSync(dataDir, { recursive: true });
+  const open = async (options?: { loadDataDir: Blob }) => {
+    const instance = new PGlite(dataDir, options);
+    await instance.waitReady;
+    return instance;
+  };
+
+  let db: Awaited<ReturnType<typeof open>>;
+  try {
+    db = await open();
+  } catch (error) {
+    const aside = `${dataDir}.uszkodzona-${Date.now()}`;
+    renameSync(dataDir, aside);
+    mkdirSync(dataDir, { recursive: true });
+    const reason = error instanceof Error ? error.message : String(error);
+    if (existsSync(snapshotFile)) {
+      console.warn(`Baza w ${dataDir} nie otwiera się (${reason}). Odtwarzam ostatnią migawkę; uszkodzony katalog: ${aside}.`);
+      db = await open({ loadDataDir: new Blob([readFileSync(snapshotFile)]) });
+    } else {
+      console.warn(`Baza w ${dataDir} nie otwiera się (${reason}) i nie ma migawki. Startuję z pustą; uszkodzony katalog: ${aside}.`);
+      db = await open();
+    }
+  }
+
+  let writing: Promise<void> = Promise.resolve();
+  const snapshot = () => {
+    // Zapis przez plik tymczasowy: przerwany zapis nie niszczy poprzedniej migawki.
+    writing = writing
+      .then(async () => {
+        const dump = await db.dumpDataDir('gzip');
+        const temporary = `${snapshotFile}.tmp`;
+        writeFileSync(temporary, Buffer.from(await dump.arrayBuffer()));
+        renameSync(temporary, snapshotFile);
+      })
+      .catch((error) => console.warn(`Migawka bazy nie powiodła się: ${error instanceof Error ? error.message : error}`));
+    return writing;
+  };
+  const timer = setInterval(snapshot, 3 * 60_000);
+  timer.unref();
+
   return {
     async query(sql, params) {
-      const result = await db.query<Record<string, unknown>>(sql, params);
-      return result.rows;
+      return (await db.query<Record<string, unknown>>(sql, params)).rows;
     },
-    close: () => db.close(),
+    async close() {
+      clearInterval(timer);
+      await snapshot();
+      await db.close();
+    },
   };
 }
 

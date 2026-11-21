@@ -3,6 +3,8 @@
 import { fileURLToPath } from 'node:url';
 import type { ChainProvider } from '@olcys/core';
 import type { ActivityOptions } from './activity.ts';
+import { DEEP_HISTORY_REQUESTS, DEFAULT_HISTORY_REQUESTS } from './history.ts';
+import type { HistoryOptions } from './history.ts';
 import { createPoliteFetch } from './http.ts';
 import type { FetchLike } from './http.ts';
 import { BlockscoutProvider } from './providers/blockscout.ts';
@@ -17,6 +19,7 @@ export * from './activity.ts';
 export * from './cashout.ts';
 export * from './cluster.ts';
 export * from './deposit.ts';
+export * from './history.ts';
 export * from './labels.ts';
 export * from './ofac.ts';
 export * from './party-labels.ts';
@@ -29,7 +32,7 @@ export { EsploraProvider } from './providers/esplora.ts';
 export { SandboxChainProvider } from './providers/sandbox.ts';
 export { TronGridProvider } from './providers/trongrid.ts';
 
-export interface ChainConfig extends ActivityOptions {
+export interface ChainConfig extends ActivityOptions, HistoryOptions {
   /** Adres środowiska demonstracyjnego; włącza dostawcę danych syntetycznych. */
   sandboxUrl?: string;
   /** Zgoda na zapytania do publicznych API w internecie. */
@@ -106,7 +109,15 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       requestBudget: config.requestBudget ?? (deep ? DEEP_REQUEST_BUDGET : DEFAULT_REQUEST_BUDGET),
       followDeposits: true,
       extraOutgoing: deep,
-      trace: { ...(deep ? { maxCandidates: 12 } : {}), ...config.trace },
+      // Ustawienia domyślne dla wszystkich adresów; kontekst wywołania zmienia je dla pojedynczego adresu.
+      history: {
+        history: config.history,
+        since: config.since,
+        until: config.until,
+        maxHistoryRequests: config.maxHistoryRequests ?? (deep ? DEEP_HISTORY_REQUESTS : DEFAULT_HISTORY_REQUESTS),
+      },
+      // Tryb głęboki: 10 największych wypływów (Bitcoin) / 12 kontrahentów (model kont) i do 4 gałęzi na transakcję.
+      trace: { ...(deep ? { maxCandidates: 10 } : {}), ...config.trace },
     };
     // Jeden klient na serwis: wspólna pamięć podręczna i wspólny ogranicznik tempa.
     const walletExplorer = externalLabels
@@ -121,6 +132,7 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
         label: 'Blockstream Esplora (Bitcoin)',
         siteUrl: 'https://blockstream.info',
         testnetSiteUrl: 'https://blockstream.info/testnet',
+        fallbackSiteUrl: 'https://mempool.space',
       }),
       new EsploraProvider({
         ...live,
@@ -129,6 +141,7 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
         label: 'mempool.space (Bitcoin)',
         siteUrl: 'https://mempool.space',
         testnetSiteUrl: 'https://mempool.space/testnet',
+        fallbackSiteUrl: 'https://blockstream.info',
       }),
       new BlockscoutProvider({ ...live, ...(externalLabels ? { metadataUrl: 'https://metadata.services.blockscout.com' } : {}) }),
       new TronGridProvider({ ...live, labelLookup: tronScan, ...(externalLabels ? { tronScanUrl: 'https://apilist.tronscanapi.com' } : {}) }),

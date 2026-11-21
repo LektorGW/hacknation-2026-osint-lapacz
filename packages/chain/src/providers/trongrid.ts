@@ -12,6 +12,8 @@ import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
 import { traceAccountFlows } from '../trace.ts';
 import type { ExpandedNode, TracedTrail } from '../trace.ts';
+import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, planHistory, traceBudgetLimit } from '../history.ts';
+import type { HistoryOptions } from '../history.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -119,6 +121,8 @@ export interface TronGridProviderConfig extends ActivityOptions {
    * przy aktywnych adresach przychodzące transfery (także spam) wypychają wypłaty z pierwszej strony.
    */
   extraOutgoing?: boolean;
+  /** Domyślny zakres historii; kontekst wywołania może go zmienić dla pojedynczego adresu. */
+  history?: HistoryOptions;
 }
 
 export class TronGridProvider implements ChainProvider {
@@ -133,6 +137,7 @@ export class TronGridProvider implements ChainProvider {
   followDeposits: boolean;
   tronScanUrl: string | undefined;
   extraOutgoing: boolean;
+  history: HistoryOptions;
   /** Symbol zweryfikowanego tokena → adres kontraktu (do zawężania zapytań o adresy pośrednie). */
   private tokenContracts = new Map<string, string>();
 
@@ -153,6 +158,7 @@ export class TronGridProvider implements ChainProvider {
     this.followDeposits = config.followDeposits ?? false;
     this.tronScanUrl = config.tronScanUrl?.replace(/\/+$/, '');
     this.extraOutgoing = config.extraOutgoing ?? false;
+    this.history = config.history ?? {};
   }
 
   /** Transfery TRC-20 adresu z TronScan wraz ze znacznikami stron; `total` to liczba transferów adresu. */
@@ -162,13 +168,15 @@ export class TronGridProvider implements ChainProvider {
     network: Network,
     signal: AbortSignal | undefined,
     contract?: string,
-    range?: { since: number; until: number },
+    range?: { since?: number; until?: number },
+    start = 0,
   ): Promise<{ transfers: RawTransfer[]; full: boolean }> {
     const page = await fetchJson<TronScanTransferPage>(
       this.fetchImpl,
-      `${this.tronScanUrl}/api/token_trc20/transfers?relatedAddress=${encodeURIComponent(address)}&limit=${TRANSACTION_LIMIT}&start=0` +
+      `${this.tronScanUrl}/api/token_trc20/transfers?relatedAddress=${encodeURIComponent(address)}&limit=${TRANSACTION_LIMIT}&start=${start}` +
         (contract ? `&contract_address=${encodeURIComponent(contract)}` : '') +
-        (range ? `&start_timestamp=${range.since}&end_timestamp=${range.until}` : ''),
+        (range?.since !== undefined ? `&start_timestamp=${range.since}` : '') +
+        (range?.until !== undefined ? `&end_timestamp=${range.until}` : ''),
       { source: TRONSCAN_LABEL_SOURCE, signal },
     );
     if (!Array.isArray(page.token_transfers)) {
@@ -257,15 +265,19 @@ export class TronGridProvider implements ChainProvider {
     const labels = this.options.labels ?? getDefaultLabels();
     const api = `${this.apiUrl}/v1/accounts/${encodeURIComponent(address)}`;
     const request = { source: this.label, signal: context.signal };
-    const budget = new RequestBudget(this.requestBudget);
+    const budget = new RequestBudget(traceBudgetLimit(context, this.requestBudget));
     budget.used += 3;
     const sourceNotes: string[] = [];
 
     const gridTokens = () =>
       fetchJson<TronGridPage<Trc20Transfer>>(this.fetchImpl, `${api}/transactions/trc20?limit=${TRANSACTION_LIMIT}&only_confirmed=true`, request);
     // TRC-20 najpierw z TronScan (znaczniki kontrahentów w tej samej odpowiedzi), zapasowo z TronGrid.
+    const plan = planHistory(context, this.history);
+    const full = plan.mode === 'full';
+    const ranged = plan.since !== undefined || plan.until !== undefined;
+    const period = ranged ? { ...(plan.since !== undefined ? { since: plan.since } : {}), ...(plan.until !== undefined ? { until: plan.until } : {}) } : undefined;
     const scanTokens = this.tronScanUrl
-      ? this.tronScanTransfers(address, labels, network, context.signal).catch((error: unknown) => {
+      ? this.tronScanTransfers(address, labels, network, context.signal, undefined, period).catch((error: unknown) => {
           if (context.signal?.aborted) throw error;
           sourceNotes.push(
             `TronScan nie zwrócił transferów TRC-20 (${error instanceof Error ? error.message : String(error)}) — użyto TronGrid, ` +
@@ -292,12 +304,72 @@ export class TronGridProvider implements ChainProvider {
       throw new ChainProviderError('invalid_response', `${this.label}: odpowiedź w nieoczekiwanym formacie.`);
     }
 
-    const transfers = [
+    let transfers = [
       ...this.nativeTransfers(transactions.data, address),
       ...(scanned ? scanned.transfers : this.tokenTransfers(tokenTransfers.data, address, labels, network)),
     ];
     const extraNotes: string[] = [];
-    if (this.extraOutgoing && (scanned ? scanned.full : Boolean(tokenTransfers.meta?.fingerprint)) && budget.take()) {
+    // Pełna historia: kolejne strony transferów TRC-20 (TronScan, po 50) i przelewów TRX (TronGrid).
+    let historyOpen = false;
+    if (full) {
+      let pages = 0;
+      const stops: string[] = [];
+      if (scanned) {
+        let count = scanned.transfers.length;
+        let more = scanned.full;
+        for (let start = TRANSACTION_LIMIT; more; start += TRANSACTION_LIMIT) {
+          if (count >= FULL_HISTORY_TRANSFER_LIMIT) { stops.push(`TRC-20: limit ${FULL_HISTORY_TRANSFER_LIMIT} transferów`); break; }
+          if (!plan.budget.take()) { stops.push(`TRC-20: limit ${plan.budget.limit} żądań o kolejne strony historii`); break; }
+          try {
+            const page = await this.tronScanTransfers(address, labels, network, context.signal, undefined, period, start);
+            pages += 1;
+            count += page.transfers.length;
+            transfers.push(...page.transfers);
+            more = page.full;
+          } catch (error) {
+            if (context.signal?.aborted) throw error;
+            stops.push(`TRC-20: błąd przy pobieraniu kolejnej strony — ${error instanceof Error ? error.message : String(error)}`);
+            break;
+          }
+        }
+      } else if (tokenTransfers.meta?.fingerprint) {
+        stops.push('TRC-20: TronScan niedostępny, a zapasowe źródło (TronGrid) jest pobierane tylko dla pierwszej strony');
+      }
+      let fingerprint = transactions.meta?.fingerprint;
+      let native = transactions.data.length;
+      while (fingerprint) {
+        if (native >= FULL_HISTORY_TRANSFER_LIMIT) { stops.push(`TRX: limit ${FULL_HISTORY_TRANSFER_LIMIT} transakcji`); break; }
+        if (!plan.budget.take()) { stops.push(`TRX: limit ${plan.budget.limit} żądań o kolejne strony historii`); break; }
+        try {
+          const page = await fetchJson<TronGridPage<TronTransaction>>(
+            this.fetchImpl,
+            `${api}/transactions?limit=${TRANSACTION_LIMIT}&only_confirmed=true&fingerprint=${encodeURIComponent(fingerprint)}`,
+            request,
+          );
+          pages += 1;
+          native += page.data?.length ?? 0;
+          transfers.push(...this.nativeTransfers(page.data ?? [], address));
+          fingerprint = page.meta?.fingerprint;
+          const oldest = page.data?.at(-1)?.block_timestamp;
+          if (plan.since !== undefined && oldest !== undefined && oldest < plan.since) break;
+        } catch (error) {
+          if (context.signal?.aborted) throw error;
+          stops.push(`TRX: błąd przy pobieraniu kolejnej strony — ${error instanceof Error ? error.message : String(error)}`);
+          break;
+        }
+      }
+      historyOpen = stops.length > 0;
+      extraNotes.push(
+        `Tryb pełnej historii: pobrano łącznie ${transfers.length} przelewów (${pages} dodatkowych żądań)` +
+          (stops.length > 0 ? ` — stronicowanie przerwano (${stops.join('; ')}). Starsze przelewy nie są uwzględnione.` : '.'),
+      );
+    }
+    if (ranged) {
+      const before = transfers.length;
+      transfers = transfers.filter((item) => inHistoryRange(plan, Date.parse(item.time)));
+      extraNotes.push(`Analiza ograniczona do okresu ${describeRange(plan)}: uwzględniono ${transfers.length} z ${before} pobranych przelewów.`);
+    }
+    if (!full && this.extraOutgoing && (scanned ? scanned.full : Boolean(tokenTransfers.meta?.fingerprint)) && budget.take()) {
       try {
         const page = await fetchJson<TronGridPage<Trc20Transfer>>(
           this.fetchImpl,
@@ -314,7 +386,7 @@ export class TronGridProvider implements ChainProvider {
       }
     }
 
-    const truncated = Boolean(transactions.meta?.fingerprint) || Boolean(tokenTransfers.meta?.fingerprint);
+    const truncated = full ? historyOpen : Boolean(transactions.meta?.fingerprint) || Boolean(tokenTransfers.meta?.fingerprint);
     const limitations = [
       'Tron: uwzględniono zwykłe przelewy TRX i transfery tokenów TRC-20. TronGrid nie podaje etykiet adresów ' +
         'ani informacji, czy kontrahent jest kontraktem' +
@@ -350,6 +422,7 @@ export class TronGridProvider implements ChainProvider {
 
     let inferredDeposits: InferredDeposit[] = [];
     let trails: TracedTrail[] = [];
+    let openQuestions: { txid: string; text: string }[] = [];
     if (follow) {
       const found = await traceAccountFlows({
         network,
@@ -397,6 +470,7 @@ export class TronGridProvider implements ChainProvider {
       });
       inferredDeposits = found.deposits;
       trails = found.trails;
+      openQuestions = found.openQuestions;
       limitations.push(...found.limitations);
     }
 
@@ -411,9 +485,10 @@ export class TronGridProvider implements ChainProvider {
         ...(subjectLabel ? { labelSource: lookup!.sourceName } : {}),
         inferredDeposits,
         trails,
+        openQuestions,
         cluster: accountCluster(network, address),
         balance: fromBaseUnits(info?.balance ?? 0, 6),
-        historyComplete: !truncated,
+        historyComplete: !truncated && !ranged,
         transfers,
         limitations,
       },

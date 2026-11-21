@@ -169,6 +169,32 @@ Składniki są wypisane w `reasons`. `openQuestions` mówi, co trzeba potwierdzi
 - Oba serwisy bez klucza odrzucają serie żądań (HTTP 429), a TronGrid blokuje potem nadawcę na kilkanaście sekund. `createPoliteFetch` ustawia żądania w kolejce (TronScan co 450 ms, TronGrid co 350 ms) i ponawia raz po 429. Analiza adresu Tron w trybie głębokim trwa przez to 10–40 s.
 - `data/labels.json` zawiera 17 portfeli giełd na Tronie (Binance, OKX, Bybit, KuCoin, Bitfinex, Gate, MEXC) — wyłącznie takie, których znacznik TronScan potwierdzono na żywo 2026-11-21 (znacznik jest w treści etykiety).
 
+## Zakres historii adresu (`history`)
+
+Domyślnie analizowane jest ~50 najnowszych transakcji. Dla adresu będącego przedmiotem sprawy to za mało: stare, duże wypływy bywają przykryte tysiącem późniejszych drobnych wpłat. Zakres ustawia się **osobno dla każdego adresu w kontekście wywołania** (albo domyślnie w `createChainProviders`):
+
+```ts
+import { getActivityFromProviders } from '@olcys/chain';
+import type { ChainRequestContext } from '@olcys/chain';
+
+const context: ChainRequestContext = {
+  signal, log,
+  history: 'full',            // 'recent' (domyślnie) | 'full'
+  since: '2020-07-01',        // opcjonalnie, ISO 8601
+  until: '2020-12-31',        // opcjonalnie, ISO 8601
+  maxHistoryRequests: 60,     // opcjonalnie; domyślnie 24, w trybie głębokim 60
+  requestBudget: 160,         // opcjonalnie; budżet etykiet i śledzenia dla TEGO adresu
+};
+const activity = await getActivityFromProviders(providers, network, address, context);
+```
+
+- `full` stronicuje historię do końca, do limitu żądań (osobnego od budżetu śledzenia) albo do wyjścia poza `since`: Bitcoin — strony po 25 (`/txs/chain/{last_txid}`), przy błędzie strony kontynuacja z zapasowego eksploratora (mempool.space ↔ blockstream.info); Ethereum — obie listy Blockscout po 50; Tron — TRC-20 z TronScan po 50 i przelewy TRX z TronGrid; górny limit 2000 pozycji na listę.
+- `since`/`until` zawężają analizę (przelewy, wskaźniki, ścieżki) do okresu; sumy profilu Bitcoin pochodzą z pól zbiorczych API (`chain_stats`), więc dotyczą całej historii.
+- `firstSeen` jest podawane tylko wtedy, gdy pobrano całą historię bez zawężenia okresu.
+- Do śledzenia wybierane są **największe wartościowo wypływy** w analizowanym zakresie (5, w trybie głębokim 10), a `limitations` podaje, ile było wypływów, ile wybrano i jaką część wartości obejmują.
+- W Bitcoinie każde istotne wyjście transakcji wypływu (≥ 5% wartości, do 4 gałęzi — `maxBranches`, `minBranchShare`) jest śledzone osobno. Gałąź kończąca się na adresie o dużej aktywności zostawia pytanie „N% wartości wypływu … trafiło na adres X o M transakcjach — prawdopodobnie usługa bez publicznej etykiety”: w `openQuestions` ścieżek z tej samej transakcji, w dodatkowym polu wyniku `activity.openQuestions` (poza kontraktem core, typ `ChainActivityWithQuestions`) i w `limitations` z przedrostkiem „Do wyjaśnienia:”.
+- Drobna płatność do usługi z adresu pośredniego tworzy ścieżkę na tę kwotę (z dopiskiem, że to tylko część środków), a śledzenie idzie dalej za resztą.
+
 ## Tryb głęboki
 
 `createChainProviders({ enableLive: true, depth: 'deep' })`: budżet 40 żądań na adres zamiast 15, do 12 badanych kontrahentów zamiast 5, a dla Ethereum i Tron dodatkowe zapytania o najnowsze przelewy **wychodzące** (przy aktywnych adresach wpłaty i spam wypychają wypłaty z pierwszej strony). Liczba kroków ścieżki (4) jest ta sama. `requestBudget` i `trace` pozwalają ustawić wartości ręcznie.

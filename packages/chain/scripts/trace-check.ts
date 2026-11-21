@@ -1,6 +1,7 @@
 // Próba śledzenia środków na PRAWDZIWYCH danych (NIE test; wymaga internetu).
 //
-//   node scripts/trace-check.ts [--depth=deep|standard] [--verbose] sieć:adres[:oczekiwana_usługa] …
+//   node scripts/trace-check.ts [--depth=deep|standard] [--history=full|recent] [--since=RRRR-MM-DD] [--until=RRRR-MM-DD]
+//                               [--budget=N] [--history-requests=N] [--hops=N] [--verbose] sieć:adres[:oczekiwana_usługa] …
 //
 // Adresy podaje się wyłącznie w wierszu poleceń — skrypt ich nie zapisuje, a na
 // ekranie pokazuje skróty. `oczekiwana_usługa` (np. `Binance`) to fragment nazwy
@@ -13,6 +14,13 @@ import { createChainProviders, getActivityFromProviders } from '../src/index.ts'
 const args = process.argv.slice(2);
 const depth = args.includes('--depth=standard') ? 'standard' : 'deep';
 const verbose = args.includes('--verbose');
+const flag = (name: string) => args.find((arg) => arg.startsWith(`--${name}=`))?.split('=')[1];
+const history = flag('history') === 'full' ? ('full' as const) : ('recent' as const);
+const since = flag('since');
+const until = flag('until');
+const budgetFlag = flag('budget');
+const historyRequests = flag('history-requests');
+const hops = flag('hops');
 const targets = args
   .filter((arg) => !arg.startsWith('--'))
   .map((arg) => {
@@ -34,7 +42,14 @@ const countingFetch = (input: string, init?: RequestInit) => {
   requests.push(new URL(input).host);
   return fetch(input, init);
 };
-const providers = createChainProviders({ enableLive: true, depth, fetch: countingFetch, politeFetch: true, rateCacheFile: false });
+const providers = createChainProviders({
+  enableLive: true,
+  depth,
+  fetch: countingFetch,
+  politeFetch: true,
+  rateCacheFile: false,
+  ...(hops ? { trace: { maxHops: Number(hops), maxCandidates: 10 } } : {}),
+});
 
 interface Row {
   address: string;
@@ -58,7 +73,15 @@ for (const target of targets) {
   const started = Date.now();
   let activity: ChainActivity;
   try {
-    activity = await getActivityFromProviders(providers, target.network, target.address, { log: () => undefined });
+    // Zakres historii podajemy w kontekście wywołania — osobno dla każdego adresu.
+    activity = await getActivityFromProviders(providers, target.network, target.address, {
+      log: () => undefined,
+      history,
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+      ...(historyRequests ? { maxHistoryRequests: Number(historyRequests) } : {}),
+      ...(budgetFlag ? { requestBudget: Number(budgetFlag) } : {}),
+    });
   } catch (error) {
     console.log(`\n== ${target.network} ${short(target.address)}: BŁĄD ${error instanceof Error ? error.message : String(error)}`);
     continue;
@@ -70,7 +93,9 @@ for (const target of targets) {
   for (const host of requests) perHost[host] = (perHost[host] ?? 0) + 1;
 
   console.log(`\n== ${target.network} ${short(target.address)} (tryb ${depth}) ==`);
-  console.log(`klasa: ${activity.profile.addressClass} | etykieta: ${activity.profile.label ?? '—'} | transakcji: ${activity.profile.txCount} | przelewów pobranych: ${activity.transfers.length}`);
+  const outgoing = activity.transfers.filter((transfer) => transfer.direction === 'out');
+  console.log(`klasa: ${activity.profile.addressClass} | etykieta: ${activity.profile.label ?? '—'} | transakcji: ${activity.profile.txCount} | przelewów pobranych: ${activity.transfers.length} (wychodzących ${outgoing.length}) | historia: ${history}`);
+  console.log(`otrzymano: ${activity.profile.totalReceived} ${activity.profile.nativeAsset} | wysłano: ${activity.profile.totalSent} | saldo: ${activity.profile.balance} | pierwsza transakcja: ${activity.profile.firstSeen ?? 'nieustalona'} | ostatnia: ${activity.profile.lastSeen ?? '—'}`);
   console.log(`ścieżki: ${trails.length} | wskaźniki wypłat: ${activity.cashOuts.length} | sumy PLN: ${JSON.stringify(activity.cashOutPlnByYear)} | klaster: ${activity.cluster?.addresses.length ?? 0} adresów`);
   for (const trail of trails.slice(0, verbose ? 20 : 4)) {
     const value = trail.valuePln !== undefined ? `${trail.valuePln.toLocaleString('pl-PL')} PLN` : 'bez wyceny';
@@ -86,8 +111,9 @@ for (const target of targets) {
     }
   }
   for (const member of (activity.cluster?.addresses ?? []).slice(0, verbose ? 25 : 3)) console.log(`  klaster: ${short(member.address)} — ${redact(member.reason)}`);
+  for (const question of (activity as { openQuestions?: string[] }).openQuestions ?? []) console.log(`  do wyjaśnienia: ${redact(question)}`);
   console.log('  ograniczenia:');
-  for (const item of activity.limitations) console.log(`    - ${redact(item).slice(0, verbose ? 2000 : 260)}`);
+  for (const item of activity.limitations.filter((entry) => !entry.startsWith('Do wyjaśnienia: '))) console.log(`    - ${redact(item).slice(0, verbose ? 2000 : 260)}`);
   console.log(`  żądania: ${requests.length} ${JSON.stringify(perHost)}; czas ${seconds.toFixed(1)} s`);
 
   const problems = activity.limitations

@@ -121,6 +121,10 @@ export interface HostPolicy {
 export const DEFAULT_HOST_POLICIES: Record<string, HostPolicy> = {
   'apilist.tronscanapi.com': { minIntervalMs: 450, retryAfterMs: 3000 },
   'api.trongrid.io': { minIntervalMs: 350, retryAfterMs: 5000 },
+  // Stronicowanie pełnej historii to dziesiątki żądań z rzędu — trzymamy umiarkowane tempo.
+  'blockstream.info': { minIntervalMs: 150, retryAfterMs: 4000 },
+  'mempool.space': { minIntervalMs: 250, retryAfterMs: 4000 },
+  'eth.blockscout.com': { minIntervalMs: 120, retryAfterMs: 4000 },
 };
 
 /**

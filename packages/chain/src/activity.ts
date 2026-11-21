@@ -17,6 +17,7 @@ import { detectCashOuts, formatAmount } from './cashout.ts';
 import type { CashOutOptions, ClassifiedTransfer } from './cashout.ts';
 import { DEFAULT_DEPOSIT_OPTIONS, describeInferredDeposit } from './deposit.ts';
 import type { DepositOptions, InferredDeposit } from './deposit.ts';
+import type { ChainRequestContext } from './history.ts';
 import { classify, getDefaultLabels } from './labels.ts';
 import type { LabelSet } from './labels.ts';
 import { getDefaultSanctions, sanctionLabel, sanctionWarning } from './ofac.ts';
@@ -74,6 +75,8 @@ export interface RawAddressData {
   trails?: TracedTrail[];
   /** Inne adresy tego samego portfela (heurystyki) albo opis, dlaczego klastra nie ma. */
   cluster?: AddressCluster;
+  /** Pytania do wyjaśnienia dla ścieżek urwanych bez wyniku (np. dokąd trafiła największa część środków). */
+  openQuestions?: { txid: string; text: string }[];
   /** Wartości podane przez źródło; brakujące liczymy z pobranych przelewów. */
   txCount?: number;
   totalReceived?: number;
@@ -100,7 +103,10 @@ export interface ActivityOptions {
 
 const roundAmount = (value: number) => Math.round(value * 1e8) / 1e8;
 
-export async function buildChainActivity(raw: RawAddressData, options: ActivityOptions = {}): Promise<ChainActivity> {
+/** Wynik analizy z polem dodatkowym: pytania dla ścieżek urwanych bez wyniku (poza kontraktem core). */
+export type ChainActivityWithQuestions = ChainActivity & { openQuestions?: string[] };
+
+export async function buildChainActivity(raw: RawAddressData, options: ActivityOptions = {}): Promise<ChainActivityWithQuestions> {
   const labels = options.labels ?? getDefaultLabels();
   const rateSource = options.rateSource ?? new StaticRateSource();
   const sanctions = options.sanctions ?? getDefaultSanctions();
@@ -268,14 +274,18 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
   detected.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 
   const cashOuts = await valueCashOuts(detected, rateSource);
+  const questions = raw.openQuestions ?? [];
   const trails: CashOutTrail[] = await Promise.all(
     allTrails.map(async (trail) => {
       const last = trail.hops.at(-1)!;
       const valued = await valueAmount(rateSource, trail.asset, trail.amount, last.time);
-      return valued ? { ...trail, valuePln: valued.valuePln, valuation: valued.valuation } : trail;
+      // Pytania o urwane gałęzie tej samej transakcji wypływu dołączamy do ścieżki.
+      const related = questions.filter((item) => item.txid === trail.hops[0]!.txid).map((item) => item.text);
+      const withQuestions = related.length > 0 ? { ...trail, openQuestions: [...trail.openQuestions, ...related] } : trail;
+      return valued ? { ...withQuestions, valuePln: valued.valuePln, valuation: valued.valuation } : withQuestions;
     }),
   );
-  const limitations = [...warnings, ...raw.limitations];
+  const limitations = [...warnings, ...raw.limitations, ...questions.map((item) => `Do wyjaśnienia: ${item.text}`)];
   if (cashOuts.length > 0) {
     limitations.push(
       'Kwoty w PLN są szacunkiem po kursie przybliżonym do dnia transakcji (opis kursu przy każdym wskaźniku). ' +
@@ -323,6 +333,8 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
     limitations,
     ...(trails.length > 0 ? { trails } : {}),
     ...(raw.cluster ? { cluster: raw.cluster } : {}),
+    // Pole dodatkowe (poza kontraktem core): pytania dla ścieżek urwanych bez wyniku.
+    ...(questions.length > 0 ? { openQuestions: questions.map((item) => item.text) } : {}),
   };
 }
 
@@ -349,7 +361,7 @@ export async function getActivityFromProviders(
   providers: ChainProvider[],
   network: Network,
   address: string,
-  context: ConnectorContext,
+  context: ChainRequestContext,
   options: ActivityOptions = {},
 ): Promise<ChainActivity> {
   const failures: string[] = [];

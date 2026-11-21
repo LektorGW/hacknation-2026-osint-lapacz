@@ -12,6 +12,8 @@ import { DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
 import { traceAccountFlows } from '../trace.ts';
 import type { TracedTrail } from '../trace.ts';
+import { FULL_HISTORY_TRANSFER_LIMIT, describeRange, inHistoryRange, planHistory, traceBudgetLimit } from '../history.ts';
+import type { HistoryOptions } from '../history.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels, matchService, normalizeAddress } from '../labels.ts';
@@ -47,7 +49,7 @@ interface BlockscoutAddress extends BlockscoutParty {
 
 interface BlockscoutPage<T> {
   items?: T[];
-  next_page_params?: unknown;
+  next_page_params?: Record<string, unknown> | null;
 }
 
 interface BlockscoutTransaction {
@@ -153,6 +155,8 @@ export interface BlockscoutProviderConfig extends ActivityOptions {
    * historia adresu nie mieści się na pierwszej stronie.
    */
   extraOutgoing?: boolean;
+  /** Domyślny zakres historii; kontekst wywołania może go zmienić dla pojedynczego adresu. */
+  history?: HistoryOptions;
 }
 
 /** Ilu adresów najwyżej dotyczy jedno hurtowe zapytanie o znaczniki. */
@@ -169,6 +173,7 @@ export class BlockscoutProvider implements ChainProvider {
   metadataUrl: string | undefined;
   chainId: number;
   extraOutgoing: boolean;
+  history: HistoryOptions;
 
   constructor(config: BlockscoutProviderConfig = {}) {
     this.siteUrl = (config.siteUrl ?? 'https://eth.blockscout.com').replace(/\/+$/, '');
@@ -186,6 +191,7 @@ export class BlockscoutProvider implements ChainProvider {
     this.metadataUrl = config.metadataUrl?.replace(/\/+$/, '');
     this.chainId = config.chainId ?? 1;
     this.extraOutgoing = config.extraOutgoing ?? false;
+    this.history = config.history ?? {};
   }
 
   /**
@@ -237,10 +243,10 @@ export class BlockscoutProvider implements ChainProvider {
     };
   }
 
-  private nativeTransfers(items: BlockscoutTransaction[], address: string): RawTransfer[] {
+  private nativeTransfers(items: BlockscoutTransaction[], address: string, limit = TRANSACTION_LIMIT): RawTransfer[] {
     const self = normalizeAddress(address);
     const transfers: RawTransfer[] = [];
-    for (const tx of items.slice(0, TRANSACTION_LIMIT)) {
+    for (const tx of items.slice(0, limit)) {
       // Wywołania kontraktów bez przekazania ETH i transakcje nieudane nie są przelewami.
       const amount = fromBaseUnits(tx.value ?? '0', 18);
       if (amount === 0 || tx.status === 'error' || !tx.timestamp) continue;
@@ -258,10 +264,10 @@ export class BlockscoutProvider implements ChainProvider {
     return transfers;
   }
 
-  private tokenTransfers(items: BlockscoutTokenTransfer[], address: string, labels: LabelSet, network: Network): RawTransfer[] {
+  private tokenTransfers(items: BlockscoutTokenTransfer[], address: string, labels: LabelSet, network: Network, limit = TRANSACTION_LIMIT): RawTransfer[] {
     const self = normalizeAddress(address);
     const transfers: RawTransfer[] = [];
-    for (const item of items.slice(0, TRANSACTION_LIMIT)) {
+    for (const item of items.slice(0, limit)) {
       const txid = item.transaction_hash ?? item.tx_hash;
       if (!txid || !item.timestamp || !item.total?.value) continue;
       const decimals = Number(item.total.decimals ?? item.token?.decimals ?? 0);
@@ -284,7 +290,7 @@ export class BlockscoutProvider implements ChainProvider {
     const base = `${this.siteUrl}/api/v2/addresses`;
     const api = `${base}/${encodeURIComponent(address)}`;
     const request = { source: this.label, signal: context.signal };
-    const budget = new RequestBudget(this.requestBudget);
+    const budget = new RequestBudget(traceBudgetLimit(context, this.requestBudget));
     const self = normalizeAddress(address);
     const limitations: string[] = [];
 
@@ -316,13 +322,58 @@ export class BlockscoutProvider implements ChainProvider {
       info = infoResult;
     }
 
-    const transfers = [
-      ...this.nativeTransfers(transactions.items, address),
-      ...this.tokenTransfers(tokenTransfers.items, address, labels, network),
+    // Pełna historia: kolejne strony obu list (po 50), do limitu żądań, limitu przelewów albo początku okresu.
+    const plan = planHistory(context, this.history);
+    const full = plan.mode === 'full';
+    const ranged = plan.since !== undefined || plan.until !== undefined;
+    if (full) {
+      let pages = 0;
+      const stops: string[] = [];
+      const extend = async <T extends { timestamp?: string | null }>(page: BlockscoutPage<T>, url: string, what: string) => {
+        const items = page.items!;
+        while (page.next_page_params) {
+          const oldest = Date.parse(items.at(-1)?.timestamp ?? '');
+          if (plan.since !== undefined && oldest < plan.since) return;
+          if (items.length >= FULL_HISTORY_TRANSFER_LIMIT) return void stops.push(`${what}: limit ${FULL_HISTORY_TRANSFER_LIMIT} pozycji`);
+          if (!plan.budget.take()) return void stops.push(`${what}: limit ${plan.budget.limit} żądań o kolejne strony historii`);
+          const query = new URLSearchParams(
+            Object.entries(page.next_page_params)
+              .filter(([, value]) => value !== null && value !== undefined)
+              .map(([key, value]) => [key, String(value)]),
+          );
+          let next: BlockscoutPage<T>;
+          try {
+            next = await fetchJson<BlockscoutPage<T>>(this.fetchImpl, `${url}${url.includes('?') ? '&' : '?'}${query}`, request);
+          } catch (error) {
+            if (context.signal?.aborted) throw error;
+            return void stops.push(`${what}: błąd przy pobieraniu kolejnej strony — ${error instanceof Error ? error.message : String(error)}`);
+          }
+          pages += 1;
+          items.push(...(next.items ?? []));
+          page.next_page_params = next.next_page_params ?? null;
+        }
+      };
+      await extend(transactions, `${api}/transactions`, 'transakcje');
+      await extend(tokenTransfers, `${api}/token-transfers?type=ERC-20`, 'transfery tokenów');
+      limitations.push(
+        `Tryb pełnej historii: pobrano ${transactions.items.length} transakcji i ${tokenTransfers.items.length} transferów tokenów ` +
+          `(${pages} dodatkowych żądań)` +
+          (stops.length > 0 ? ` — stronicowanie przerwano (${stops.join('; ')}). Starsze przelewy nie są uwzględnione.` : '.'),
+      );
+    }
+    const pageLimit = full ? Number.POSITIVE_INFINITY : TRANSACTION_LIMIT;
+    let transfers = [
+      ...this.nativeTransfers(transactions.items, address, pageLimit),
+      ...this.tokenTransfers(tokenTransfers.items, address, labels, network, pageLimit),
     ];
+    if (ranged) {
+      const before = transfers.length;
+      transfers = transfers.filter((item) => inHistoryRange(plan, Date.parse(item.time)));
+      limitations.push(`Analiza ograniczona do okresu ${describeRange(plan)}: uwzględniono ${transfers.length} z ${before} pobranych przelewów.`);
+    }
 
     const truncated = Boolean(transactions.next_page_params) || Boolean(tokenTransfers.next_page_params);
-    if (this.extraOutgoing && truncated) {
+    if (this.extraOutgoing && truncated && !full) {
       const seen = new Set(transfers.map((item) => `${item.txid}|${item.counterparty}|${item.asset}`));
       let added = 0;
       const merge = (items: RawTransfer[]) => {
@@ -354,7 +405,7 @@ export class BlockscoutProvider implements ChainProvider {
         'otrzymane z wymiany) nie są pobierane.',
       'Liczba transakcji i sumy wpływów/wydatków ETH są liczone z pobranych przelewów, nie z całej historii adresu.',
     );
-    if (truncated) {
+    if (truncated && !full) {
       limitations.push(
         `Pobrano po ${TRANSACTION_LIMIT} najnowszych transakcji i transferów tokenów (limit). ` +
           'Starsze przelewy i wypłaty nie są uwzględnione.',
@@ -373,6 +424,7 @@ export class BlockscoutProvider implements ChainProvider {
 
     let inferredDeposits: InferredDeposit[] = [];
     let trails: TracedTrail[] = [];
+    let openQuestions: { txid: string; text: string }[] = [];
     if (this.followDeposits) {
       const found = await traceAccountFlows({
         network,
@@ -415,6 +467,7 @@ export class BlockscoutProvider implements ChainProvider {
       });
       inferredDeposits = found.deposits;
       trails = found.trails;
+      openQuestions = found.openQuestions;
       limitations.push(...found.limitations);
     }
 
@@ -430,10 +483,11 @@ export class BlockscoutProvider implements ChainProvider {
         ...(party.label || party.addressClass ? { labelSource: BLOCKSCOUT_LABEL_SOURCE } : {}),
         ensName: party.ens,
         ...(info.coin_balance != null ? { balance: fromBaseUnits(info.coin_balance, 18) } : {}),
-        historyComplete: !truncated,
+        historyComplete: !truncated && !ranged,
         transfers,
         inferredDeposits,
         trails,
+        openQuestions,
         cluster: accountCluster(network, address),
         limitations,
       },
