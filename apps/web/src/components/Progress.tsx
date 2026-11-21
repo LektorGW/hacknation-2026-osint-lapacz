@@ -47,7 +47,7 @@ export function PeriodFields({ from, to, onChange, disabled }: { from: string; t
   return (
     <fieldset className="period" disabled={disabled}>
       <legend>
-        Okres analizy (od – do) <span className="period-hint">puste pola = cała dostępna historia</span>
+        Okres analizy
       </legend>
       <label>
         od
