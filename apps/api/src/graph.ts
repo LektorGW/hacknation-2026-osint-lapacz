@@ -2,7 +2,7 @@
 // oraz osoby powiązane. Węzeł usługi odpowiada jednemu wpisowi `ServiceLink`
 // (jedna giełda = jeden węzeł, bez względu na liczbę jej adresów).
 
-import type { Finding, GraphEdge, GraphNode, Identifier, RelatedPerson, ServiceLink } from '@olcys/core';
+import type { Finding, GraphEdge, GraphNode, Identifier, InvestigationIndicators, RelatedPerson, ServiceLink } from '@olcys/core';
 import type { ProfileNode } from './entity.ts';
 import { roundPln, shortAddress } from './format.ts';
 import { addressKey } from './intel.ts';
@@ -29,6 +29,8 @@ export interface GraphInput {
   linkedIdentities?: LinkedIdentity[];
   seizures?: SeizureView[];
   fundingSources?: FundingSourceView[];
+  /** Trzy wskaźniki śledcze: hipotezy wspólnego operatora, konto→portfel, wyjście do fiat. */
+  indicators?: InvestigationIndicators;
 }
 
 const identifierNodeId = (identifier: Identifier) => `id:${identifier.type}:${identifier.value.trim().toLowerCase()}`;

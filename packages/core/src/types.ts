@@ -4,6 +4,7 @@
 
 import type { Network } from './addresses.ts';
 import type { AddressClass, Evidence, IdentityMatch, ScoreResult, SourceCategory } from './score.ts';
+import type { ClaimStatus, EvidenceRef, InvestigationIndicators } from './indicators.ts';
 
 // ---------- Wejście analityka ----------
 
@@ -237,8 +238,9 @@ export type Decision = 'confirmed' | 'rejected';
 export interface AnalystDecision {
   id: string;
   caseId: string;
-  target: 'profile' | 'address';
-  /** Profil: `service|handle` albo URL; adres: `network:address`. */
+  /** `link`: hipoteza wspólnego operatora dwóch kont; klucz z `linkKey(a, b)`. */
+  target: 'profile' | 'address' | 'evidence' | 'link';
+  /** Profil: `service|handle` albo URL; adres: `network:address`; para kont: `a<->b`. */
   key: string;
   decision: Decision;
   note?: string;
@@ -283,7 +285,19 @@ export interface RelatedPerson {
   profileUrls: string[];
 }
 
-export type GraphNodeKind = 'subject' | 'identifier' | 'profile' | 'address' | 'service' | 'person';
+/**
+ * Rodzaje węzłów grafu śledczego:
+ *   subject    — badany podmiot sprawy (hipoteza operatora głównego),
+ *   operator   — hipoteza wspólnego operatora kilku kont (nie jest ustaloną osobą),
+ *   persona    — deklarowana tożsamość (nazwa, pod którą występują konta),
+ *   profile    — konto w konkretnej usłudze,
+ *   identifier — identyfikator (e-mail, nick, telefon, adres profilu),
+ *   address    — portfel / adres kryptowalutowy,
+ *   service    — usługa blockchain (giełda, bramka, kontrakt, organ),
+ *   source     — źródło dowodowe (publikacja z adresem URL),
+ *   person     — inna osoba powiązana (zgodność wsteczna).
+ */
+export type GraphNodeKind = 'subject' | 'operator' | 'persona' | 'identifier' | 'profile' | 'address' | 'service' | 'source' | 'person';
 
 export interface GraphNode {
   id: string;
@@ -295,18 +309,30 @@ export interface GraphNode {
   excluded?: boolean;
   /** Odnośnik do źródła lub eksploratora. */
   url?: string;
+  /** Status węzła-hipotezy (operator, persona powiązana). */
+  status?: ClaimStatus;
+  /** Węzeł nadrzędny do zwijania gałęzi (np. konto dla źródła, operator dla persony). */
+  parent?: string;
 }
 
 export interface GraphEdge {
   id: string;
   from: string;
   to: string;
-  kind: 'has_identifier' | 'found_profile' | 'links_to' | 'publishes' | 'transfer' | 'cash_out' | 'related';
+  kind: 'has_identifier' | 'found_profile' | 'links_to' | 'publishes' | 'transfer' | 'cash_out' | 'related' | 'operates' | 'declares' | 'documented_by' | 'same_operator';
   label?: string;
   /** Waga 0–100: siła dowodu albo względna wartość przepływu. */
   weight?: number;
   /** Wnioskowanie narzędzia, a nie fakt ze źródła. */
   inferred?: boolean;
+  /** Status relacji: fakt źródłowy, obliczenie, hipoteza, potwierdzona albo odrzucona decyzją analityka. */
+  status?: ClaimStatus;
+  /** Dowody relacji do podglądu po kliknięciu (publikacje, transakcje, cechy). */
+  evidence?: EvidenceRef[];
+  /** Wyjaśnienie relacji jednym zdaniem. */
+  explanation?: string;
+  /** Warstwa: powiązania tożsamości albo przepływy w blockchainie (rysowane osobno). */
+  layer?: 'identity' | 'chain';
 }
 
 export interface TimelineEvent {
@@ -352,6 +378,8 @@ export interface Dossier {
   decisions: AnalystDecision[];
   /** Najważniejsze ustalenia jednym zdaniem każde — do przeczytania w minutę. */
   keyFindings: { text: string; layer: 'fact' | 'calculation' | 'inference' }[];
+  /** Trzy osobne wskaźniki: konto→portfel, wspólny operator, wyjście do fiat. */
+  indicators?: InvestigationIndicators;
 }
 
 // ---------- Typowanie podmiotów ----------
@@ -474,6 +502,10 @@ export interface PersonCandidate {
   profileIds: string[];
   /** Adresy przypisane tej osobie (`network:address`) z łącznym prawdopodobieństwem. */
   addresses: { key: string; probability: number }[];
+  /** Kandydat jest hipotezą narzędzia, dopóki analityk go nie potwierdzi. */
+  status?: 'hypothesis' | 'confirmed' | 'rejected';
+  /** Połączenia, których NIE wykonano mimo wiązania ponad progiem — z powodem (sprzeczność w skupieniu, decyzja analityka). */
+  blockedMerges?: { profileIds: [string, string]; weight: number; reason: string }[];
 }
 
 // ---------- Monitoring źródeł ----------
