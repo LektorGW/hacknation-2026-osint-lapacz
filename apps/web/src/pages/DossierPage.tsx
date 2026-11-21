@@ -10,6 +10,7 @@ import { DossierContext } from '../components/DossierContext.tsx';
 import type { DossierContextValue } from '../components/DossierContext.tsx';
 import { AddressesTab, DecisionsTab, FlowsTab, PeopleTab, ProfilesTab, TimelineTab } from '../components/DossierTabs.tsx';
 import { RunLauncher, RunsTab } from '../components/Runs.tsx';
+import { ProofTab } from '../components/ProofTab.tsx';
 import { ServiceList } from '../components/ServiceCards.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { fmtDateTime } from '../format.ts';
@@ -130,6 +131,8 @@ function TabContent({ tab, summary, dossier, onChanged }: { tab: DossierTab; sum
       return <DecisionsTab />;
     case 'analizy':
       return <RunsTab summary={summary} dossier={dossier} onChanged={onChanged} />;
+    case 'dowod':
+      return <ProofTab />;
     default:
       return (
         <>
@@ -253,6 +256,12 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
         </header>
 
         {loaded.error && <ErrorBox message={loaded.error} onRetry={loaded.reload} />}
+        {dossier.partial && (
+          <p className="notice notice-strong" role="alert">
+            <strong>Wynik częściowy.</strong> Analizę przerwał limit czasu — część źródeł lub adresów nie została sprawdzona. Ponów analizę (sekcja „Historia
+            analiz”), najlepiej w trybie głębokim.
+          </p>
+        )}
         {simplified && (
           <p className="notice" role="note">
             Teczka uproszczona: ta wersja usługi analizy nie udostępnia teczki, więc złożono ją w interfejsie z samej analizy. Decyzje analityka,

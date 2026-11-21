@@ -456,8 +456,12 @@ export function dossierFromRun(run: AnalysisRun, info: DossierInfo): Dossier {
 // ---------- Widoki pochodne teczki ----------
 
 /** Łączne prawdopodobieństwo osoba–adres dla głównego kandydata; brak, gdy adresu mu nie przypisano. */
-export function jointProbability(dossier: Dossier, finding: { network: Network; address: string }): number | undefined {
-  return dossier.persons?.[0]?.addresses.find((item) => item.key === addressKey(finding))?.probability;
+export function jointProbability(
+  dossier: Dossier,
+  finding: { network: Network; address: string; subjectProbability?: number },
+): number | undefined {
+  // Usługa podaje prawdopodobieństwo wprost przy adresie; starsza — tylko w kandydacie.
+  return finding.subjectProbability ?? dossier.persons?.[0]?.addresses.find((item) => item.key === addressKey(finding))?.probability;
 }
 
 export interface CashOutRow extends CashOutIndicator {

@@ -5,6 +5,7 @@ import { CashOutTable, ChainProfile, FlowTimeline } from './ChainSections.tsx';
 import { CopyButton, DualScore, LayerSection, ScoreMeter } from './common.tsx';
 import { DecisionControls, useDossier } from './DossierContext.tsx';
 import { addressKey, jointProbability } from '../dossier.ts';
+import type { DossierFinding } from '../proof.ts';
 import { EvidenceList } from './EvidenceList.tsx';
 
 export const findingAnchor = (address: string) => `adres-${address}`;
@@ -25,6 +26,8 @@ function AddressHeader({ finding, index }: { finding: Finding; index: number }) 
         ) : (
           <span className="chip chip-warn">suma kontrolna niezweryfikowana</span>
         )}
+        {(finding as DossierFinding).widelyCited && <span className="chip chip-warn">adres powszechnie cytowany — nieprzypisany</span>}
+        {(finding as DossierFinding).chainSkipped && <span className="chip chip-inference">nie analizowano łańcucha (limit)</span>}
         <DualScore joint={jointProbability(dossier, finding)} score={finding.confidence.score} excluded={finding.confidence.excluded} />
       </div>
       <DecisionControls target="address" decisionKey={addressKey(finding)} confirmLabel="To adres tej osoby" rejectLabel="To nie jest adres tej osoby" />
@@ -86,15 +89,12 @@ function Limitations({ items }: { items: string[] }) {
   );
 }
 
-/** Pola dodawane przez usługę analizy do powiązania w teczce (poza kontraktem `Finding`). */
-type DossierFinding = Finding & { annotations?: string[]; excludedEvidence?: Finding['evidence'] };
-
 /** Ślady z profili zaliczonych do innej osoby: pokazane, ale niewliczone do wyniku. */
 function ExcludedEvidence({ finding }: { finding: DossierFinding }) {
   const { annotations = [], excludedEvidence = [] } = finding;
   if (annotations.length === 0 && excludedEvidence.length === 0) return null;
   return (
-    <LayerSection layer="inference" title={`Ślady niewliczone: prawdopodobnie inna osoba (${excludedEvidence.length})`}>
+    <LayerSection layer="inference" title={`Ślady niewliczone do wyniku (${excludedEvidence.length})`}>
       {annotations.map((note) => (
         <p key={note}>{note}</p>
       ))}

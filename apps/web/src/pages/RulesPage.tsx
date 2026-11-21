@@ -195,6 +195,10 @@ const SECTION_TITLE: Record<string, string> = {
   persons: 'Jak profile są łączone w osoby i skąd bierze się prawdopodobieństwo',
   services: 'Jak powstaje siła powiązania z usługą',
   relations: 'Jak oceniane są powiązania z innymi osobami',
+  signals: 'Sygnały monitoringu: związek z Polską i sygnały do sprawdzenia',
+  ai: 'Model językowy: co wolno mu zmienić',
+  proof: 'Jak powstaje łączna pewność dowodu spieniężenia',
+  analysis: 'Tryby analizy i limity',
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -257,6 +261,7 @@ function PriorityRules({ data }: { data: unknown }) {
 export function RulesPage() {
   const rules = useAsync(() => api.getRules(), 'rules');
   const priority = useAsync(() => api.getPriorityRules(), 'priority-rules');
+  const ai = useAsync(() => api.getAi(), 'ai');
   return (
     <div className="page">
       <Crumbs items={[{ label: 'Pulpit', href: href.dashboard() }, { label: 'Zasady punktacji' }]} />
@@ -271,6 +276,30 @@ export function RulesPage() {
           <Rules rules={rules.data} />
           <IdentityLevels rules={rules.data} />
         </>
+      )}
+      {ai.data && (
+        <section className="card">
+          <h2>Model językowy</h2>
+          <p>
+            Stan: <strong>{ai.data.enabled ? `włączony — ${ai.data.model ?? 'model nieznany'}${ai.data.provider ? ` (${ai.data.provider})` : ''}` : 'wyłączony'}</strong>
+          </p>
+          <p>{ai.data.description}</p>
+          <p className="muted">
+            Model niczego nie rozstrzyga: jego odczyty są sugestiami przy śladach, każdy wpływ na wynik jest zapisany w księdze reguł i można go cofnąć.
+          </p>
+          {ai.data.usage && (
+            <dl className="meta">
+              {Object.entries(ai.data.usage).map(([key, value]) => (
+                <div key={key}>
+                  <dt>
+                    <code className="mono">{key}</code>
+                  </dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </section>
       )}
       {priority.data !== undefined && <PriorityRules data={priority.data} />}
     </div>

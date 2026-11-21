@@ -3,12 +3,22 @@ import { useMemo, useState } from 'react';
 import type { MonitorSourceStatus, MonitorStatus, ScoredSignal, WatchHit } from '@olcys/core';
 import { api } from '../api.ts';
 import type { MonitorSettings } from '../api.ts';
+import type { CorpusStats } from '../proof.ts';
+import type { TextInsight } from '@olcys/core';
 import { Bar, Crumbs, EmptyState, ErrorBox, ExternalLink, LayerTag, ScoreBadge, ShortAddress, Skeleton } from '../components/common.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { fmtDateTime, fmtPln } from '../format.ts';
 import { NETWORK_LABEL, NETWORK_SHORT } from '../labels.ts';
 import { href, navigate } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
+
+const OWNERSHIP: Record<TextInsight['ownership'], string> = {
+  own_address: 'autor podaje własny adres',
+  third_party_address: 'adres należy do kogoś innego',
+  warning_about_address: 'ostrzeżenie o cudzym adresie',
+  quoted: 'adres tylko zacytowany',
+  unclear: 'nie da się rozstrzygnąć',
+};
 
 const STATUS_NAME: Record<WatchHit['status'], string> = { new: 'nowe', analyzed: 'przeanalizowane', dismissed: 'odrzucone' };
 const LANGUAGE: Record<string, string> = { pl: 'polski', en: 'angielski', de: 'niemiecki', ru: 'rosyjski', uk: 'ukraiński', und: 'nierozpoznany' };
@@ -135,6 +145,35 @@ function Sources({ sources, onToggle }: { sources: MonitorSourceStatus[]; onTogg
   );
 }
 
+/** Liczby opisujące rejestr źródeł; gdy usługa ich nie podaje, liczymy odrębne serwisy z listy. */
+type RegistryCounts = { sites?: number; communities?: number; distinctSites?: number; distinctCommunities?: number };
+
+function Registry({ status, corpus }: { status: MonitorStatus; corpus: CorpusStats | null }) {
+  const counts = status as MonitorStatus & RegistryCounts & { registry?: RegistryCounts };
+  const sites = counts.registry?.sites ?? counts.registry?.distinctSites ?? counts.sites ?? counts.distinctSites ?? new Set(status.sources.map((source) => source.service)).size;
+  const communities = counts.registry?.communities ?? counts.registry?.distinctCommunities ?? counts.communities ?? counts.distinctCommunities ?? status.sources.length;
+  return (
+    <div className="tiles">
+      <div className="stat">
+        <span className="stat-value">{sites}</span>
+        <span className="stat-label">odrębne strony i serwisy w rejestrze źródeł</span>
+      </div>
+      <div className="stat">
+        <span className="stat-value">{communities}</span>
+        <span className="stat-label">działy, kanały i społeczności · włączone: {status.sources.filter((source) => source.enabled).length}</span>
+      </div>
+      {corpus && (
+        <div className="stat">
+          <span className="stat-value">{corpus.documents.toLocaleString('pl-PL')}</span>
+          <span className="stat-label">
+            Własny indeks publikacji · adresy: {corpus.addresses.toLocaleString('pl-PL')} · serwisy: {corpus.services} · przechowywanie {corpus.retentionDays} dni
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Signal({ title, signal }: { title: string; signal: ScoredSignal }) {
   return (
     <div className="signal">
@@ -170,6 +209,8 @@ function Excerpt({ text, addresses }: { text: string; addresses: string[] }) {
 function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const extra = hit as WatchHit & { insight?: TextInsight; translationPl?: string };
+  const translation = extra.translationPl ?? extra.insight?.translationPl;
 
   async function act(action: () => Promise<unknown>, message: string) {
     setBusy(true);
@@ -207,6 +248,18 @@ function HitCard({ hit, onChanged }: { hit: WatchHit; onChanged: () => void }) {
         </h3>
       </header>
       <Excerpt text={hit.excerpt} addresses={hit.addresses.map((item) => item.address)} />
+      {translation && (
+        <details className="why">
+          <summary>Tłumaczenie na polski</summary>
+          <p>{translation}</p>
+        </details>
+      )}
+      {extra.insight && (
+        <p className="insight">
+          <strong>Sugestia modelu</strong> <LayerTag layer="inference" /> czyj jest adres: {OWNERSHIP[extra.insight.ownership] ?? extra.insight.ownership}
+          {extra.insight.quote && ` — „${extra.insight.quote}”`} <span className="muted">({extra.insight.model})</span>
+        </p>
+      )}
       <p>
         <span className="chip">język: {LANGUAGE[hit.language] ?? hit.language}</span>
         {hit.addresses.map((item) => (
@@ -354,8 +407,8 @@ export function MonitoringPage() {
   const toast = useToast();
   const [running, setRunning] = useState(false);
   const loaded = useAsync(async () => {
-    const [status, hits] = await Promise.all([api.getMonitor(), api.listHits(200)]);
-    return { status, hits };
+    const [status, hits, corpus] = await Promise.all([api.getMonitor(), api.listHits(200), api.getCorpusStats().catch(() => null)]);
+    return { status, hits, corpus };
   }, 'monitor');
 
   async function change(settings: MonitorSettings) {
@@ -393,6 +446,7 @@ export function MonitoringPage() {
       {!loaded.data && loaded.loading && <Skeleton blocks={3} />}
       {loaded.data && (
         <>
+          <Registry status={loaded.data.status} corpus={loaded.data.corpus} />
           <StatusBar key={loaded.data.status.autoAnalyzeThreshold} status={loaded.data.status} onChange={change} onRun={run} busy={running} />
           <Sources
             sources={loaded.data.status.sources}

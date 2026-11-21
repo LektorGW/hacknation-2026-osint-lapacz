@@ -52,6 +52,8 @@ import {
 } from './demo-data.ts';
 import type { RawFinding, RawRun } from './demo-data.ts';
 import { demoHits, demoMonitorSources } from './demo-monitor.ts';
+import { demoAi, demoCorpus, demoExtras, demoOwnInsight, demoProgress, demoProofs, demoWarningEvidence, startDemoProgress } from './demo-proof.ts';
+import type { DossierFinding, FullDossier } from './proof.ts';
 import { IDENTITY_SCORE, addressKey, computePriority, dossierFromRun, profileKey } from './dossier.ts';
 import { fmtPln, sum } from './format.ts';
 
@@ -406,9 +408,16 @@ function enrichDemo(dossier: Dossier, summary: StoredCase, applied: AnalystDecis
   };
 }
 
-function buildDossier(run: RawRun): Dossier {
-  const summary = findCase(run.caseId);
-  const applied = decisionsOf(run.caseId);
+function buildDossier(raw: RawRun): FullDossier {
+  const summary = findCase(raw.caseId);
+  const applied = decisionsOf(raw.caseId);
+  const demo = raw.caseId === DEMO_CASE_ID && raw.findings.some((finding) => finding.address === ADDR_TRON);
+  // Ślad odczytany przez model jako ostrzeżenie o cudzym adresie wchodzi do oceny dopiero po decyzji analityka.
+  const modelOverridden = applied.some((item) => (item.target as string) === 'evidence' && item.key === demoWarningEvidence.id);
+  const run: RawRun =
+    demo && modelOverridden
+      ? { ...raw, findings: raw.findings.map((finding) => (finding.address === ADDR_TRON ? { ...finding, evidence: [...finding.evidence, demoWarningEvidence] } : finding)) }
+      : raw;
   const base = dossierFromRun(scoreRun(run, applied), {
     name: summary.name,
     replacements: replacementsFor(run),
@@ -416,7 +425,21 @@ function buildDossier(run: RawRun): Dossier {
     original: scoreRun(run, []),
     now: NOW,
   });
-  return run.caseId === DEMO_CASE_ID && run.findings.length > 0 ? enrichDemo(base, summary, applied) : base;
+  if (!(raw.caseId === DEMO_CASE_ID && raw.findings.length > 0)) return { ...base, cashOutProof: [], mentions: [], partial: false, summary: null };
+
+  const enriched = enrichDemo(base, summary, applied);
+  const findings = enriched.findings.map((finding): DossierFinding => ({
+    ...finding,
+    evidence: finding.evidence.map((item) => (item.id === demoOwnInsight.evidenceId ? { ...item, insight: demoOwnInsight.insight } : item)),
+    subjectProbability: enriched.persons[0]?.addresses.find((item) => item.key === addressKey(finding))?.probability ?? 0,
+    ...(demo && !modelOverridden && finding.address === ADDR_TRON
+      ? {
+          excludedEvidence: [demoWarningEvidence],
+          annotations: ['Model językowy odczytał wpis z bitrozmowy.example jako ostrzeżenie o cudzym adresie — ślad nie podnosi wyniku (reguła ai.ownership).'],
+        }
+      : {}),
+  }));
+  return { ...enriched, findings, cashOutProof: demo ? demoProofs(enriched) : [], ...demoExtras };
 }
 
 const latestRun = (caseId: string) => runs.filter((run) => run.caseId === caseId && run.status === 'completed').at(-1);
@@ -638,9 +661,8 @@ export const demoBackend: Backend = {
   },
 
   // Sprawa demonstracyjna powtarza ostatni wynik; nowe sprawy nie mają danych.
-  startRun: async (caseId, connectors) => {
+  startRun: async (caseId, connectors, depth = 'standard') => {
     const stored = findCase(caseId);
-    await wait(1400);
     sequence += 1;
     const now = new Date().toISOString();
     const used = connectors ?? demoConnectors.filter((item) => item.enabledByDefault).map((item) => item.id);
@@ -660,8 +682,12 @@ export const demoBackend: Backend = {
       ],
     };
     runs.push(run);
-    return scoreRun(run, decisionsOf(caseId));
+    startDemoProgress(run.id, depth);
+    return { id: run.id, status: 'running' };
   },
+  getProgress: async (runId) => demoProgress(runId),
+  getAi: async () => demoAi,
+  getCorpusStats: async () => demoCorpus,
 
   getCaseDossier: async (caseId) => {
     const run = latestRun(findCase(caseId).id);
@@ -673,7 +699,7 @@ export const demoBackend: Backend = {
   addDecision: async (caseId, input) => {
     findCase(caseId);
     sequence += 1;
-    const created: AnalystDecision = { id: `demo-decyzja-${sequence}`, caseId, ...input, decidedAt: new Date().toISOString() };
+    const created: AnalystDecision = { id: `demo-decyzja-${sequence}`, caseId, ...input, target: input.target as AnalystDecision['target'], decidedAt: new Date().toISOString() };
     // Nowa decyzja zastępuje wcześniejszą dla tego samego obiektu.
     const previous = decisions.findIndex((item) => item.caseId === caseId && item.target === input.target && item.key === input.key);
     if (previous >= 0) decisions.splice(previous, 1);
@@ -804,10 +830,12 @@ export const demoBackend: Backend = {
   },
 
   // Znane identyfikatory prowadzą do sprawy demonstracyjnej; pozostałe idą zwykłą ścieżką.
-  quick: async (value) => {
+  quick: async (value, _type, depth = 'standard') => {
     if (!DEMO_VALUES.includes(value.trim().toLowerCase())) return null;
-    await wait(4200);
-    return { case: summarizeCase(demoCase) };
+    sequence += 1;
+    const id = `demo-postep-${sequence}`;
+    startDemoProgress(id, depth);
+    return { case: summarizeCase(demoCase), run: { id, status: 'running' } };
   },
   hasServiceRequest: async () => false,
 };

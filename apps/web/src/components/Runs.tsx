@@ -1,7 +1,9 @@
 // Uruchamianie analizy, historia analiz z porównaniem i dopisywanie odkrytych identyfikatorów.
 import { useEffect, useState } from 'react';
 import type { Dossier, RunDiff } from '@olcys/core';
-import { api, errorMessage } from '../api.ts';
+import { api, errorMessage, runAnalysis } from '../api.ts';
+import type { Depth, RunProgress } from '../proof.ts';
+import { AnalysisProgress, DepthSwitch } from './Progress.tsx';
 import type { CaseSummary, ConnectorInfo } from '../api.ts';
 import { fmtDateTime } from '../format.ts';
 import { IDENTIFIER_LABEL, STATUS_LABEL } from '../labels.ts';
@@ -17,6 +19,8 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
   const toast = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
+  const [depth, setDepth] = useState<Depth>('standard');
+  const [progress, setProgress] = useState<RunProgress>();
 
   useEffect(() => {
     if (connectors.data) setSelected(new Set(connectors.data.filter((item) => item.enabledByDefault).map((item) => item.id)));
@@ -33,8 +37,9 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
   async function start() {
     setRunning(true);
     try {
-      const run = await api.startRun(caseId, [...selected]);
-      toast.success(`Analiza zakończona: ${run.findings.length} adresów.`);
+      setProgress(undefined);
+      await runAnalysis(caseId, [...selected], depth, setProgress);
+      toast.success('Analiza zakończona — teczka została odświeżona.');
       onDone();
     } catch (failure) {
       toast.error(failure);
@@ -69,9 +74,10 @@ export function RunLauncher({ caseId, onDone, title = 'Ponowna analiza' }: { cas
         <button type="button" className="button button-primary" onClick={start} disabled={running || !connectors.data || selected.size === 0}>
           {running ? 'Analiza w toku…' : 'Uruchom analizę'}
         </button>
-        {running && <Loading label="Przeszukiwanie źródeł i danych blockchain. To może potrwać do kilkudziesięciu sekund." />}
+        <DepthSwitch depth={depth} onChange={setDepth} disabled={running} />
         {connectors.data && selected.size === 0 && <span className="muted">Zaznacz co najmniej jedno źródło.</span>}
       </div>
+      {running && <AnalysisProgress title="Analiza w toku" progress={progress} depth={depth} />}
     </section>
   );
 }

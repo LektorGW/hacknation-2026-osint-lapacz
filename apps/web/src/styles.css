@@ -459,6 +459,49 @@ td.num .cell-note { margin-left: auto; }
 .signal .bar { display: flex; }
 .hit-lead { padding: var(--s2) var(--s3); border-left: 4px solid var(--calc); background: var(--calc-bg); border-radius: var(--radius-small); margin: var(--s2) 0; font-size: 0.9rem; }
 
+/* ---------- Postęp analizy i dowód spieniężenia ---------- */
+
+.depth-switch { display: inline-flex; align-items: center; gap: var(--s2); margin: var(--s2) 0; font-size: 0.92rem; }
+.progress-bar { height: 12px; border-radius: 999px; background: var(--surface-sunken); border: 1px solid var(--border); overflow: hidden; margin: var(--s3) 0; }
+.progress-bar span { display: block; height: 100%; background: var(--primary); border-radius: 999px; transition: width 0.4s ease; }
+.progress-counts { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s6); margin: 0; }
+.progress-counts dt { font-size: 0.76rem; color: var(--muted); }
+.progress-counts dd { margin: 0; font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+.proof { border-left: 5px solid var(--level); }
+.proof-head { display: flex; gap: var(--s4); align-items: flex-start; }
+.proof-statement { font-size: 1.08rem; font-weight: 700; line-height: 1.35; }
+.proof-meta .chip { margin-bottom: 0; }
+.proof-formula { margin: var(--s1) 0 0; font-variant-numeric: tabular-nums; }
+.proof-cluster { font-size: 0.9rem; }
+.proof-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: var(--s4); align-items: start; margin-top: var(--s3); }
+.proof-grid .request { margin: 0; }
+
+.chain { list-style: none; display: flex; align-items: stretch; gap: 0; margin: var(--s4) 0 var(--s2); padding: var(--s3); overflow-x: auto; background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-small); }
+.chain-node { flex: none; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 9.5rem; padding: var(--s2) var(--s3); border: 2px solid var(--border-strong); border-radius: var(--radius-small); background: var(--surface); }
+.chain-node.role-source { border-color: var(--primary); }
+.chain-node.role-service { border-color: var(--inference); background: var(--inference-bg); }
+.chain-role { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.chain-label { font-size: 0.82rem; font-weight: 700; }
+.chain-step { flex: 1 0 11rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 0 var(--s2); text-align: center; }
+.chain-amount { font-weight: 800; font-variant-numeric: tabular-nums; }
+.chain-arrow { position: relative; width: 100%; height: 0; border-top: 3px solid var(--border-strong); }
+.chain-arrow::after { content: ''; position: absolute; right: -1px; top: -7.5px; border: 6px solid transparent; border-left: 9px solid var(--border-strong); border-right: 0; }
+.chain-step.is-inferred .chain-arrow { border-top-style: dashed; border-top-color: var(--inference); }
+.chain-step.is-inferred .chain-arrow::after { border-left-color: var(--inference); }
+.chain-meta { font-size: 0.76rem; color: var(--muted); }
+.chain-inferred { font-size: 0.7rem; font-weight: 700; color: var(--inference); cursor: help; }
+
+.insight { margin: 0 0 var(--s2); padding: var(--s2) var(--s3); border: 1px dashed var(--inference); border-radius: var(--radius-small); background: var(--inference-bg); font-size: 0.9rem; }
+.insight p { margin: 0 0 var(--s1); }
+.insight-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+.ai-summary { padding: var(--s3) var(--s4); border-left: 4px solid var(--inference); background: var(--surface-alt); border-radius: var(--radius-small); font-size: 1rem; }
+.ai-summary .muted { display: block; margin-top: var(--s1); font-size: 0.76rem; }
+.strongest-proof { padding: var(--s2) var(--s4); border: 1px solid var(--calc); border-left-width: 5px; border-radius: var(--radius-small); background: var(--calc-bg); }
+.notice-strong { border-color: var(--danger); background: var(--danger-bg); }
+.ai-badge { display: block; padding: 0.4rem 0.6rem; border-radius: var(--radius-small); border: 1px solid rgb(255 255 255 / 0.22); color: #dfe6f2; font-size: 0.78rem; text-decoration: none; overflow-wrap: anywhere; }
+.ai-badge:hover { background: rgb(255 255 255 / 0.09); color: #fff; }
+
 /* ---------- Teczka: ustalenie ---------- */
 
 .determination { border-top: 4px solid var(--inference); padding-top: var(--s3); }
@@ -869,6 +912,7 @@ kbd { font-family: var(--mono); font-size: 0.84em; padding: 0.05rem 0.4rem; bord
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 4s; }
   .skeleton-block, .uni-flow, .is-active .progress-mark { animation: none; }
+  .progress-bar span { transition: none; }
   .uni-flow { display: none; }
 }
 

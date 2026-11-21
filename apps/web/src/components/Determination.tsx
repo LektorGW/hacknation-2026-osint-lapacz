@@ -1,6 +1,8 @@
 // „Ustalenie”: główny kandydat na rzeczywistą osobę oraz ślady należące prawdopodobnie do innych osób.
 import type { Dossier, PersonCandidate, ProfileCard } from '@olcys/core';
-import { addressKey } from '../dossier.ts';
+import { addressKey, jointProbability } from '../dossier.ts';
+import { IDENTIFIER_LABEL } from '../labels.ts';
+import { proofSummary } from '../proof.ts';
 import { fmtPln, shorten, sum } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
 import { DualScore, Gauge, Initial, LayerTag, ScoreBadge, toLayer } from './common.tsx';
@@ -58,6 +60,8 @@ export function Determination() {
   const { dossier, tabHref } = useDossier();
   const person = dossier.persons[0];
   const { totals, keyFindings } = dossier;
+  const strongest = proofSummary(dossier.cashOutProof ?? []).strongest;
+  const mentions = (dossier.mentions ?? []).filter((item) => item.documents > 0);
   const total = (totals as { cashOutPlnTotal?: number }).cashOutPlnTotal ?? sum(Object.values(totals.cashOutPlnByYear));
 
   return (
@@ -67,6 +71,21 @@ export function Determination() {
         <LayerTag layer="inference" />
         <span className="muted">wynik automatycznego łączenia profili — bez udziału analityka</span>
       </header>
+
+      {dossier.summary && (
+        <p className="ai-summary">
+          {dossier.summary.text}
+          <span className="muted">
+            Streszczenie wygenerowane przez model z ustaleń poniżej · {dossier.summary.model} · wersja polecenia {dossier.summary.promptVersion}
+          </span>
+        </p>
+      )}
+      {strongest && (
+        <p className="strongest-proof">
+          <LayerTag layer={toLayer(strongest.layer)} /> <strong>Najmocniejszy dowód spieniężenia:</strong> {strongest.statement}{' '}
+          <a href={tabHref('dowod')}>Ścieżka krok po kroku</a>
+        </p>
+      )}
 
       <div className="determination-grid">
         <div className="determination-person">
@@ -115,7 +134,7 @@ export function Determination() {
                     <code className="mono" title={finding?.address}>
                       {shorten(finding?.address ?? item.key.split(':').slice(1).join(':'), 7, 5)}
                     </code>
-                    <DualScore joint={item.probability} score={finding?.confidence.score ?? 0} excluded={finding?.confidence.excluded} />
+                    <DualScore joint={finding ? (jointProbability(dossier, finding) ?? item.probability) : item.probability} score={finding?.confidence.score ?? 0} excluded={finding?.confidence.excluded} />
                   </li>
                 );
               })}
@@ -142,6 +161,21 @@ export function Determination() {
           </div>
         </div>
       </div>
+
+      {mentions.length > 0 && (
+        <div className="key-findings">
+          <h3>Wzmianki innych osób (niewliczone)</h3>
+          <ul className="plain-list">
+            {mentions.map((item) => (
+              <li key={`${item.identifier.type}-${item.identifier.value}`}>
+                <strong>{item.identifier.value}</strong> <span className="muted">({IDENTIFIER_LABEL[item.identifier.type] ?? item.identifier.type})</span>: {item.documents}{' '}
+                dokumentów, {item.authors} autorów{item.services.length > 0 && ` · ${item.services.join(', ')}`} — inni piszą o tym identyfikatorze; treści nie
+                podnoszą wyniku.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {keyFindings.length > 0 && (
         <div className="key-findings">

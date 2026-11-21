@@ -179,6 +179,9 @@ export function ruleLabel(rule: string): string {
   if (rule === 'synergy.extra_sources') return 'Premia: kolejne niezależne źródła';
   if (rule === 'penalty.shared_address') return 'Kara: adres współdzielony';
   if (rule === 'exclusion.address_class') return 'Wykluczenie: klasa adresu';
+  if (rule === 'ai.ownership') return 'Model językowy: odczyt, czyj jest adres';
+  if (group === 'ai') return `Model językowy: ${key}`;
+  if (rule === 'penalty.widely_cited') return 'Adres powszechnie cytowany';
   if (rule === 'exclusion.analyst_decision' || rule === 'decision.address_rejected') return 'Wykluczenie: decyzja analityka';
   return rule;
 }

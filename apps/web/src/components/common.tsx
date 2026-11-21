@@ -227,7 +227,7 @@ export function ScoreMeter({ score, tier, excluded }: { score: number; tier: str
   );
 }
 
-const JOINT_HINT = 'Prawdopodobieństwo, że adres należy do tej osoby — łączy pewność ustalenia osoby z pewnością publikacji.';
+const JOINT_HINT = 'Prawdopodobieństwo, że adres należy do osoby ze sprawy — łączy pewność ustalenia osoby z pewnością publikacji.';
 const SCORE_HINT = 'Wskaźnik Pewności publikacji — na ile adres jest powiązany z autorem publikacji, w której go znaleziono.';
 
 /** Dwa wyniki adresu obok siebie: łączny (osoba–adres) i Wskaźnik Pewności publikacji. */

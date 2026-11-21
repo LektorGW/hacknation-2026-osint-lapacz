@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import type { StoredEvidence } from '@olcys/core';
+import type { TextInsight } from '@olcys/core';
+import type { EvidenceWithInsight } from '../proof.ts';
+import { useDossier } from './DossierContext.tsx';
 import { fmtDateTime, shorten } from '../format.ts';
 import { CATEGORY_LABEL, IDENTIFIER_LABEL, IDENTITY_LABEL } from '../labels.ts';
-import { ExternalLink } from './common.tsx';
+import { ExternalLink, LayerTag } from './common.tsx';
 
 /** Cytat ze źródła jako zwykły tekst, z wyróżnionym adresem. */
 function Excerpt({ text, address }: { text: string; address: string }) {
@@ -36,7 +38,78 @@ function ContentHash({ hash }: { hash: string }) {
   );
 }
 
-function EvidenceItem({ item, address }: { item: StoredEvidence; address: string }) {
+const OWNERSHIP_LABEL: Record<TextInsight['ownership'], string> = {
+  own_address: 'autor podaje własny adres',
+  third_party_address: 'adres należy do kogoś innego',
+  warning_about_address: 'ostrzeżenie o cudzym adresie',
+  quoted: 'adres tylko zacytowany',
+  unclear: 'nie da się rozstrzygnąć',
+};
+
+const OFFER_SIDE: Record<NonNullable<TextInsight['offer']>['side'], string> = {
+  sell: 'sprzedaż',
+  buy: 'kupno',
+  exchange: 'wymiana',
+  accepts_payment: 'przyjmowanie płatności',
+};
+
+/** Odczyty, po których ślad nie jest wliczany do wyniku. */
+const EXCLUDING: TextInsight['ownership'][] = ['third_party_address', 'warning_about_address', 'quoted'];
+
+/** Odczyt treści przez model językowy — zawsze sugestia, którą analityk może cofnąć. */
+function Insight({ evidenceId, insight }: { evidenceId: string; insight: TextInsight }) {
+  const { dossier, decide, undo } = useDossier();
+  const override = dossier.decisions.filter((item) => (item.target as string) === 'evidence' && item.key === evidenceId).at(-1);
+  const { offer } = insight;
+  return (
+    <aside className="insight">
+      <p className="insight-head">
+        <strong>Sugestia modelu</strong> <LayerTag layer="inference" />
+        <span className="muted">
+          {insight.model} · wersja polecenia {insight.promptVersion}
+        </span>
+      </p>
+      <p>
+        Czyj jest adres: <strong>{OWNERSHIP_LABEL[insight.ownership] ?? insight.ownership}</strong>
+        {insight.quote && <> — na podstawie fragmentu „{insight.quote}”</>}
+      </p>
+      {offer && (
+        <p>
+          Oferta: {OFFER_SIDE[offer.side] ?? offer.side}
+          {offer.amount !== undefined && ` ${offer.amount.toLocaleString('pl-PL')}`}
+          {offer.asset && ` ${offer.asset}`}
+          {offer.currency && ` za ${offer.currency}`}
+          {offer.paymentMethods.length > 0 && ` · płatność: ${offer.paymentMethods.join(', ')}`}
+          {offer.location && ` · ${offer.location}`}
+        </p>
+      )}
+      {insight.translationPl && (
+        <details className="why">
+          <summary>Tłumaczenie na polski (język źródła: {insight.language})</summary>
+          <p>{insight.translationPl}</p>
+        </details>
+      )}
+      {EXCLUDING.includes(insight.ownership) &&
+        (override ? (
+          <p>
+            Wpływ modelu cofnięty decyzją analityka.{' '}
+            <button type="button" className="button button-small" onClick={() => undo(override.id)}>
+              Przywróć odczyt modelu
+            </button>
+          </p>
+        ) : (
+          <p>
+            Z powodu tego odczytu ślad nie jest wliczany do wyniku.{' '}
+            <button type="button" className="button button-small" onClick={() => decide('evidence', evidenceId, 'confirmed', 'Cofnięto wpływ modelu')}>
+              Cofnij wpływ modelu
+            </button>
+          </p>
+        ))}
+    </aside>
+  );
+}
+
+function EvidenceItem({ item, address }: { item: EvidenceWithInsight; address: string }) {
   return (
     <li className="evidence">
       <p className="evidence-title">
@@ -46,6 +119,7 @@ function EvidenceItem({ item, address }: { item: StoredEvidence; address: string
         )}
       </p>
       <Excerpt text={item.excerpt} address={address} />
+      {item.insight && <Insight evidenceId={item.id} insight={item.insight} />}
       <dl className="meta">
         <div>
           <dt>Usługa</dt>
@@ -92,7 +166,7 @@ function EvidenceItem({ item, address }: { item: StoredEvidence; address: string
   );
 }
 
-export function EvidenceList({ evidence, address }: { evidence: StoredEvidence[]; address: string }) {
+export function EvidenceList({ evidence, address }: { evidence: EvidenceWithInsight[]; address: string }) {
   if (evidence.length === 0) return <p className="muted">Brak zapisanych śladów.</p>;
   return (
     <ol className="evidence-list">

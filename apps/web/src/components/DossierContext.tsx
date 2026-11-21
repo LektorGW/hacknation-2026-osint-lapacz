@@ -1,18 +1,19 @@
 // Kontekst teczki: dane, odświeżanie i opcjonalne korekty analityka dostępne w każdej sekcji.
 import { createContext, useContext, useId, useState } from 'react';
-import type { AnalystDecision, Decision, Dossier } from '@olcys/core';
-import type { CaseSummary } from '../api.ts';
+import type { Decision } from '@olcys/core';
+import type { CaseSummary, DecisionTarget } from '../api.ts';
+import type { FullDossier } from '../proof.ts';
 import { DECISION_LABEL } from '../labels.ts';
 import type { DossierTab } from '../router.ts';
 import { fmtDateTime } from '../format.ts';
 
 export interface DossierContextValue {
-  dossier: Dossier;
+  dossier: FullDossier;
   summary: CaseSummary;
   simplified: boolean;
   /** Odnośnik do sekcji teczki. */
   tabHref(tab: DossierTab): string;
-  decide(target: AnalystDecision['target'], key: string, decision: Decision, note?: string): Promise<void>;
+  decide(target: DecisionTarget, key: string, decision: Decision, note?: string): Promise<void>;
   undo(decisionId: string): Promise<void>;
   reload(): void;
 }
@@ -26,7 +27,7 @@ export function useDossier(): DossierContextValue {
 }
 
 interface DecisionControlsProps {
-  target: AnalystDecision['target'];
+  target: DecisionTarget;
   decisionKey: string;
   confirmLabel: string;
   rejectLabel: string;
@@ -38,7 +39,7 @@ export function DecisionControls({ target, decisionKey, confirmLabel, rejectLabe
   const noteId = useId();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
-  const current = dossier.decisions.filter((item) => item.target === target && item.key === decisionKey).at(-1);
+  const current = dossier.decisions.filter((item) => (item.target as DecisionTarget) === target && item.key === decisionKey).at(-1);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);

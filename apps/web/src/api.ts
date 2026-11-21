@@ -16,6 +16,7 @@ import type {
   WatchHit,
 } from '@olcys/core';
 import { dossierFromRun } from './dossier.ts';
+import type { AiStatus, CorpusStats, Depth, FullDossier, RunProgress } from './proof.ts';
 import { detectIdentifierType, normalizeIdentifier, suggestCaseName } from './identify.ts';
 import { serviceLinksFromFindings } from './services.ts';
 
@@ -65,8 +66,11 @@ export interface Overview {
   approximate?: boolean;
 }
 
+/** Cel decyzji; `evidence` cofa wpływ modelu językowego na pojedynczy ślad. */
+export type DecisionTarget = AnalystDecision['target'] | 'evidence';
+
 export interface DecisionInput {
-  target: AnalystDecision['target'];
+  target: DecisionTarget;
   key: string;
   decision: Decision;
   note?: string;
@@ -79,9 +83,16 @@ export interface MonitorSettings {
   sources?: Record<string, boolean>;
 }
 
+export interface RunHandle {
+  id: string;
+  status: string;
+}
+
 export interface QuickResult {
   case: CaseSummary;
   dossier?: Dossier;
+  /** Analiza uruchomiona w tle (odpowiedź 202) — postęp pod `getProgress`. */
+  run?: RunHandle;
 }
 
 export interface Backend {
@@ -93,7 +104,12 @@ export interface Backend {
   createCase(name: string, identifiers: Identifier[]): Promise<CaseSummary>;
   getCase(caseId: string): Promise<CaseSummary>;
   addIdentifiers(caseId: string, identifiers: Identifier[]): Promise<CaseSummary>;
-  startRun(caseId: string, connectors?: string[]): Promise<AnalysisRun>;
+  /** Uruchamia analizę w tle, jeśli usługa to potrafi; starsza odpowiada dopiero po zakończeniu. */
+  startRun(caseId: string, connectors?: string[], depth?: Depth): Promise<RunHandle>;
+  /** Postęp analizy; `null`, gdy usługa nie udostępnia tej trasy. */
+  getProgress(runId: string): Promise<RunProgress | null>;
+  getAi(): Promise<AiStatus | null>;
+  getCorpusStats(): Promise<CorpusStats | null>;
   getRun(runId: string): Promise<AnalysisRun>;
   getDiff(caseId: string, from: string, to: string): Promise<RunDiff>;
   getReplacements(runId: string): Promise<Replacement[]>;
@@ -115,7 +131,7 @@ export interface Backend {
   dismissHit(hitId: string): Promise<WatchHit>;
   createCaseFromHit(hitId: string): Promise<CaseSummary>;
   /** Ustalenie jednym wywołaniem; `null`, gdy trasa nie istnieje. */
-  quick(value: string, type: IdentifierType): Promise<QuickResult | null>;
+  quick(value: string, type: IdentifierType, depth?: Depth): Promise<QuickResult | null>;
   /** Czy usługa wystawia „Materiał do zapytania” dla usługi powiązanej z podmiotem. */
   hasServiceRequest(runId: string, serviceId: string): Promise<boolean>;
 }
@@ -223,7 +239,11 @@ const httpBackend: Backend = {
   getCase: (caseId) => request(`/api/cases/${enc(caseId)}`),
   addIdentifiers: (caseId, identifiers) =>
     feature('Dopisanie identyfikatorów', post(`/api/cases/${enc(caseId)}/identifiers`, { identifiers })),
-  startRun: (caseId, connectors) => post(`/api/cases/${enc(caseId)}/runs`, connectors ? { connectors } : {}),
+  startRun: (caseId, connectors, depth = 'standard') =>
+    post(`/api/cases/${enc(caseId)}/runs`, { ...(connectors ? { connectors } : {}), depth, async: true }),
+  getProgress: (runId) => optional(request<RunProgress>(`/api/runs/${enc(runId)}/progress`), null),
+  getAi: () => optional(request<AiStatus>('/api/ai'), null),
+  getCorpusStats: () => optional(request<CorpusStats>('/api/corpus/stats'), null),
   getRun: (runId) => request(`/api/runs/${enc(runId)}`),
   getDiff: (caseId, from, to) => request(`/api/cases/${enc(caseId)}/diff?from=${enc(from)}&to=${enc(to)}`),
   getReplacements: async (runId) => {
@@ -250,7 +270,7 @@ const httpBackend: Backend = {
   analyzeHit: (hitId) => feature('Analiza autora trafienia', post(`/api/monitor/hits/${enc(hitId)}/analyze`, {})),
   dismissHit: (hitId) => feature('Odrzucenie trafienia', post(`/api/monitor/hits/${enc(hitId)}/dismiss`, {})),
   createCaseFromHit: (hitId) => feature('Założenie sprawy z trafienia', post(`/api/monitor/hits/${enc(hitId)}/case`, {})),
-  quick: (value, type) => optional(post<QuickResult>('/api/quick', { value, type }), null),
+  quick: (value, type, depth = 'standard') => optional(post<QuickResult>('/api/quick', { value, type, depth, async: true }), null),
   hasServiceRequest: async (runId, serviceId) => {
     try {
       const response = await fetch(serviceRequestUrl(runId, serviceId), { method: 'HEAD' });
@@ -285,15 +305,15 @@ export function errorMessage(error: unknown): string {
 // ---------- Operacje złożone ----------
 
 export interface DossierView {
-  dossier: Dossier;
+  dossier: FullDossier;
   summary: CaseSummary;
   /** Teczka zbudowana w interfejsie z samej analizy — starsza wersja usługi. */
   simplified: boolean;
 }
 
 /** Uzupełnia pola, których starsze wersje usługi nie zwracają. */
-function complete(dossier: Dossier): Dossier {
-  const partial = dossier as Partial<Dossier>;
+function complete(dossier: Dossier): FullDossier {
+  const partial = dossier as Partial<FullDossier>;
   return {
     ...dossier,
     // Usługa zapisuje brak wyceny jako null; w interfejsie brak wartości to undefined.
@@ -308,6 +328,8 @@ function complete(dossier: Dossier): Dossier {
     decisions: partial.decisions ?? [],
     keyFindings: partial.keyFindings ?? [],
     timeline: partial.timeline ?? [],
+    cashOutProof: partial.cashOutProof ?? [],
+    mentions: partial.mentions ?? [],
   };
 }
 
@@ -331,11 +353,52 @@ export async function loadDossier(source: { caseId: string } | { runId: string }
 }
 
 /** „Kogo sprawdzić?”: sprawa, analiza i teczka z jednego identyfikatora. */
-export async function quickCheck(raw: string, type: IdentifierType = detectIdentifierType(raw)): Promise<CaseSummary> {
+const POLL_MS = 1500;
+
+/** Czeka na zakończenie analizy w tle, przekazując kolejne stany postępu. */
+export async function trackRun(runId: string, onProgress: (progress: RunProgress) => void): Promise<void> {
+  for (;;) {
+    const progress = await api.getProgress(runId);
+    if (!progress) {
+      // Usługa bez trasy postępu: wystarczy stan samej analizy.
+      const run = await api.getRun(runId);
+      if (run.status === 'failed') throw new ApiError('Analiza zakończyła się błędem — szczegóły w dzienniku analizy.', 500);
+      if (run.status !== 'running') return;
+    } else {
+      onProgress(progress);
+      if (progress.status === 'failed') throw new ApiError(progress.error ?? 'Analiza zakończyła się błędem.', 500);
+      if (progress.status === 'completed') return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+}
+
+/** Analiza istniejącej sprawy z ekranem postępu; obsługuje też odpowiedź synchroniczną starszej usługi. */
+export async function runAnalysis(
+  caseId: string,
+  connectors: string[] | undefined,
+  depth: Depth,
+  onProgress: (progress: RunProgress) => void,
+): Promise<void> {
+  const run = await api.startRun(caseId, connectors, depth);
+  if (run.status === 'running') await trackRun(run.id, onProgress);
+  else if (run.status === 'failed') throw new ApiError('Analiza zakończyła się błędem — szczegóły w dzienniku analizy.', 500);
+}
+
+/** „Kogo sprawdzić?”: sprawa, analiza i teczka z jednego identyfikatora. */
+export async function quickCheck(
+  raw: string,
+  type: IdentifierType,
+  depth: Depth,
+  onProgress: (progress: RunProgress) => void,
+): Promise<CaseSummary> {
   const identifier = normalizeIdentifier(type, raw);
-  const quick = await api.quick(identifier.value, type);
-  if (quick) return quick.case;
+  const quick = await api.quick(identifier.value, type, depth);
+  if (quick) {
+    if (quick.run?.status === 'running') await trackRun(quick.run.id, onProgress);
+    return quick.case;
+  }
   const created = await api.createCase(suggestCaseName(identifier), [identifier]);
-  await api.startRun(created.id);
+  await runAnalysis(created.id, undefined, depth, onProgress);
   return created;
 }

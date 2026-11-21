@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { isDemo } from './api.ts';
+import { api, isDemo } from './api.ts';
+import { useAsync } from './useAsync.ts';
 import { ToastProvider } from './components/Toast.tsx';
 import { DashboardPage } from './pages/DashboardPage.tsx';
 import { DossierPage } from './pages/DossierPage.tsx';
@@ -57,6 +58,7 @@ export function App() {
   const route = parseRoute(useHash());
   const scheme = useScheme();
   const help = useRef<HTMLDialogElement>(null);
+  const ai = useAsync(() => api.getAi().catch(() => null), 'ai');
   const screen = `${route.page}:${'caseId' in route ? route.caseId : 'runId' in route ? route.runId : ''}`;
 
   // Nowy ekran zaczyna się od góry; przełączanie sekcji teczki nie zmienia przewinięcia.
@@ -116,6 +118,11 @@ export function App() {
             ))}
           </nav>
           <div className="sidebar-foot">
+            {ai.data && (
+              <a className="ai-badge" href={href.rules()} title={ai.data.description}>
+                Model językowy: <strong>{ai.data.enabled ? (ai.data.model ?? 'włączony') : 'wyłączony'}</strong>
+              </a>
+            )}
             {isDemo && (
               <p className="demo-badge" role="note">
                 Tryb demo — dane w całości fikcyjne

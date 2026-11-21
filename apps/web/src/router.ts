@@ -2,6 +2,7 @@
 import { useSyncExternalStore } from 'react';
 
 export const DOSSIER_TABS = [
+  { id: 'dowod', label: 'Dowód spieniężenia' },
   { id: 'uslugi', label: 'Giełdy i portfele' },
   { id: 'graf', label: 'Graf powiązań' },
   { id: 'profile', label: 'Profile' },
@@ -33,7 +34,7 @@ function decode(part: string | undefined): string | undefined {
 }
 
 const toTab = (value: string | undefined): DossierTab =>
-  DOSSIER_TABS.find((tab) => tab.id === value)?.id ?? 'uslugi';
+  DOSSIER_TABS.find((tab) => tab.id === value)?.id ?? 'dowod';
 
 export function parseRoute(hash: string): Route {
   const [first, rawSecond, third] = hash.replace(/^#\/?/, '').split('/');
@@ -46,7 +47,7 @@ export function parseRoute(hash: string): Route {
   return { page: 'dashboard' };
 }
 
-const withTab = (base: string, tab?: DossierTab) => (tab && tab !== 'uslugi' ? `${base}/${tab}` : base);
+const withTab = (base: string, tab?: DossierTab) => (tab && tab !== 'dowod' ? `${base}/${tab}` : base);
 
 export const href = {
   dashboard: () => '#/',

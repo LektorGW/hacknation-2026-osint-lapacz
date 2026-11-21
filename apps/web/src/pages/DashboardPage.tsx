@@ -5,46 +5,14 @@ import type { IdentifierType } from '@olcys/core';
 import { api, errorMessage, isDemo, quickCheck } from '../api.ts';
 import type { CaseSummary, Overview } from '../api.ts';
 import { BarChart } from '../charts/Charts.tsx';
+import { AnalysisProgress, DepthSwitch } from '../components/Progress.tsx';
+import type { CorpusStats, Depth, RunProgress } from '../proof.ts';
 import { Bar, EmptyState, ErrorBox, LayerTag, ScoreBadge, Skeleton } from '../components/common.tsx';
 import { fmtDate, fmtDateTime, fmtPln, sum } from '../format.ts';
 import { detectIdentifierType } from '../identify.ts';
 import { IDENTIFIER_LABEL, IDENTIFIER_TYPES } from '../labels.ts';
 import { href, navigate } from '../router.ts';
 import { useAsync } from '../useAsync.ts';
-
-const STAGES = [
-  'Wyszukiwanie profili w publicznych źródłach',
-  'Łączenie profili w jedną osobę',
-  'Wyodrębnianie adresów kryptowalutowych',
-  'Pobieranie danych blockchain i wycena',
-  'Ustalanie powiązań z giełdami i portfelami',
-];
-
-/** Ekran postępu: etapy przesuwają się w stałym rytmie, ostatni trwa do zakończenia analizy. */
-function Progress({ value }: { value: string }) {
-  const [stage, setStage] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setStage((current) => Math.min(current + 1, STAGES.length - 1)), 850);
-    return () => clearInterval(timer);
-  }, []);
-  return (
-    <section className="card progress" role="status" aria-live="polite">
-      <h2>Ustalam, kim jest „{value}”…</h2>
-      <ol className="progress-steps">
-        {STAGES.map((label, index) => (
-          <li key={label} className={index < stage ? 'is-done' : index === stage ? 'is-active' : ''}>
-            <span className="progress-mark" aria-hidden="true">
-              {index < stage ? '✓' : index + 1}
-            </span>
-            {label}
-            {index === stage && <span className="visually-hidden"> — w toku</span>}
-          </li>
-        ))}
-      </ol>
-      <p className="muted">Po zakończeniu teczka otworzy się automatycznie.</p>
-    </section>
-  );
-}
 
 const EXAMPLES = ['tomwzor', 'tomasz.wzorcowy@poczta.example', 'Tomasz Wzorcowy'];
 
@@ -54,6 +22,8 @@ function QuickCheck() {
   const [value, setValue] = useState('');
   const [override, setOverride] = useState<IdentifierType>();
   const [pending, setPending] = useState<string>();
+  const [depth, setDepth] = useState<Depth>('standard');
+  const [progress, setProgress] = useState<RunProgress>();
   const [error, setError] = useState<string>();
   const type = override ?? detectIdentifierType(value);
 
@@ -73,8 +43,9 @@ function QuickCheck() {
     }
     setError(undefined);
     setPending(trimmed);
+    setProgress(undefined);
     try {
-      const created = await quickCheck(trimmed, type);
+      const created = await quickCheck(trimmed, type, depth, setProgress);
       navigate(href.case(created.id));
     } catch (failure) {
       setError(errorMessage(failure));
@@ -82,7 +53,7 @@ function QuickCheck() {
     }
   }
 
-  if (pending) return <Progress value={pending} />;
+  if (pending) return <AnalysisProgress title={`Ustalam, kim jest „${pending}”…`} progress={progress} depth={depth} />;
 
   return (
     <form className="card quick" onSubmit={submit} noValidate>
@@ -126,6 +97,7 @@ function QuickCheck() {
           <span className="muted">Typ identyfikatora zostanie rozpoznany automatycznie.</span>
         )}
       </p>
+      <DepthSwitch depth={depth} onChange={setDepth} />
       {isDemo && (
         <p className="quick-examples">
           Przykłady w trybie demo:{' '}
@@ -141,7 +113,7 @@ function QuickCheck() {
   );
 }
 
-function Tiles({ overview }: { overview: Overview }) {
+function Tiles({ overview, corpus }: { overview: Overview; corpus: CorpusStats | null }) {
   const total = sum(Object.values(overview.cashOutPlnByYear));
   const tiles: [string, string, 'fact' | 'calc' | 'inference'][] = [
     [String(overview.cases), 'sprawy', 'fact'],
@@ -158,6 +130,15 @@ function Tiles({ overview }: { overview: Overview }) {
           <LayerTag layer={layer} />
         </div>
       ))}
+      {corpus && (
+        <a className="stat stat-link" href={href.monitor()}>
+          <span className="stat-value">{corpus.documents.toLocaleString('pl-PL')}</span>
+          <span className="stat-label">Własny indeks publikacji · adresy: {corpus.addresses.toLocaleString('pl-PL')} · serwisy: {corpus.services}</span>
+          <span className="muted">
+            przechowywanie {corpus.retentionDays} dni{corpus.newestFetchedAt ? ` · najnowsza: ${fmtDateTime(corpus.newestFetchedAt)}` : ''}
+          </span>
+        </a>
+      )}
       {overview.monitor && (
         <a className="stat stat-link" href={href.monitor()}>
           <span className="stat-value">{overview.monitor.newHits}</span>
@@ -222,8 +203,8 @@ function CaseTable({ cases, overview }: { cases: CaseSummary[]; overview: Overvi
 
 export function DashboardPage() {
   const loaded = useAsync(async () => {
-    const [cases, overview] = await Promise.all([api.listCases(), api.getOverview()]);
-    return { cases, overview };
+    const [cases, overview, corpus] = await Promise.all([api.listCases(), api.getOverview(), api.getCorpusStats().catch(() => null)]);
+    return { cases, overview, corpus };
   }, 'dashboard');
   const years = Object.keys(loaded.data?.overview.cashOutPlnByYear ?? {}).sort();
 
@@ -235,7 +216,7 @@ export function DashboardPage() {
       {!loaded.data && loaded.loading && <Skeleton blocks={3} />}
       {loaded.data && (
         <>
-          <Tiles overview={loaded.data.overview} />
+          <Tiles overview={loaded.data.overview} corpus={loaded.data.corpus} />
           {loaded.data.overview.approximate && (
             <p className="notice" role="note">
               Zestawienie uproszczone: ta wersja usługi analizy nie udostępnia przeglądu, więc priorytet przyjęto równy najwyższemu Wskaźnikowi Pewności.
