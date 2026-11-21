@@ -48,12 +48,12 @@ const aiLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(a
 const normalizeText = (sources as { normalizeAddressText?: (text: string) => string }).normalizeAddressText;
 
 // Publiczne etykiety adresów usług — do wyjaśnienia, gdy analityk wpisze nazwę giełdy zamiast osoby.
-const loadLabelFile = (chain as { loadLabelFile?: (path: string) => { entries: { address: string; network: string; label: string }[] } }).loadLabelFile;
-let serviceLabels: { address: string; network: string; label: string }[] = [];
+const loadLabelFile = (chain as { loadLabelFile?: (path: string) => { entries: { address: string; network: string; label: string; addressClass?: string }[] } }).loadLabelFile;
+let serviceLabels: { address: string; network: string; label: string; addressClass?: string }[] = [];
 try {
   if (typeof loadLabelFile === 'function') {
     const labelsPath = fileURLToPath(new URL('../data/labels.json', import.meta.resolve('@olcys/chain')));
-    serviceLabels = loadLabelFile(labelsPath).entries.map(({ address, network, label }) => ({ address, network, label }));
+    serviceLabels = loadLabelFile(labelsPath).entries.map(({ address, network, label, addressClass }) => ({ address, network, label, addressClass }));
   }
 } catch {
   // Brak zbioru etykiet nie blokuje startu — wyjaśnienie pokaże pustą listę adresów.

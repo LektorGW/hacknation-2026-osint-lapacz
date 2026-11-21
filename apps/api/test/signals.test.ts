@@ -94,7 +94,8 @@ test('sygnały obrotu: każdy rodzaj osobno, nazwany jako wskazówka z cytatem',
     ['adres do wpłaty', 'podaj adres, wyślę od razu', 'Adres do wpłaty', 'podaj adres', suspicionWeights.depositAddressRequest!],
   ];
   for (const [name, text, label, fragment, weight] of cases) {
-    const result = suspicion(doc(text));
+    // Sygnały liczą się tylko w kontekście kryptowalut — tutaj: publikacja z adresem.
+    const result = suspicion(doc(text), { hasAddress: true });
     assert.ok(cites(result.reasons, label, fragment), `${name}: brak „${label}” z „${fragment}” w ${JSON.stringify(result.reasons)}`);
     // „skupuję codziennie” to także czasownik obrotu, ale bez nazwy kryptowaluty nie jest ofertą.
     assert.equal(result.score, weight, `${name}: wynik`);
@@ -113,6 +114,28 @@ test('sygnały obrotu: zwykła treść daje zero, pełna oferta — wysoki wynik
   assert.ok(offer.reasons.length >= 5);
   assert.ok(offer.reasons.every((reason) => /\(\+\d+\)$/.test(reason)));
 
+  // Bez oferty obrotu kryptowalutą i bez adresu: zero, choć są gotówka, odbiór osobisty i kwota.
+  assert.deepEqual(suspicion(doc('Sprzedam komputer, 3 500 zł, tylko gotówka i odbiór osobisty w Krakowie, codziennie po 17.')), { score: 0, reasons: [] });
+  assert.equal(suspicion(doc('Pożyczę 15 000 zł, spłata gotówką. Bitcoin mnie nie interesuje.')).score, 0);
+  // To samo ogłoszenie z adresem kryptowalutowym jest już kontekstem krypto.
+  assert.ok(suspicion(doc('Sprzedam komputer, 3 500 zł, tylko gotówka i odbiór osobisty.'), { hasAddress: true }).score >= 30);
+
   const english = suspicion(doc('Selling BTC for cash in Warsaw, BLIK ok'));
   assert.equal(english.score, suspicionWeights.tradeOffer! + suspicionWeights.cashOrInPerson!);
+});
+
+test('oferta obrotu to forma ofertowa z nazwą kryptowaluty zaraz po niej — nie artykuł i nie ogłoszenie o sprzęcie', () => {
+  const offers = ['Sprzedam BTC za gotówkę', 'Kupię / sprzedam USDT — gotówka', 'Skup bitcoin i ethereum, Lublin', 'WTS 2 BTC', 'Selling USDT, F2F only'];
+  for (const text of offers) assert.ok(suspicion(doc(text)).score >= 30, text);
+
+  const notOffers = [
+    // Rzeczowniki z artykułów.
+    'Od 1 lipca KYC przy każdej sprzedaży kryptowalut w bitomatach — nowe przepisy.',
+    'Jak rozliczyć sprzedaż bitcoina i wymianę kryptowalut w zeznaniu rocznym?',
+    // Ogłoszenie o sprzęcie: nazwa kryptowaluty pada daleko za „sprzedam”.
+    'Sprzedam kartę graficzną Radeon RX 6600, stan idealny, na gwarancji, nigdy nie była używana do kopania kryptowalut.',
+    'Sprzedam komputer PC Ryzen 7, 16 GB RAM, dysk SSD; odbiór osobisty Kraków; nie kopał bitcoin.',
+    'Bitcoin spadł do 17000 USD! Z okazji mogli skorzystać nieliczni kupujący.',
+  ];
+  for (const text of notOffers) assert.deepEqual(suspicion(doc(text)), { score: 0, reasons: [] }, text);
 });

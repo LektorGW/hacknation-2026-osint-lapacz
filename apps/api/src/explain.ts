@@ -134,6 +134,8 @@ export interface ServiceLabel {
   address: string;
   network: string;
   label: string;
+  /** Klasa adresu ze zbioru etykiet (giełda, kontrakt…), jeśli zbiór ją podaje. */
+  addressClass?: string;
 }
 
 export interface ExplainInput {

@@ -44,6 +44,8 @@ export function registerMonitorRoutes(app: FastifyInstance, context: RouteContex
             enabled: { type: 'boolean' },
             everyMinutes: { type: 'integer', minimum: 1, maximum: 10080 },
             autoAnalyzeThreshold: { type: 'integer', minimum: 0, maximum: 200 },
+            maxAutoAnalyses: { type: 'integer', minimum: 0, maximum: 200 },
+            maxAiPublications: { type: 'integer', minimum: 0, maximum: 2000 },
             sources: { type: 'object', maxProperties: 500, additionalProperties: { type: 'boolean' } },
           },
         },
@@ -64,6 +66,10 @@ export function registerMonitorRoutes(app: FastifyInstance, context: RouteContex
     const newHits = await monitor.run();
     return { status: await monitor.status(), newHits };
   });
+
+  // Jednorazowe sprzątanie po zmianie reguł: zapisane trafienia są przeliczane bieżącymi regułami,
+  // a niespełniające kryteriów — oznaczane jako odrzucone z powodem.
+  app.post('/api/monitor/recheck', async () => ({ ...(await monitor.recheck()), status: await monitor.status() }));
 
   app.get<{ Querystring: { status?: WatchHit['status']; minPolish?: number; minSuspicion?: number; limit?: number } }>(
     '/api/monitor/hits',

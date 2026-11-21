@@ -496,6 +496,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     matchService: deps.matchService,
     ai: ai?.assistant,
     normalizeText: deps.normalizeText,
+    addressLabels: deps.serviceLabels,
     corpus: corpusSettings,
     now,
     timers: deps.monitorTimers,

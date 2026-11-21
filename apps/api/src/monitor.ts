@@ -14,6 +14,7 @@ import type {
   ConnectorContext,
   DiscoveringConnector,
   Identifier,
+  Network,
   MonitorSourceStatus,
   MonitorStatus,
   SourceConnector,
@@ -28,7 +29,11 @@ import type { CorpusSettings } from './corpus.ts';
 import { normalize } from './identity.ts';
 import { indexKnownAddresses, knownFor, markKnown } from './known-addresses.ts';
 import type { KnownAddress } from './known-addresses.ts';
-import { SIGNAL_RULES, polishNexus, suspicion } from './signals.ts';
+import type { ServiceLabel } from './explain.ts';
+import { shortAddress } from './format.ts';
+import { decideHit, evaluatePublication } from './monitor-rules.ts';
+import type { Evaluation, HitBasis, Publication } from './monitor-rules.ts';
+import { SIGNAL_RULES, isCryptoAsset, isGovernanceForum } from './signals.ts';
 import type { Storage } from './storage.ts';
 import { analyzeAuthor, canDiscover } from './sweep.ts';
 import type { AuthorAnalysisParams } from './sweep.ts';
@@ -45,6 +50,8 @@ export interface MonitorDeps extends Omit<AuthorAnalysisParams, 'signal' | 'now'
   monitorConnectors?: SourceConnector[];
   /** Przechowywanie indeksu publikacji; bez tego pobrane publikacje nie są zapisywane. */
   corpus?: CorpusSettings;
+  /** Zbiór publicznych etykiet adresów — do odsiewania adresów kontraktów i usług. */
+  addressLabels?: ServiceLabel[];
   now: () => Date;
   timers?: MonitorTimers;
   log?: (message: string, error?: unknown) => void;
@@ -56,7 +63,38 @@ export interface MonitorPatch {
   autoAnalyzeThreshold?: number;
   /** Włączenie lub wyłączenie pojedynczych źródeł. */
   sources?: Record<string, boolean>;
+  /** Limit automatycznych analiz na przebieg. */
+  maxAutoAnalyses?: number;
+  /** Limit publikacji czytanych przez model językowy na przebieg. */
+  maxAiPublications?: number;
 }
+
+/** Liczby jednego przebiegu — pokazują, co odsiały reguły i dlaczego czegoś nie przeanalizowano. */
+export interface MonitorRunStats {
+  at: string;
+  /** Nowe publikacje przejrzane w przebiegu. */
+  documents: number;
+  /** W tym z adresem kryptowalutowym. */
+  withAddress: number;
+  /** Publikacje po wstępnym filtrze (adres albo oferta obrotu kryptowalutą). */
+  candidates: number;
+  /** Publikacje przeczytane przez model językowy. */
+  aiRead: number;
+  /** Adresy odsiane jako kontrakty lub adresy usług. */
+  contractsFiltered: number;
+  /** Nowe trafienia. */
+  hits: number;
+  analyzed: number;
+  /** Trafienia bez automatycznej analizy, z powodem. */
+  skipped: { noAuthorNoAddress: number; limit: number; belowThreshold: number };
+}
+
+/** Stan monitoringu z rozbiciem liczb (lokalne rozszerzenie `MonitorStatus`). */
+export type MonitorStatusView = MonitorStatus & {
+  maxAutoAnalyses: number;
+  maxAiPublications: number;
+  totals: MonitorStatus['totals'] & { dismissed: number; lastRun?: MonitorRunStats };
+};
 
 interface SourceStats {
   lastRunAt?: string;
@@ -73,12 +111,17 @@ interface MonitorState {
   disabledSources: string[];
   lastRunAt?: string;
   sources: Record<string, SourceStats>;
+  maxAutoAnalyses?: number;
+  maxAiPublications?: number;
+  lastRun?: MonitorRunStats;
 }
 
 export interface Monitor {
-  status(): Promise<MonitorStatus>;
+  status(): Promise<MonitorStatusView>;
+  /** Przelicza zapisane trafienia bieżącymi regułami; niespełniające kryteriów oznacza jako odrzucone. */
+  recheck(): Promise<{ checked: number; kept: number; dismissed: number }>;
   /** Zmienia ustawienia; nieznane źródło zgłasza błąd `UnknownSourceError`. */
-  configure(patch: MonitorPatch): Promise<MonitorStatus>;
+  configure(patch: MonitorPatch): Promise<MonitorStatusView>;
   /** Wykonuje przebieg i zwraca nowe trafienia; gdy przebieg już trwa, dołącza do niego. */
   run(): Promise<WatchHit[]>;
   /** Analizuje autora trafienia (ręczne wymuszenie); `null`, gdy trafienia nie ma. */
@@ -93,6 +136,14 @@ export interface Monitor {
 export type MonitorHit = WatchHit & {
   /** Adresy z publikacji już przypisane podmiotom innych spraw — mocny trop, analiza autora bez względu na próg. */
   knownFromCases?: KnownAddress[];
+  /** Która część definicji trafienia jest spełniona. */
+  basis?: HitBasis;
+  /** Dlaczego publikacja jest trafieniem (albo dlaczego przestała nim być po zmianie reguł). */
+  hitReason?: string;
+  /** Dlaczego trafienia nie przeanalizowano automatycznie. */
+  autoAnalysis?: string;
+  /** Powód odrzucenia przy ponownym przeliczeniu reguł. */
+  dismissReason?: string;
   /** Tłumaczenie treści na polski, gdy publikacja jest w innym języku (z modelu). */
   translationPl?: string;
   insight?: TextInsight;
@@ -112,7 +163,8 @@ export function mergeInsight(hit: WatchHit, insight: TextInsight): MonitorHit {
       reasons: [...hit.polishNexus.reasons, ...insight.polishNexus.reasons.map((reason) => `${source}: ${reason}`)],
     };
   }
-  if (insight.offer) {
+  // Oferta z modelu uzupełnia sygnały tylko, gdy dotyczy kryptowaluty (aktywo z listy kryptowalut).
+  if (insight.offer && isCryptoAsset(insight.offer.asset)) {
     const { offer } = insight;
     const side = { sell: 'sprzedaż', buy: 'kupno', exchange: 'wymiana', accepts_payment: 'przyjmowanie płatności' }[offer.side];
     const details = [
@@ -135,7 +187,7 @@ export function mergeInsight(hit: WatchHit, insight: TextInsight): MonitorHit {
 
 export class UnknownSourceError extends Error {}
 
-/** Trafienie nie ma autora — nie ma kogo analizować. */
+/** Trafienie nie ma ani autora, ani adresu — nie ma czego analizować. */
 export class NoAuthorError extends Error {}
 
 const DEFAULT_EVERY_MINUTES = 30;
@@ -218,15 +270,17 @@ export function createMonitor(deps: MonitorDeps): Monitor {
   // ---------- Analiza autora ----------
 
   const analyzeHit = async (hit: WatchHit): Promise<WatchHit> => {
-    if (!hit.author) throw new NoAuthorError('Publikacja nie ma wskazanego autora — nie ma kogo analizować.');
+    if (!hit.author && hit.addresses.length === 0) throw new NoAuthorError('Publikacja nie ma wskazanego autora ani adresu — nie ma czego analizować.');
+    // Bez autora analizujemy sam adres: sprawa adresu, bez wskazywania osoby.
+    const subject = hit.author ?? `adres ${shortAddress(hit.addresses[0]!.address)}`;
     const identifiers: Identifier[] = [
-      { type: 'nick', value: hit.author },
+      ...(hit.author ? [{ type: 'nick' as const, value: hit.author }] : []),
       // Adresy z publikacji są analizowane także wtedy, gdy wyszukiwanie po nicku ich nie zwróci.
       ...hit.addresses.slice(0, MAX_QUERY_ADDRESSES).map((item) => ({ type: 'crypto_address' as const, value: item.address })),
     ];
     // Analiza korzysta ze źródeł domyślnie włączonych oraz ze źródła, w którym publikację znaleziono.
     const connectors = deps.connectors.filter((connector) => connector.enabledByDefault || connector.id === hit.connectorId);
-    const { lead, analysis } = await analyzeAuthor({ ...deps, connectors, now, signal: abort.signal }, hit.author, { identifiers });
+    const { lead, analysis } = await analyzeAuthor({ ...deps, connectors, now, signal: abort.signal }, subject, { identifiers });
 
     // Składnik monitoringu doliczany jawnie do priorytetu wskazania: związek z Polską.
     const bonus = thresholds.priorityPolishWeight * hit.polishNexus.score;
@@ -243,6 +297,69 @@ export function createMonitor(deps: MonitorDeps): Monitor {
     await storage.saveHit(updated, hitKey(hit));
     await storage.saveHitAnalysis(hit.id, analysis);
     return updated;
+  };
+
+  // ---------- Odsiewanie adresów kontraktów ----------
+
+  const labelled = new Map((deps.addressLabels ?? []).map((item) => [item.address.toLowerCase(), item]));
+  /**
+   * Adresy, które nie są adresami osób: oznaczone w zbiorze etykiet jako kontrakt lub usługa albo —
+   * dla publikacji z forów zarządzania, w ramach małego budżetu zapytań — wskazane jako kontrakt
+   * przez dostawcę danych blockchain. Adres, który autor podaje jako własny, nie jest sprawdzany.
+   */
+  const findContracts = async (items: { service: string; evaluation: Evaluation; insight?: TextInsight }[]): Promise<Set<string>> => {
+    const contracts = new Set<string>();
+    const toCheck: { address: string; network: string }[] = [];
+    for (const { service, evaluation, insight } of items) {
+      for (const item of evaluation.addresses) {
+        const key = item.address.toLowerCase();
+        const label = labelled.get(key);
+        if (label && label.addressClass !== 'private' && label.addressClass !== 'unknown') contracts.add(key);
+        else if (isGovernanceForum(service) && /^0x/i.test(item.address) && insight?.ownership !== 'own_address' && !toCheck.some((known) => known.address === item.address)) toCheck.push(item);
+      }
+    }
+    const resolve = deps.resolveActivity;
+    if (!resolve || deps.chainProviders.length === 0) return contracts;
+    await mapLimit(toCheck.slice(0, thresholds.contractCheckBudgetPerRun), 4, async (item) => {
+      if (abort.signal.aborted) return;
+      try {
+        const activity = await resolve(deps.chainProviders, item.network as Network, item.address, { signal: abort.signal, log: () => {} });
+        if (activity?.profile.isContract || activity?.profile.addressClass === 'smart_contract') contracts.add(item.address.toLowerCase());
+      } catch {
+        // Brak odpowiedzi dostawcy: adres zostaje, rozstrzygną pozostałe reguły.
+      }
+    });
+    return contracts;
+  };
+
+  // ---------- Ponowne przeliczenie zapisanych trafień ----------
+
+  const recheck = async (): Promise<{ checked: number; kept: number; dismissed: number }> => {
+    const pending = (await storage.listHits()).filter((hit) => hit.status === 'new') as MonitorHit[];
+    const prepared: { hit: MonitorHit; evaluation: Evaluation; publication: Publication }[] = [];
+    for (const hit of pending) {
+      // Pełna treść jest w indeksie publikacji; starsze trafienia oceniamy z zapisanego fragmentu.
+      const stored = await storage.getCorpusDocument(hit.url);
+      const publication: Publication = stored
+        ? { connectorId: stored.connectorId, service: stored.service, url: stored.url, title: stored.title, text: stored.text, author: hit.author, profile: stored.profile }
+        : { connectorId: hit.connectorId, service: hit.service, url: hit.url, title: hit.title, text: hit.excerpt, author: hit.author };
+      const found = stored ? extract(stored.text).map((item) => ({ address: item.address, network: item.network as string })) : [];
+      const addresses = [...found, ...hit.addresses.filter((item) => !found.some((known) => known.address === item.address))];
+      prepared.push({ hit, publication, evaluation: evaluatePublication(publication, addresses) });
+    }
+    const contracts = await findContracts(prepared.map(({ hit, evaluation }) => ({ service: hit.service, evaluation, insight: hit.insight })));
+    let dismissed = 0;
+    for (const { hit, evaluation } of prepared) {
+      const decision = decideHit(evaluation, hit.insight, contracts);
+      const base: MonitorHit = { ...hit, polishNexus: evaluation.polishNexus, suspicion: evaluation.suspicion, addresses: decision.addresses as WatchHit['addresses'], hitReason: decision.reason };
+      const updated: MonitorHit = decision.hit
+        ? { ...(hit.insight ? mergeInsight(base, hit.insight) : base), basis: decision.basis }
+        : { ...base, status: 'dismissed', dismissReason: `Nie spełnia kryteriów po zmianie reguł: ${decision.reason}` };
+      if (!decision.hit) dismissed++;
+      await storage.saveHit(updated, hitKey(hit));
+    }
+    log(`Ponowne przeliczenie trafień: sprawdzono ${pending.length}, odrzucono ${dismissed}.`);
+    return { checked: pending.length, kept: pending.length - dismissed, dismissed };
   };
 
   // ---------- Przebieg ----------
@@ -267,118 +384,146 @@ export function createMonitor(deps: MonitorDeps): Monitor {
       }
     });
 
-    // Trafienia dotknięte w tym przebiegu: klucz autora → trafienie i informacja, czy jest nowe.
-    const touched = new Map<string, { hit: WatchHit; created: boolean }>();
-    /** Publikacja, z której pochodzi bieżąca wizytówka trafienia — do odczytu przez model. */
-    const leadDocument = new Map<string, SourceDocument>();
+    // ---------- Ocena publikacji regułami; do dalszej oceny idą tylko te po wstępnym filtrze ----------
+    const stats: MonitorRunStats = { at: startedAt, documents: 0, withAddress: 0, candidates: 0, aiRead: 0, contractsFiltered: 0, hits: 0, analyzed: 0, skipped: { noAuthorNoAddress: 0, limit: 0, belowThreshold: 0 } };
+    const candidates: { doc: SourceDocument; evaluation: Evaluation; sourceId: string }[] = [];
     for (const { source, documents } of batches) {
       const unseen = new Set(await storage.filterUnseenUrls(documents.map((doc) => doc.url)));
-      const stats = state.sources[source.id]!;
       const fresh: SourceDocument[] = [];
       for (const doc of documents) {
         if (!unseen.delete(doc.url)) continue;
         fresh.push(doc);
-        stats.documentsSeen++;
-        const addresses = extract(doc.text).map((item) => ({ address: item.address, network: item.network }));
-        const nexus = polishNexus(doc);
-        const suspect = suspicion(doc);
-        const signalled = nexus.score >= thresholds.hitPolishNexus && suspect.score >= thresholds.hitSuspicion;
-        if (addresses.length === 0 && !signalled) continue;
-
-        const author = authorOf(doc);
-        const key = dedupeKeyOf(doc.service, author, doc.url);
-        const known = touched.get(key) ?? (await storage.getHitByKey(key).then((hit) => (hit ? { hit, created: false } : undefined)));
-        const candidate: WatchHit = {
-          id: known?.hit.id ?? randomUUID(),
-          detectedAt: now().toISOString(),
-          connectorId: doc.connectorId,
-          service: doc.service,
-          url: doc.url,
-          title: doc.title,
-          ...(author ? { author } : {}),
-          ...(doc.publishedAt ? { publishedAt: doc.publishedAt } : {}),
-          excerpt: (extract(doc.text)[0]?.context ?? doc.text).replace(/\s+/g, ' ').trim().slice(0, 300),
-          language: nexus.language,
-          addresses,
-          polishNexus: { score: nexus.score, reasons: nexus.reasons },
-          suspicion: suspect,
-          status: 'new',
-        };
-        if (!known) {
-          touched.set(key, { hit: candidate, created: true });
-          leadDocument.set(key, doc);
-          stats.hits++;
-          continue;
-        }
-        // Kolejny post tego samego autora: zostaje wyżej oceniona publikacja, adresy się sumują.
-        const previous = known.hit;
-        const lead = sumOf(candidate) > sumOf(previous) ? candidate : previous;
-        if (lead === candidate) leadDocument.set(key, doc);
-        const merged = [...previous.addresses];
-        for (const item of addresses) {
-          if (!merged.some((existing) => existing.address === item.address)) merged.push(item);
-        }
-        touched.set(key, {
-          created: known.created,
-          hit: {
-            ...lead,
-            id: previous.id,
-            detectedAt: previous.detectedAt,
-            addresses: merged,
-            status: previous.status,
-            ...(previous.lead ? { lead: previous.lead } : {}),
-            ...(previous.caseId ? { caseId: previous.caseId } : {}),
-          },
-        });
+        state.sources[source.id]!.documentsSeen++;
+        stats.documents++;
+        const evaluation = evaluatePublication({ ...doc, author: authorOf(doc) }, extract(doc.text).map((item) => ({ address: item.address, network: item.network })));
+        if (evaluation.addresses.length > 0) stats.withAddress++;
+        if (evaluation.candidate) candidates.push({ doc, evaluation, sourceId: source.id });
       }
       // Każda nowa publikacja trafia do indeksu własnego — także ta, która nie jest trafieniem.
       if (deps.corpus) await storage.saveCorpusDocuments(fresh.map((doc) => toCorpusDocument(doc, normalizeText)));
       await storage.markUrlsSeen(documents.map((doc) => doc.url), startedAt);
     }
+    stats.candidates = candidates.length;
+    const weight = (item: { evaluation: Evaluation }) => item.evaluation.polishNexus.score + item.evaluation.suspicion.score;
+    candidates.sort((a, b) => weight(b) - weight(a) || Number(b.evaluation.addresses.length > 0) - Number(a.evaluation.addresses.length > 0));
 
-    // Model językowy (opcjonalny) czyta najwyżej ocenione trafienia; jego odczyt uzupełnia oceny z reguł.
+    // Model językowy (opcjonalny) czyta tylko publikacje po wstępnym filtrze, najwyżej ocenione najpierw —
+    // reszta jest oceniana wyłącznie regułami. To trzyma koszt modelu w ryzach.
+    const insights = new Map<string, TextInsight>();
     if (deps.ai) {
       const { ai } = deps;
-      const queue = [...touched.entries()]
-        .filter(([key]) => leadDocument.has(key))
-        .sort(([, a], [, b]) => compareHits(a.hit, b.hit))
-        .slice(0, AI_RULES.maxPublicationsPerMonitorRun);
-      await mapLimit(queue, AI_RULES.concurrency, async ([key, item]) => {
-        const doc = leadDocument.get(key)!;
+      await mapLimit(candidates.slice(0, state.maxAiPublications ?? thresholds.maxAiPublicationsPerRun), AI_RULES.concurrency, async ({ doc, evaluation }) => {
+        if (abort.signal.aborted) return;
         try {
-          const insight = await ai.analyzePublication({ text: doc.text, address: item.hit.addresses[0]?.address, author: item.hit.author, title: doc.title });
-          if (insight) touched.set(key, { ...item, hit: mergeInsight(item.hit, insight) });
+          const insight = await ai.analyzePublication({ text: doc.text, address: evaluation.addresses[0]?.address, author: authorOf(doc), title: doc.title });
+          if (insight) insights.set(doc.url, insight);
         } catch (error) {
           log(`Odczyt publikacji ${doc.url} przez model nie powiódł się — zostają oceny z reguł.`, error);
         }
       });
+      stats.aiRead = insights.size;
     }
-    for (const [key, { hit }] of touched) await storage.saveHit(hit, key);
 
-    // Automatyczna analiza autorów najwyżej ocenionych publikacji, z limitem na przebieg.
-    // Autor publikujący adres znany z innej sprawy jest analizowany zawsze i w pierwszej kolejności.
+    const contracts = await findContracts(candidates.map(({ doc, evaluation }) => ({ service: doc.service, evaluation, insight: insights.get(doc.url) })));
+    stats.contractsFiltered = contracts.size;
+
+    // Trafienia dotknięte w tym przebiegu: klucz autora → trafienie i informacja, czy jest nowe.
+    const touched = new Map<string, { hit: WatchHit; created: boolean }>();
+    for (const { doc, evaluation, sourceId } of candidates) {
+      const insight = insights.get(doc.url);
+      const decision = decideHit(evaluation, insight, contracts);
+      if (!decision.hit) continue;
+
+      const author = authorOf(doc);
+      const key = dedupeKeyOf(doc.service, author, doc.url);
+      const known = touched.get(key) ?? (await storage.getHitByKey(key).then((hit) => (hit ? { hit, created: false } : undefined)));
+      const base: MonitorHit = {
+        id: known?.hit.id ?? randomUUID(),
+        detectedAt: now().toISOString(),
+        connectorId: doc.connectorId,
+        service: doc.service,
+        url: doc.url,
+        title: doc.title,
+        ...(author ? { author } : {}),
+        ...(doc.publishedAt ? { publishedAt: doc.publishedAt } : {}),
+        excerpt: (extract(doc.text)[0]?.context ?? doc.text).replace(/\s+/g, ' ').trim().slice(0, 300),
+        language: evaluation.language,
+        addresses: decision.addresses as WatchHit['addresses'],
+        polishNexus: evaluation.polishNexus,
+        suspicion: evaluation.suspicion,
+        status: 'new',
+        basis: decision.basis,
+        hitReason: decision.reason,
+      };
+      const candidate = insight ? mergeInsight(base, insight) : base;
+      if (!known) {
+        touched.set(key, { hit: candidate, created: true });
+        state.sources[sourceId]!.hits++;
+        stats.hits++;
+        continue;
+      }
+      // Kolejny post tego samego autora: zostaje wyżej oceniona publikacja, adresy się sumują.
+      const previous = known.hit;
+      const lead = sumOf(candidate) > sumOf(previous) ? candidate : previous;
+      const merged = [...previous.addresses];
+      for (const item of candidate.addresses) {
+        if (!merged.some((existing) => existing.address === item.address)) merged.push(item);
+      }
+      touched.set(key, {
+        created: known.created,
+        hit: {
+          ...lead,
+          id: previous.id,
+          detectedAt: previous.detectedAt,
+          addresses: merged,
+          status: previous.status,
+          ...(previous.lead ? { lead: previous.lead } : {}),
+          ...(previous.caseId ? { caseId: previous.caseId } : {}),
+        },
+      });
+    }
+
+    // Adres znany z innej sprawy: mocny trop, analiza bez względu na próg i w pierwszej kolejności.
     const known = indexKnownAddresses(await storage.listLatestRuns());
     for (const [key, item] of touched) {
       const matches = knownFor(known, item.hit.addresses.map((entry) => entry.address), item.hit.caseId);
       if (matches.length === 0) continue;
-      const marked: MonitorHit = { ...item.hit, knownFromCases: matches };
-      touched.set(key, { ...item, hit: marked });
-      await storage.saveHit(marked, key);
-      log(`Trafienie „${marked.author ?? marked.url}”: adres znany ze sprawy „${matches[0]!.caseName}”.`);
+      touched.set(key, { ...item, hit: { ...item.hit, knownFromCases: matches } as MonitorHit });
+      log(`Trafienie „${item.hit.author ?? item.hit.url}”: adres znany ze sprawy „${matches[0]!.caseName}”.`);
     }
+
+    // ---------- Automatyczna analiza: najpierw adres znany, potem trafienia z adresem, od najwyżej ocenionych ----------
     const isKnown = (hit: WatchHit) => ((hit as MonitorHit).knownFromCases?.length ?? 0) > 0;
-    const queue = [...touched.values()]
-      .map((item) => item.hit)
-      .filter((hit) => hit.status === 'new' && hit.author && (isKnown(hit) || sumOf(hit) >= state.autoAnalyzeThreshold))
-      .sort((a, b) => Number(isKnown(b)) - Number(isKnown(a)) || compareHits(a, b))
-      .slice(0, thresholds.maxAutoAnalysesPerRun);
+    const fresh = [...touched.entries()].filter(([, item]) => item.hit.status === 'new');
+    const eligible: [string, { hit: WatchHit; created: boolean }][] = [];
+    for (const [key, item] of fresh) {
+      const { hit } = item;
+      if (!isKnown(hit) && sumOf(hit) < state.autoAnalyzeThreshold) {
+        stats.skipped.belowThreshold++;
+        touched.set(key, { ...item, hit: { ...hit, autoAnalysis: `Bez automatycznej analizy: suma ocen ${sumOf(hit)} poniżej progu ${state.autoAnalyzeThreshold}.` } as MonitorHit });
+      } else if (!hit.author && hit.addresses.length === 0) {
+        stats.skipped.noAuthorNoAddress++;
+        touched.set(key, { ...item, hit: { ...hit, autoAnalysis: 'Bez automatycznej analizy: publikacja nie ma autora ani adresu.' } as MonitorHit });
+      } else eligible.push([key, item]);
+    }
+    eligible.sort(
+      ([, a], [, b]) => Number(isKnown(b.hit)) - Number(isKnown(a.hit)) || Number(b.hit.addresses.length > 0) - Number(a.hit.addresses.length > 0) || compareHits(a.hit, b.hit),
+    );
+    const limit = state.maxAutoAnalyses ?? thresholds.maxAutoAnalysesPerRun;
+    for (const [key, item] of eligible.slice(limit)) {
+      stats.skipped.limit++;
+      touched.set(key, { ...item, hit: { ...item.hit, autoAnalysis: `Bez automatycznej analizy: limit ${limit} analiz na przebieg.` } as MonitorHit });
+    }
+    for (const [key, { hit }] of touched) await storage.saveHit(hit, key);
+
     const analyzed = new Map<string, WatchHit>();
-    for (const hit of queue) {
+    for (const [, { hit }] of eligible.slice(0, limit)) {
       if (abort.signal.aborted) break;
       try {
-        analyzed.set(hit.id, await analyzeHit(hit));
+        analyzed.set(hit.id, await analyzeHit(touched.get(hitKey(hit))?.hit ?? hit));
+        stats.analyzed++;
       } catch (error) {
-        log(`Automatyczna analiza autora „${hit.author}” nie powiodła się.`, error);
+        log(`Automatyczna analiza trafienia „${hit.author ?? hit.url}” nie powiodła się.`, error);
       }
     }
 
@@ -389,7 +534,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
 
     // Statystyki i czas przebiegu zapisujemy na aktualnych ustawieniach — mogły się zmienić w trakcie.
     const latest = await loadState();
-    await storage.saveMonitorState({ ...latest, sources: state.sources, lastRunAt: startedAt });
+    await storage.saveMonitorState({ ...latest, sources: state.sources, lastRunAt: startedAt, lastRun: stats });
     return [...touched.values()]
       .filter((item) => item.created)
       .map((item) => analyzed.get(item.hit.id) ?? item.hit)
@@ -406,6 +551,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
 
   return {
     run,
+    recheck,
 
     async status() {
       const state = await loadState();
@@ -427,6 +573,8 @@ export function createMonitor(deps: MonitorDeps): Monitor {
         enabled: state.enabled,
         everyMinutes: state.everyMinutes,
         autoAnalyzeThreshold: state.autoAnalyzeThreshold,
+        maxAutoAnalyses: state.maxAutoAnalyses ?? thresholds.maxAutoAnalysesPerRun,
+        maxAiPublications: state.maxAiPublications ?? thresholds.maxAiPublicationsPerRun,
         ...(state.lastRunAt ? { lastRunAt: state.lastRunAt } : {}),
         ...(nextRunAt ? { nextRunAt } : {}),
         running: current !== undefined,
@@ -436,6 +584,8 @@ export function createMonitor(deps: MonitorDeps): Monitor {
           hits: hits.length,
           analyzed: hits.filter((hit) => hit.status === 'analyzed').length,
           newHits: hits.filter((hit) => hit.status === 'new').length,
+          dismissed: hits.filter((hit) => hit.status === 'dismissed').length,
+          ...(state.lastRun ? { lastRun: state.lastRun } : {}),
         },
       };
     },
@@ -453,6 +603,8 @@ export function createMonitor(deps: MonitorDeps): Monitor {
         enabled: patch.enabled ?? state.enabled,
         everyMinutes: patch.everyMinutes ?? state.everyMinutes,
         autoAnalyzeThreshold: patch.autoAnalyzeThreshold ?? state.autoAnalyzeThreshold,
+        ...(patch.maxAutoAnalyses !== undefined ? { maxAutoAnalyses: patch.maxAutoAnalyses } : {}),
+        ...(patch.maxAiPublications !== undefined ? { maxAiPublications: patch.maxAiPublications } : {}),
         disabledSources: [...disabled],
       });
       await schedule();

@@ -121,6 +121,8 @@ export interface Storage {
   /** Dopisuje publikacje do indeksu; znane adresy URL są pomijane. */
   saveCorpusDocuments(documents: CorpusDocument[]): Promise<void>;
   searchCorpus(query: CorpusQuery, limit: number): Promise<CorpusDocument[]>;
+  /** Publikacja z indeksu po adresie URL (bez listy adresów kryptowalutowych). */
+  getCorpusDocument(url: string): Promise<Omit<CorpusDocument, 'addresses'> | null>;
   /** Usuwa publikacje starsze niż `olderThan` oraz najstarsze ponad `maxRows`; zwraca liczbę usuniętych. */
   pruneCorpus(olderThan: string, maxRows: number): Promise<number>;
   corpusStats(): Promise<CorpusStats>;
@@ -579,6 +581,24 @@ export function createStorage(driver: SqlDriver): Storage {
         ...(row.profile == null ? {} : { profile: row.profile as ProfileAttributes }),
         addresses: addressRows.filter((item) => item.url === row.url).map((item) => ({ network: String(item.network), address: String(item.address) })),
       }));
+    },
+
+    async getCorpusDocument(url) {
+      const [row] = await driver.query('SELECT * FROM corpus WHERE url = $1', [url]);
+      if (!row) return null;
+      return {
+        url: String(row.url),
+        service: String(row.service),
+        connectorId: String(row.connector_id),
+        ...(row.author == null ? {} : { author: String(row.author) }),
+        ...(row.published_at == null ? {} : { publishedAt: String(row.published_at) }),
+        fetchedAt: toIso(row.fetched_at),
+        title: String(row.title),
+        text: String(row.content),
+        contentHash: String(row.content_hash),
+        category: String(row.category) as SourceCategory,
+        ...(row.profile == null ? {} : { profile: row.profile as ProfileAttributes }),
+      };
     },
 
     async pruneCorpus(olderThan, maxRows) {

@@ -13,9 +13,16 @@ interface SignalConfig {
     hitSuspicion: number;
     autoAnalyzeDefault: number;
     maxAutoAnalysesPerRun: number;
+    maxAiPublicationsPerRun: number;
+    contractCheckBudgetPerRun: number;
+    newsMinLength: number;
+    offerMaxPosition: number;
     discoverLimitPerSource: number;
     priorityPolishWeight: number;
   };
+  ownership: { phrases: string[] };
+  news: { sourceIds: string[] };
+  governance: { hostPatterns: string[] };
   polishWeights: Record<string, number>;
   suspicionWeights: Record<string, number>;
   language: { polishWords: string[]; englishWords: string[] };
@@ -91,7 +98,60 @@ const PATTERNS = {
   cryptoPayments: phrasePattern(CONFIG.suspicion.cryptoPayments),
   payoutToAccount: phrasePattern(CONFIG.suspicion.payoutToAccount),
   depositAddressRequest: phrasePattern(CONFIG.suspicion.depositAddressRequest),
+  ownership: phrasePattern(CONFIG.ownership.phrases),
 };
+
+/** W jakiej odległości (w znakach) za formą ofertową musi stać nazwa kryptowaluty. */
+const TRADE_WINDOW = 40;
+
+const NEWS_SOURCES = new Set(CONFIG.news.sourceIds);
+const GOVERNANCE_HOSTS = CONFIG.governance.hostPatterns.map((pattern) => new RegExp(pattern, 'i'));
+
+/** Kanał wiadomości z jawnej listy — jego publikacje to artykuły redakcyjne, nie oferty osób. */
+export const isNewsSource = (connectorId: string): boolean => NEWS_SOURCES.has(connectorId);
+
+/** Forum zarządzania protokołem lub DAO: adresy w postach to zwykle kontrakty i multisigi. */
+export const isGovernanceForum = (service: string): boolean => GOVERNANCE_HOSTS.some((pattern) => pattern.test(service));
+
+/** W jakiej odległości (w znakach) przed adresem musi stać zwrot wskazujący, że to adres autora. */
+const OWNERSHIP_WINDOW = 120;
+
+/**
+ * Czy autor podaje adres jako WŁASNY: zwrot typu „mój adres”, „wpłaty na”, „donate” tuż przed adresem.
+ * Zwraca cytat albo `undefined`. To reguła zastępcza — gdy działa model językowy, rozstrzyga jego odczyt.
+ */
+export function ownershipClaim(text: string, addresses: string[]): string | undefined {
+  const original = text.normalize('NFC');
+  const folded = fold(original);
+  for (const address of addresses) {
+    const at = original.indexOf(address);
+    if (at < 0) continue;
+    const start = Math.max(0, at - OWNERSHIP_WINDOW);
+    const hit = PATTERNS.ownership.exec(folded.slice(start, at));
+    if (hit) return quote(original, start + hit.index, hit[0].length + Math.min(OWNERSHIP_WINDOW, at - start - hit.index));
+  }
+  return undefined;
+}
+
+/**
+ * Oferta kupna, sprzedaży lub wymiany kryptowaluty: forma ofertowa („sprzedam”, „kupię”, „selling”),
+ * po której zaraz stoi nazwa kryptowaluty. Rzeczowniki z artykułów („sprzedaż kryptowalut”) ani
+ * ogłoszenie o sprzęcie z dopiskiem o kopaniu ofertą nie są. Zwraca cytat i pozycję w treści.
+ */
+export function tradeOfferAt(doc: SignalInput): { quote: string; index: number } | undefined {
+  const original = bodyOf(doc);
+  const folded = fold(original);
+  for (const verb of folded.matchAll(new RegExp(PATTERNS.tradeVerb.source, 'gu'))) {
+    const end = verb.index + verb[0].length;
+    if (PATTERNS.cryptoTerm.test(folded.slice(end, end + TRADE_WINDOW))) return { quote: quote(original, verb.index, verb[0].length), index: verb.index };
+  }
+  return undefined;
+}
+
+export const tradeOffer = (doc: SignalInput): string | undefined => tradeOfferAt(doc)?.quote;
+
+/** Czy podana nazwa aktywa (np. z odczytu modelu) jest kryptowalutą z listy — „karta graficzna” nią nie jest. */
+export const isCryptoAsset = (asset: string | undefined): boolean => asset !== undefined && PATTERNS.cryptoTerm.test(fold(asset.normalize('NFC')));
 
 const POLISH_WORDS = new Set(CONFIG.language.polishWords.map((word) => word.normalize('NFC').toLowerCase()));
 const ENGLISH_WORDS = new Set(CONFIG.language.englishWords);
@@ -238,11 +298,14 @@ function amounts(text: string): Amount[] {
   return found;
 }
 
-/** W jakiej odległości (w znakach) od czasownika obrotu musi stać nazwa kryptowaluty. */
-const TRADE_WINDOW = 40;
-
-/** Sygnały obrotu kryptowalutami wymagającego uwagi, 0–100. Do sprawdzenia — nie zarzut. */
-export function suspicion(doc: SignalInput): ScoredSignal {
+/**
+ * Sygnały obrotu kryptowalutami wymagającego uwagi, 0–100. Do sprawdzenia — nie zarzut.
+ * Liczą się WYŁĄCZNIE w kontekście kryptowalut: gdy publikacja zawiera ofertę obrotu kryptowalutą
+ * albo adres kryptowalutowy (`hasAddress`). Gotówka, odbiór osobisty czy kwota w ogłoszeniu
+ * o komputerze nie są sygnałem; sama wzmianka słowa „bitcoin” też nie.
+ */
+export function suspicion(doc: SignalInput, context: { hasAddress?: boolean } = {}): ScoredSignal {
+  if (!context.hasAddress && tradeOffer(doc) === undefined) return { score: 0, reasons: [] };
   const weights = CONFIG.suspicionWeights;
   const original = bodyOf(doc);
   const folded = fold(original);
@@ -254,13 +317,8 @@ export function suspicion(doc: SignalInput): ScoredSignal {
 
   // Oferta to czasownik obrotu z nazwą kryptowaluty tuż obok („sprzedam BTC”), a nie np.
   // sprzedaż sprzętu z dopiskiem o płatności w BTC kilka zdań dalej.
-  for (const verb of folded.matchAll(new RegExp(PATTERNS.tradeVerb.source, 'gu'))) {
-    const start = Math.max(0, verb.index - TRADE_WINDOW);
-    const nearby = folded.slice(start, verb.index + verb[0].length + TRADE_WINDOW);
-    if (!PATTERNS.cryptoTerm.test(nearby)) continue;
-    score.add(weights.tradeOffer!, `Oferta kupna, sprzedaży lub wymiany kryptowalut: „${quote(original, verb.index, verb[0].length)}”`);
-    break;
-  }
+  const offer = tradeOffer(doc);
+  if (offer) score.add(weights.tradeOffer!, `Oferta kupna, sprzedaży lub wymiany kryptowalut: „${offer}”`);
   phrase('cashOrInPerson', 'cashOrInPerson', 'Gotówka lub transakcja osobista');
 
   const largest = amounts(original).sort((a, b) => b.valuePln - a.valuePln)[0];
