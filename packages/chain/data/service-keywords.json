@@ -16,7 +16,7 @@
     { "name": "Bitstamp", "category": "exchange", "keywords": ["bitstamp"] },
     { "name": "Gemini", "category": "exchange", "keywords": ["gemini"] },
     { "name": "Bitget", "category": "exchange", "keywords": ["bitget"] },
-    { "name": "MEXC", "category": "exchange", "keywords": ["mexc"] },
+    { "name": "MEXC", "category": "exchange", "keywords": ["mexc", "mxc"] },
     { "name": "Crypto.com", "category": "exchange", "keywords": ["crypto.com"] },
     { "name": "Bitpanda", "category": "exchange", "keywords": ["bitpanda"] },
     { "name": "Upbit", "category": "exchange", "keywords": ["upbit"] },

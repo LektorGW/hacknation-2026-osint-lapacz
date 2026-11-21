@@ -6,8 +6,12 @@
 import type { ChainActivity, ChainProvider, ConnectorContext, Network } from '@olcys/core';
 import { NATIVE_ASSET, buildChainActivity } from '../activity.ts';
 import type { ActivityOptions, RawTransfer } from '../activity.ts';
-import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET, findLikelyDepositAddresses } from '../deposit.ts';
+import { CLUSTER_METHOD_UTXO } from '../cluster.ts';
+import type { UtxoTx } from '../cluster.ts';
+import { DEFAULT_DEPOSIT_OPTIONS, DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
+import { traceUtxoFlows } from '../trace.ts';
+import type { TracedTrail } from '../trace.ts';
 import { ChainProviderError, RequestBudget, fetchJson } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels } from '../labels.ts';
@@ -24,12 +28,7 @@ interface EsploraAddress {
   chain_stats?: EsploraStats;
 }
 
-interface EsploraTx {
-  txid: string;
-  status?: { confirmed?: boolean; block_time?: number };
-  vin?: { is_coinbase?: boolean; prevout?: { scriptpubkey_address?: string; value?: number } | null }[];
-  vout?: { scriptpubkey_address?: string; value?: number }[];
-}
+type EsploraTx = UtxoTx;
 
 export const TRANSACTION_LIMIT = 50;
 /** Esplora zwraca potwierdzone transakcje stronami po 25. */
@@ -119,6 +118,7 @@ export class EsploraProvider implements ChainProvider {
       cashOut: config.cashOut,
       sanctions: config.sanctions,
       deposit: config.deposit,
+      trace: config.trace,
     };
     this.labelLookup = config.labelLookup;
     this.requestBudget = config.requestBudget ?? DEFAULT_REQUEST_BUDGET;
@@ -208,30 +208,35 @@ export class EsploraProvider implements ChainProvider {
     }
 
     let inferredDeposits: InferredDeposit[] = [];
-    if (follow) {
-      const found = await findLikelyDepositAddresses({
+    let trails: TracedTrail[] = [];
+    let clusterAddresses: { address: string; reason: string; txid?: string }[] = [];
+    const traceOptions = { ...this.options.deposit, ...this.options.trace };
+    if (mainnet) {
+      // Bez `followDeposits` budujemy tylko klaster z już pobranych transakcji (bez dodatkowych żądań).
+      const found = await traceUtxoFlows({
         network,
         address,
-        transfers,
+        txs,
         labels,
         sourceName: this.label,
         budget,
-        options: this.options.deposit,
+        options: { ...traceOptions, enabled: follow },
         lookup,
         signal: context.signal,
-        fetchOutgoing: async (counterparty) => {
-          const page = await fetchJson<EsploraTx[]>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(counterparty)}/txs`, request);
-          const hop: RawTransfer[] = [];
-          for (const tx of Array.isArray(page) ? page : []) {
-            if (!tx.status?.confirmed) continue;
-            const time = new Date((tx.status.block_time ?? 0) * 1000).toISOString();
-            const transfer = esploraTransfer(tx, counterparty, time, `${site}/tx/${tx.txid}`);
-            if (transfer) hop.push({ ...transfer, asset });
-          }
-          return hop;
+        pageSize: PAGE_SIZE,
+        txUrl: (txid) => `${site}/tx/${txid}`,
+        fetchTxs: async (other) => {
+          const page = await fetchJson<EsploraTx[]>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(other)}/txs`, request);
+          return Array.isArray(page) ? page : [];
+        },
+        fetchTxCount: async (other) => {
+          const info = await fetchJson<EsploraAddress>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(other)}`, request);
+          return info.chain_stats?.tx_count;
         },
       });
       inferredDeposits = found.deposits;
+      trails = found.trails;
+      clusterAddresses = found.clusterAddresses;
       limitations.push(...found.limitations);
     }
 
@@ -244,6 +249,8 @@ export class EsploraProvider implements ChainProvider {
         label: subjectLabel,
         ...(subjectLabel ? { labelSource: lookup!.sourceName } : {}),
         inferredDeposits,
+        trails,
+        ...(mainnet ? { cluster: { seed: address, network, addresses: clusterAddresses, method: CLUSTER_METHOD_UTXO } } : {}),
         txCount: stats.tx_count,
         totalReceived: stats.funded_txo_sum / SATOSHI,
         totalSent: stats.spent_txo_sum / SATOSHI,

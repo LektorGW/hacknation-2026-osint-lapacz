@@ -3,23 +3,27 @@
 import { fileURLToPath } from 'node:url';
 import type { ChainProvider } from '@olcys/core';
 import type { ActivityOptions } from './activity.ts';
+import { createPoliteFetch } from './http.ts';
 import type { FetchLike } from './http.ts';
 import { BlockscoutProvider } from './providers/blockscout.ts';
 import { EsploraProvider } from './providers/esplora.ts';
 import { SandboxChainProvider } from './providers/sandbox.ts';
 import { TronGridProvider } from './providers/trongrid.ts';
+import { DEFAULT_REQUEST_BUDGET } from './deposit.ts';
 import { TronScanTagClient, WalletExplorerClient } from './party-labels.ts';
 import { MarketRateSource, StaticRateSource } from './valuation.ts';
 
 export * from './activity.ts';
 export * from './cashout.ts';
+export * from './cluster.ts';
 export * from './deposit.ts';
 export * from './labels.ts';
 export * from './ofac.ts';
 export * from './party-labels.ts';
+export * from './trace.ts';
 export * from './valuation.ts';
-export { ChainProviderError, RequestBudget, USER_AGENT, fetchJson, fromBaseUnits } from './http.ts';
-export type { FetchLike, ProviderErrorCode } from './http.ts';
+export { ChainProviderError, DEFAULT_HOST_POLICIES, RequestBudget, USER_AGENT, createPoliteFetch, fetchJson, fromBaseUnits } from './http.ts';
+export type { FetchLike, HostPolicy, ProviderErrorCode } from './http.ts';
 export { BlockscoutProvider, parseBlockscoutParty } from './providers/blockscout.ts';
 export { EsploraProvider } from './providers/esplora.ts';
 export { SandboxChainProvider } from './providers/sandbox.ts';
@@ -37,14 +41,26 @@ export interface ChainConfig extends ActivityOptions {
    * `false` wyłącza zapis na dysk (kursy są wtedy pamiętane tylko w procesie).
    */
   rateCacheFile?: string | false;
-  /** Łączny budżet żądań do publicznych API na analizę jednego adresu (domyślnie 15). */
+  /**
+   * Głębokość analizy na żywo: `standard` — budżet 15 żądań na adres; `deep` — 40 żądań,
+   * więcej badanych przelewów wychodzących (śledzenie do 4 kroków w obu trybach).
+   */
+  depth?: 'standard' | 'deep';
+  /** Łączny budżet żądań do publicznych API na analizę jednego adresu; nadpisuje wartość z `depth`. */
   requestBudget?: number;
   /** `false` wyłącza etykiety z serwisów zewnętrznych (WalletExplorer, TronScan). */
   externalLabels?: boolean;
   /** Odstęp między żądaniami do WalletExplorer w ms (domyślnie 1000). */
   walletExplorerIntervalMs?: number;
+  /**
+   * Ograniczanie tempa i ponawianie po 429 dla hostów z `DEFAULT_HOST_POLICIES` (TronScan, TronGrid).
+   * Domyślnie włączone dla prawdziwego `fetch`, wyłączone, gdy `fetch` podmieniono (testy).
+   */
+  politeFetch?: boolean;
 }
 
+/** Budżet żądań na adres w trybie `depth: 'deep'`. */
+export const DEEP_REQUEST_BUDGET = 40;
 export const DEFAULT_RATE_CACHE_FILE = fileURLToPath(new URL('../data/cache/rates.json', import.meta.url));
 
 /**
@@ -58,7 +74,8 @@ export const DEFAULT_RATE_CACHE_FILE = fileURLToPath(new URL('../data/cache/rate
  * (tryb bez sieci) używana jest sama tabela przykładowa — również oznaczona.
  */
 export function createChainProviders(config: ChainConfig = {}): ChainProvider[] {
-  const fetchImpl = config.fetch ?? fetch;
+  const rawFetch = config.fetch ?? fetch;
+  const fetchImpl = (config.politeFetch ?? !config.fetch) ? createPoliteFetch(rawFetch) : rawFetch;
   // Z podmienionym `fetch` (testy) nie zapisujemy niczego na dysk, chyba że plik podano wprost.
   const cacheFile =
     config.rateCacheFile === false ? undefined : (config.rateCacheFile ?? (config.fetch ? undefined : DEFAULT_RATE_CACHE_FILE));
@@ -73,6 +90,7 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
     cashOut: config.cashOut,
     sanctions: config.sanctions,
     deposit: config.deposit,
+    trace: config.trace,
     fetch: fetchImpl,
   };
 
@@ -82,7 +100,14 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
   }
   if (config.enableLive) {
     const externalLabels = config.externalLabels ?? true;
-    const live = { ...shared, requestBudget: config.requestBudget, followDeposits: true };
+    const deep = config.depth === 'deep';
+    const live = {
+      ...shared,
+      requestBudget: config.requestBudget ?? (deep ? DEEP_REQUEST_BUDGET : DEFAULT_REQUEST_BUDGET),
+      followDeposits: true,
+      extraOutgoing: deep,
+      trace: { ...(deep ? { maxCandidates: 12 } : {}), ...config.trace },
+    };
     // Jeden klient na serwis: wspólna pamięć podręczna i wspólny ogranicznik tempa.
     const walletExplorer = externalLabels
       ? new WalletExplorerClient({ fetch: fetchImpl, minIntervalMs: config.walletExplorerIntervalMs })
@@ -105,8 +130,8 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
         siteUrl: 'https://mempool.space',
         testnetSiteUrl: 'https://mempool.space/testnet',
       }),
-      new BlockscoutProvider(live),
-      new TronGridProvider({ ...live, labelLookup: tronScan }),
+      new BlockscoutProvider({ ...live, ...(externalLabels ? { metadataUrl: 'https://metadata.services.blockscout.com' } : {}) }),
+      new TronGridProvider({ ...live, labelLookup: tronScan, ...(externalLabels ? { tronScanUrl: 'https://apilist.tronscanapi.com' } : {}) }),
     );
   }
   return providers;

@@ -25,11 +25,30 @@
 
     { "network": "bitcoin", "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "label": "Adres z bloku Genesis (Satoshi Nakamoto) — powszechnie cytowany przykład", "addressClass": "institutional" },
     { "network": "bitcoin", "address": "1HB5XMLmzFVj8ALj6mfBsbifRoD4miY36v", "label": "WikiLeaks: publiczny adres darowizn", "addressClass": "charity" },
+    { "network": "bitcoin", "address": "bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h", "label": "Binance: gorący portfel giełdy (adres powszechnie znany; brak etykiety w źródłach odpytywanych na żywo)", "addressClass": "exchange", "kind": "exchange_deposit" },
     { "network": "bitcoin", "address": "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo", "label": "Binance: portfel rezerw giełdy", "addressClass": "exchange", "kind": "exchange_deposit" },
     { "network": "bitcoin", "address": "bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97", "label": "Bitfinex: portfel rezerw giełdy", "addressClass": "exchange", "kind": "exchange_deposit" },
 
     { "network": "tron", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "label": "Tether: kontrakt tokena USDT (TRC-20)", "addressClass": "smart_contract", "asset": "USDT" },
     { "network": "tron", "address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", "label": "Circle: kontrakt tokena USDC (TRC-20)", "addressClass": "smart_contract", "asset": "USDC" },
-    { "network": "tron", "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb", "label": "Adres zerowy sieci Tron (spalanie)", "addressClass": "smart_contract" }
+    { "network": "tron", "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb", "label": "Adres zerowy sieci Tron (spalanie)", "addressClass": "smart_contract" },
+
+    { "network": "tron", "address": "TAUN6FwrnwwmaEqYcckffC7wYmbaS6cBiX", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Hot 1”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TV6MuMXfmLbBqPZvBHdwFsDnQeVfnmiuSi", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Hot 2”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TYASr5UV6HEcXatwdFQfmLVUqQQQMUxHLS", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Hot 3”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TNXoiAJ3dct8Fjg4M9fkLFh9S2v9TXc32G", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Hot 4”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TAzsQ9Gx8eqFNFSKbeXrbi45CuVPHzA8wr", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Hot 5”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TJDENsfBJs4RFETt1X1W8wMDc8M5XnJhCe", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Hot 6”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TQrY8tryqsYVCYS3MFbtffiPp2ccyn4STm", "label": "Binance: portfel giełdy (znacznik TronScan „Binance 2”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TMuA6YqfCeX8EhbfYEg5y7S4DqzSJireY9", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Cold 1”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Cold 2”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TT1DyeqXaaJkt6UhVYFWUXBXknaXnBudTK", "label": "Binance: portfel giełdy (znacznik TronScan „Binance-Cold 3”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TM1zzNDZD2DPASbKcgdVoTYhfmYgtfwx9R", "label": "OKX: portfel giełdy (znacznik TronScan „Okex 1”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TCz47XgC9TjCeF4UzfB6qZbM9LTF9s1tG7", "label": "OKX: portfel giełdy (znacznik TronScan „Okex 4”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TU4vEruvZwLLkSfV9bNw12EJTPvNr7Pvaa", "label": "Bybit: portfel giełdy (znacznik TronScan „Bybit”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9", "label": "KuCoin: portfel giełdy (znacznik TronScan „Kucoin 4”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ", "label": "Bitfinex: portfel giełdy (znacznik TronScan „Bitfinex”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TBA6CypYJizwA9XdC7Ubgc5F1bxrQ7SqPt", "label": "Gate: portfel giełdy (znacznik TronScan „Gate”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" },
+    { "network": "tron", "address": "TEPSrSYPDSQ7yXpMFPq91Fb1QEWpMkRGfn", "label": "MEXC: portfel giełdy (znacznik TronScan „MXC”, potwierdzony 2026-11-21)", "addressClass": "exchange", "kind": "exchange_deposit" }
   ]
 }

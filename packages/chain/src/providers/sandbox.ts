@@ -54,6 +54,7 @@ export class SandboxChainProvider implements ChainProvider {
       cashOut: config.cashOut,
       sanctions: config.sanctions,
       deposit: config.deposit,
+      trace: config.trace,
     };
   }
 

@@ -13,6 +13,8 @@ export interface LabelLookup {
   sourceName: string;
   /** Etykieta adresu albo `undefined`, gdy źródło jej nie ma. Błędy sieci są zgłaszane wyjątkiem. */
   lookup(address: string, signal?: AbortSignal): Promise<string | undefined>;
+  /** Czy odpowiedź dla adresu jest już w pamięci podręcznej (pytanie nie zużyje żądania). */
+  cached?(address: string): boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -63,6 +65,10 @@ export class WalletExplorerClient implements LabelLookup {
     this.throttle = createThrottle(config.minIntervalMs ?? 1000);
   }
 
+  cached(address: string): boolean {
+    return this.cache.has(address);
+  }
+
   async lookup(address: string, signal?: AbortSignal): Promise<string | undefined> {
     if (this.cache.has(address)) return this.cache.get(address);
     const body = await this.throttle(() =>
@@ -101,6 +107,10 @@ export class TronScanTagClient implements LabelLookup {
     this.fetchImpl = config.fetch ?? fetch;
     this.apiUrl = (config.apiUrl ?? 'https://apilist.tronscanapi.com').replace(/\/+$/, '');
     this.throttle = createThrottle(config.minIntervalMs ?? 250);
+  }
+
+  cached(address: string): boolean {
+    return this.cache.has(address);
   }
 
   async lookup(address: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -162,7 +172,7 @@ export async function lookupPartyLabels(request: PartyLabelRequest): Promise<str
   for (const transfer of ordered) {
     const party = transfer.counterparty;
     if (pending.includes(party) || party === address || !isQueryableAddress(party)) continue;
-    if (transfer.counterpartyLabel || transfer.counterpartyClass || labels.lookup(network, party)) continue;
+    if (transfer.counterpartyLabel || transfer.counterpartyClass || transfer.counterpartyLabelChecked || labels.lookup(network, party)) continue;
     pending.push(party);
   }
 

@@ -23,7 +23,7 @@ for (const [asset, amount, time] of [
 }
 console.log(`żądania: ${requests.length}`);
 
-const providers = createChainProviders({ enableLive: true, fetch: countingFetch, rateCacheFile: false });
+const providers = createChainProviders({ enableLive: true, fetch: countingFetch, politeFetch: true, rateCacheFile: false });
 for (const [network, address] of [
   ['ethereum', '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'],
   ['bitcoin', '34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo'],

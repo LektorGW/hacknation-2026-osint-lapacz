@@ -7,8 +7,11 @@
 import type { AddressClass, ChainActivity, ChainProvider, ConnectorContext, Network } from '@olcys/core';
 import { buildChainActivity } from '../activity.ts';
 import type { ActivityOptions, RawTransfer } from '../activity.ts';
-import { DEFAULT_REQUEST_BUDGET, findLikelyDepositAddresses } from '../deposit.ts';
+import { accountCluster } from '../cluster.ts';
+import { DEFAULT_REQUEST_BUDGET } from '../deposit.ts';
 import type { InferredDeposit } from '../deposit.ts';
+import { traceAccountFlows } from '../trace.ts';
+import type { TracedTrail } from '../trace.ts';
 import { ChainProviderError, RequestBudget, fetchJson, fromBaseUnits } from '../http.ts';
 import type { FetchLike } from '../http.ts';
 import { getDefaultLabels, matchService, normalizeAddress } from '../labels.ts';
@@ -138,7 +141,22 @@ export interface BlockscoutProviderConfig extends ActivityOptions {
   requestBudget?: number;
   /** Czy badać dalszą drogę środków (prawdopodobne adresy wpłat na giełdy); domyślnie nie. */
   followDeposits?: boolean;
+  /**
+   * Adres usługi metadanych Blockscout (hurtowe znaczniki adresów, bez klucza), np.
+   * `https://metadata.services.blockscout.com`. Bez niego używane są tylko znaczniki z transakcji.
+   */
+  metadataUrl?: string;
+  /** Identyfikator sieci dla usługi metadanych (Ethereum: 1). */
+  chainId?: number;
+  /**
+   * Tryb głęboki: dwa dodatkowe żądania o najnowsze przelewy WYCHODZĄCE (ETH i ERC-20), gdy
+   * historia adresu nie mieści się na pierwszej stronie.
+   */
+  extraOutgoing?: boolean;
 }
+
+/** Ilu adresów najwyżej dotyczy jedno hurtowe zapytanie o znaczniki. */
+export const BULK_TAG_LIMIT = 40;
 
 export class BlockscoutProvider implements ChainProvider {
   id = 'blockscout-ethereum';
@@ -148,6 +166,9 @@ export class BlockscoutProvider implements ChainProvider {
   options: ActivityOptions;
   requestBudget: number;
   followDeposits: boolean;
+  metadataUrl: string | undefined;
+  chainId: number;
+  extraOutgoing: boolean;
 
   constructor(config: BlockscoutProviderConfig = {}) {
     this.siteUrl = (config.siteUrl ?? 'https://eth.blockscout.com').replace(/\/+$/, '');
@@ -158,9 +179,46 @@ export class BlockscoutProvider implements ChainProvider {
       cashOut: config.cashOut,
       sanctions: config.sanctions,
       deposit: config.deposit,
+      trace: config.trace,
     };
     this.requestBudget = config.requestBudget ?? DEFAULT_REQUEST_BUDGET;
     this.followDeposits = config.followDeposits ?? false;
+    this.metadataUrl = config.metadataUrl?.replace(/\/+$/, '');
+    this.chainId = config.chainId ?? 1;
+    this.extraOutgoing = config.extraOutgoing ?? false;
+  }
+
+  /**
+   * Hurtowe znaczniki adresów z usługi metadanych Blockscout: jedno żądanie dla wielu
+   * adresów. Dopisuje etykietę i klasę do przelewów, których kontrahent nie ma jeszcze opisu.
+   */
+  async enrichWithBulkTags(transfers: RawTransfer[], signal?: AbortSignal): Promise<number> {
+    if (!this.metadataUrl) return 0;
+    const pending = [...new Set(transfers.filter((item) => !item.counterpartyLabel && !item.counterpartyClass && /^0x[0-9a-fA-F]{40}$/.test(item.counterparty)).map((item) => item.counterparty))].slice(0, BULK_TAG_LIMIT);
+    if (pending.length === 0) return 0;
+    const body = await fetchJson<{ addresses?: Record<string, { tags?: BlockscoutTag[] } | undefined> }>(
+      this.fetchImpl,
+      `${this.metadataUrl}/api/v1/metadata?addresses=${pending.join(',')}&chainId=${this.chainId}&tagsLimit=20`,
+      { source: 'Blockscout (metadane adresów)', signal },
+    );
+    const byAddress = new Map<string, BlockscoutTag[]>();
+    for (const [address, entry] of Object.entries(body.addresses ?? {})) {
+      if (Array.isArray(entry?.tags)) byAddress.set(normalizeAddress(address), entry.tags);
+    }
+    let labelled = 0;
+    for (const transfer of transfers) {
+      if (transfer.counterpartyLabel || transfer.counterpartyClass) continue;
+      const tags = byAddress.get(normalizeAddress(transfer.counterparty));
+      if (pending.includes(transfer.counterparty)) transfer.counterpartyLabelChecked = true;
+      if (!tags) continue;
+      const info = parseBlockscoutParty({ hash: transfer.counterparty, is_contract: transfer.counterpartyIsContract, metadata: { tags } });
+      if (!info.label && !info.addressClass) continue;
+      transfer.counterpartyLabel = info.label;
+      transfer.counterpartyClass = info.addressClass;
+      transfer.counterpartyLabelSource = BLOCKSCOUT_LABEL_SOURCE;
+      labelled += 1;
+    }
+    return labelled;
   }
 
   supports(network: Network): boolean {
@@ -264,6 +322,33 @@ export class BlockscoutProvider implements ChainProvider {
     ];
 
     const truncated = Boolean(transactions.next_page_params) || Boolean(tokenTransfers.next_page_params);
+    if (this.extraOutgoing && truncated) {
+      const seen = new Set(transfers.map((item) => `${item.txid}|${item.counterparty}|${item.asset}`));
+      let added = 0;
+      const merge = (items: RawTransfer[]) => {
+        for (const item of items) {
+          const key = `${item.txid}|${item.counterparty}|${item.asset}`;
+          if (item.direction !== 'out' || seen.has(key)) continue;
+          seen.add(key);
+          transfers.push(item);
+          added += 1;
+        }
+      };
+      try {
+        if (transactions.next_page_params && budget.take()) {
+          const page = await fetchJson<BlockscoutPage<BlockscoutTransaction>>(this.fetchImpl, `${api}/transactions?filter=from`, request);
+          merge(this.nativeTransfers(page.items ?? [], address));
+        }
+        if (tokenTransfers.next_page_params && budget.take()) {
+          const page = await fetchJson<BlockscoutPage<BlockscoutTokenTransfer>>(this.fetchImpl, `${api}/token-transfers?type=ERC-20&filter=from`, request);
+          merge(this.tokenTransfers(page.items ?? [], address, labels, network));
+        }
+        limitations.push(`Tryb głęboki: dodano ${added} starszych przelewów wychodzących z adresu (osobne zapytania o najnowsze przelewy wychodzące).`);
+      } catch (error) {
+        if (context.signal?.aborted) throw error;
+        limitations.push(`Nie udało się pobrać dodatkowych stron przelewów wychodzących: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     limitations.push(
       'Ethereum: uwzględniono przelewy ETH i tokenów ERC-20. Transakcje wewnętrzne kontraktów (np. ETH ' +
         'otrzymane z wymiany) nie są pobierane.',
@@ -276,32 +361,60 @@ export class BlockscoutProvider implements ChainProvider {
       );
     }
 
+    // Znaczniki hurtowo: usługa metadanych zna etykiety, których nie ma w opisie stron transakcji.
+    if (this.metadataUrl && budget.take()) {
+      try {
+        await this.enrichWithBulkTags(transfers, context.signal);
+      } catch (error) {
+        if (context.signal?.aborted) throw error;
+        limitations.push(`Nie udało się pobrać hurtowych znaczników adresów: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
     let inferredDeposits: InferredDeposit[] = [];
+    let trails: TracedTrail[] = [];
     if (this.followDeposits) {
-      const found = await findLikelyDepositAddresses({
+      const found = await traceAccountFlows({
         network,
         address,
         transfers,
         labels,
         sourceName: this.label,
         budget,
-        options: this.options.deposit,
+        options: { ...this.options.deposit, ...this.options.trace },
         signal: context.signal,
-        fetchOutgoing: async (counterparty, asset) => {
+        expand: async (counterparty, asset) => {
           const hop = `${base}/${encodeURIComponent(counterparty)}`;
           if (asset === 'ETH') {
             const page = await fetchJson<BlockscoutPage<BlockscoutTransaction>>(this.fetchImpl, `${hop}/transactions?filter=from`, request);
-            return this.nativeTransfers(page.items ?? [], counterparty);
+            return { outgoing: this.nativeTransfers(page.items ?? [], counterparty), more: Boolean(page.next_page_params) };
           }
           const page = await fetchJson<BlockscoutPage<BlockscoutTokenTransfer>>(
             this.fetchImpl,
             `${hop}/token-transfers?type=ERC-20&filter=from`,
             request,
           );
-          return this.tokenTransfers(page.items ?? [], counterparty, labels, network);
+          return { outgoing: this.tokenTransfers(page.items ?? [], counterparty, labels, network), more: Boolean(page.next_page_params) };
         },
+        countTransactions: async (counterparty) => {
+          const counters = await fetchJson<{ transactions_count?: string; token_transfers_count?: string }>(
+            this.fetchImpl,
+            `${base}/${encodeURIComponent(counterparty)}/counters`,
+            request,
+          );
+          const total = Number(counters.transactions_count ?? 0) + Number(counters.token_transfers_count ?? 0);
+          return Number.isFinite(total) ? total : undefined;
+        },
+        ...(this.metadataUrl
+          ? {
+              enrich: async (forwards: RawTransfer[]) => {
+                await this.enrichWithBulkTags(forwards, context.signal);
+              },
+            }
+          : {}),
       });
       inferredDeposits = found.deposits;
+      trails = found.trails;
       limitations.push(...found.limitations);
     }
 
@@ -320,6 +433,8 @@ export class BlockscoutProvider implements ChainProvider {
         historyComplete: !truncated,
         transfers,
         inferredDeposits,
+        trails,
+        cluster: accountCluster(network, address),
         limitations,
       },
       this.options,

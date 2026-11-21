@@ -106,6 +106,65 @@ export async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: F
   }
 }
 
+export interface HostPolicy {
+  /** Minimalny odstęp między żądaniami do hosta. */
+  minIntervalMs: number;
+  /** Po odpowiedzi 429 czekamy tyle i ponawiamy żądanie jeden raz. */
+  retryAfterMs: number;
+}
+
+/**
+ * Tempo przyjazne dla publicznych API bez klucza (ustalone próbami na żywo): TronScan
+ * i TronGrid odrzucają serie żądań kodem 429, a TronGrid po przekroczeniu limitu blokuje
+ * nadawcę na kilka–kilkadziesiąt sekund.
+ */
+export const DEFAULT_HOST_POLICIES: Record<string, HostPolicy> = {
+  'apilist.tronscanapi.com': { minIntervalMs: 450, retryAfterMs: 3000 },
+  'api.trongrid.io': { minIntervalMs: 350, retryAfterMs: 5000 },
+};
+
+/**
+ * Opakowuje `fetch`: żądania do hostów z tabeli idą jedno po drugim z minimalnym odstępem,
+ * a odpowiedź 429 powoduje jedną ponowną próbę po przerwie. Pozostałe hosty bez zmian.
+ */
+export function createPoliteFetch(fetchImpl: FetchLike, policies: Record<string, HostPolicy> = DEFAULT_HOST_POLICIES): FetchLike {
+  const queues = new Map<string, { tail: Promise<unknown>; lastStart: number }>();
+  const pause = (ms: number, signal?: AbortSignal | null) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) return reject(signal.reason);
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      }, { once: true });
+    });
+  return (input, init) => {
+    let host: string;
+    try {
+      host = new URL(input).host;
+    } catch {
+      return fetchImpl(input, init);
+    }
+    const policy = policies[host];
+    if (!policy) return fetchImpl(input, init);
+    const queue = queues.get(host) ?? { tail: Promise.resolve(), lastStart: 0 };
+    queues.set(host, queue);
+    const run = queue.tail.then(async () => {
+      const wait = queue.lastStart + policy.minIntervalMs - Date.now();
+      if (wait > 0) await pause(wait);
+      queue.lastStart = Date.now();
+      const response = await fetchImpl(input, init);
+      if (response.status !== 429) return response;
+      await pause(policy.retryAfterMs);
+      queue.lastStart = Date.now();
+      // Limit czasu pierwszej próby mógł już minąć, więc druga dostaje własny.
+      return fetchImpl(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    });
+    queue.tail = run.catch(() => undefined);
+    return run;
+  };
+}
+
 /** Przelicza kwotę w najmniejszych jednostkach (satoshi, wei, sun) bez utraty części całkowitej. */
 export function fromBaseUnits(value: string | number, decimals: number): number {
   let units: bigint;

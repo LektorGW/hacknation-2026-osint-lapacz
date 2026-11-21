@@ -22,6 +22,8 @@ export interface RateQuote {
 
 export interface RateSource {
   getRatePln(asset: string, date: string): Promise<RateQuote | null>;
+  /** Powód ostatniego nieudanego pobrania kursu, jeśli źródło go zna. */
+  lastFailure?: string;
 }
 
 const warsawDateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Warsaw' });
@@ -171,6 +173,8 @@ export class MarketRateSource implements RateSource {
   private limit: <T>(task: () => Promise<T>) => Promise<T>;
   private pending = new Map<string, { promise: Promise<unknown>; failedAt?: number }>();
   private stored: RateCacheFile | undefined;
+  /** Powód ostatniego nieudanego pobrania kursu — do opisu, dlaczego wskaźnik nie ma wyceny. */
+  lastFailure: string | undefined;
 
   constructor(options: MarketRateOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch;
@@ -209,6 +213,7 @@ export class MarketRateSource implements RateSource {
       };
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+      this.lastFailure = reason;
       const quote = await this.fallback?.getRatePln(asset, date);
       if (!quote) return null;
       return {
@@ -248,9 +253,12 @@ export class MarketRateSource implements RateSource {
       const to = shiftDate(polishDay, -1);
       let body: { rates?: { no?: string; effectiveDate?: string; mid?: number }[] };
       try {
-        body = await this.request(`${this.nbpUrl}/api/exchangerates/rates/a/usd/${from}/${to}/?format=json`, 'NBP');
+        body = await this.request(`${this.nbpUrl}/api/exchangerates/rates/a/usd/${from}/${to}/?format=json`, 'NBP', 3);
       } catch (error) {
         if ((error as { code?: string }).code === 'not_found') throw new Error(missing);
+        // Zapytanie o zakres zawiodło mimo ponowień — cofamy się dzień po dniu pojedynczymi zapytaniami.
+        const single = await this.usdPlnDayByDay(polishDay);
+        if (single) return { value: single, persist: true };
         throw error;
       }
       const entry = (body.rates ?? [])
@@ -262,14 +270,48 @@ export class MarketRateSource implements RateSource {
     });
   }
 
-  /** Żądanie z ograniczeniem równoległości; po przekroczeniu limitu czasu jedna ponowna próba. */
-  private request<T>(url: string, source: string): Promise<T> {
-    return this.limit(async () => {
+  /** Zapasowa droga: tabela z dnia poprzedniego, a przy jej braku (404) z kolejnych wcześniejszych dni. */
+  private async usdPlnDayByDay(polishDay: string): Promise<NbpTableRate | undefined> {
+    for (let back = 1; back <= NBP_PRECEDING_LOOKBACK_DAYS; back++) {
+      const day = shiftDate(polishDay, -back);
       try {
-        return await fetchJson<T>(this.fetchImpl, url, { source });
+        const body = await this.request<{ rates?: { no?: string; effectiveDate?: string; mid?: number }[] }>(
+          `${this.nbpUrl}/api/exchangerates/rates/a/usd/${day}/?format=json`,
+          'NBP',
+          1,
+        );
+        const entry = body.rates?.[0];
+        if (typeof entry?.mid === 'number') return { mid: entry.mid, no: entry.no ?? 'A', effectiveDate: entry.effectiveDate ?? day };
       } catch (error) {
-        if ((error as { code?: string }).code !== 'timeout') throw error;
-        return fetchJson<T>(this.fetchImpl, url, { source });
+        // 404 = brak tabeli tego dnia (weekend, święto); inny błąd kończy próby.
+        if ((error as { code?: string }).code !== 'not_found') return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Żądanie z ograniczeniem równoległości; po przekroczeniu limitu czasu jedna ponowna próba.
+   * `retryUnavailable` to liczba dodatkowych prób po błędzie 5xx — API NBP sporadycznie
+   * odpowiada HTTP 500 na poprawne zapytanie, a ponowienie po chwili zwykle się udaje.
+   */
+  private request<T>(url: string, source: string, retryUnavailable = 0): Promise<T> {
+    return this.limit(async () => {
+      let timeouts = 1;
+      let unavailable = retryUnavailable;
+      for (;;) {
+        try {
+          return await fetchJson<T>(this.fetchImpl, url, { source });
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          const status = /HTTP 5\d\d/.test(error instanceof Error ? error.message : '');
+          if (code === 'timeout' && timeouts > 0) timeouts -= 1;
+          else if (code === 'unavailable' && status && unavailable > 0) {
+            unavailable -= 1;
+            // Coraz dłuższa przerwa: 0,5 s, 1 s, 1,5 s…
+            await new Promise((resolve) => setTimeout(resolve, 500 * (retryUnavailable - unavailable)));
+          } else throw error;
+        }
       }
     });
   }

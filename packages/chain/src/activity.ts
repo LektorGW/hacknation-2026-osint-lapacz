@@ -4,7 +4,10 @@
 
 import type {
   AddressClass,
+  AddressCluster,
+  CashOutIndicator,
   CashOutKind,
+  CashOutTrail,
   ChainActivity,
   ChainProvider,
   ConnectorContext,
@@ -17,8 +20,10 @@ import type { DepositOptions, InferredDeposit } from './deposit.ts';
 import { classify, getDefaultLabels } from './labels.ts';
 import type { LabelSet } from './labels.ts';
 import { getDefaultSanctions, sanctionLabel, sanctionWarning } from './ofac.ts';
+import { trailConfidence } from './trace.ts';
+import type { TraceOptions, TracedTrail } from './trace.ts';
 import type { SanctionsList } from './ofac.ts';
-import { StaticRateSource, summarizeByTaxYear, usesSampleRate, valueCashOuts } from './valuation.ts';
+import { StaticRateSource, summarizeByTaxYear, usesSampleRate, valueAmount, valueCashOuts } from './valuation.ts';
 import type { RateSource } from './valuation.ts';
 
 export const NATIVE_ASSET: Record<Network, string> = {
@@ -46,6 +51,8 @@ export interface RawTransfer {
   counterpartyLabelSource?: string;
   /** Nazwa ENS kontrahenta — pokazywana jako etykieta, ale bez wpływu na klasę adresu. */
   counterpartyEns?: string;
+  /** Źródło etykiet już sprawdziło tego kontrahenta i nie ma dla niego etykiety. */
+  counterpartyLabelChecked?: boolean;
 }
 
 /** Surowe dane o adresie w postaci wspólnej dla wszystkich dostawców. */
@@ -63,6 +70,10 @@ export interface RawAddressData {
   ensName?: string;
   /** Przelewy, po których adres pośredni przekazał środki na giełdę (wnioskowanie). */
   inferredDeposits?: InferredDeposit[];
+  /** Ścieżki środków ustalone śledzeniem w głąb (przed wyceną). */
+  trails?: TracedTrail[];
+  /** Inne adresy tego samego portfela (heurystyki) albo opis, dlaczego klastra nie ma. */
+  cluster?: AddressCluster;
   /** Wartości podane przez źródło; brakujące liczymy z pobranych przelewów. */
   txCount?: number;
   totalReceived?: number;
@@ -83,6 +94,8 @@ export interface ActivityOptions {
   sanctions?: SanctionsList;
   /** Ustawienia wnioskowania o indywidualnych adresach wpłat na giełdy. */
   deposit?: DepositOptions;
+  /** Ustawienia śledzenia środków w głąb (rozszerzają `deposit`). */
+  trace?: TraceOptions;
 }
 
 const roundAmount = (value: number) => Math.round(value * 1e8) / 1e8;
@@ -96,7 +109,9 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
   const inferred = raw.inferredDeposits ?? [];
   const inferredFor = (txid: string, counterparty: string) =>
     inferred.find((item) => item.txid === txid && item.counterparty === counterparty);
-  const windowHours = options.deposit?.windowHours ?? DEFAULT_DEPOSIT_OPTIONS.windowHours;
+  const windowHours = options.trace?.windowHours ?? options.deposit?.windowHours ?? DEFAULT_DEPOSIT_OPTIONS.windowHours;
+  /** Skąd pochodzi klasyfikacja kontrahenta danego przelewu — do opisu ścieżek. */
+  const labelSources = new Map<string, string>();
 
   const transfers: ClassifiedTransfer[] = raw.transfers
     .map((transfer) => {
@@ -109,6 +124,7 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
         sourceName: transfer.counterpartyLabelSource ?? raw.sourceName,
         isContract: transfer.counterpartyIsContract,
       });
+      labelSources.set(`${transfer.txid}|${transfer.counterparty}`, counterparty.classificationSource);
       const deposit = transfer.direction === 'out' ? inferredFor(transfer.txid, transfer.counterparty) : undefined;
       let label =
         counterparty.label ??
@@ -177,9 +193,88 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
       explorerUrl: transfer.explorerUrl,
     });
   }
+
+  // Ścieżki środków: bezpośrednie (z przelewów na oznaczone adresy usług) i ustalone śledzeniem.
+  const traced = raw.trails ?? [];
+  const tracedHops = new Set(traced.flatMap((trail) => trail.hops.map((hop) => `${hop.txid}|${hop.to}`)));
+  const direct: TracedTrail[] = [];
+  for (const transfer of transfers) {
+    const kind = transfer.counterpartyKind ?? (transfer.counterpartyClass === 'exchange' ? 'exchange_deposit' : undefined);
+    if (transfer.direction !== 'out' || !kind || kind === 'stablecoin_swap' || !transfer.counterpartyLabel) continue;
+    if (inferredFor(transfer.txid, transfer.counterparty) || tracedHops.has(`${transfer.txid}|${transfer.counterparty}`)) continue;
+    // Token o niezweryfikowanym kontrakcie nie jest podstawą ścieżki — nie wiadomo, co naprawdę przesłano.
+    if (transfer.asset.includes('niezweryfikowany')) continue;
+    const classified = { classificationSource: labelSources.get(`${transfer.txid}|${transfer.counterparty}`) ?? raw.sourceName };
+    const labelBy = classified.classificationSource === labels.name ? 'curated' : /^WalletExplorer/.test(classified.classificationSource) ? 'wallet_heuristic' : 'explorer_tag';
+    const scored = trailConfidence({ steps: [], labelBy, amountRatio: 1, elapsedHours: 0 });
+    const day = transfer.time.slice(0, 10);
+    direct.push({
+      id: `${raw.network}:${transfer.txid}:${transfer.txid}:${transfer.counterparty}`,
+      sourceAddress: raw.address,
+      network: raw.network,
+      hops: [
+        {
+          txid: transfer.txid,
+          time: transfer.time,
+          from: raw.address,
+          to: transfer.counterparty,
+          asset: transfer.asset,
+          amount: transfer.amount,
+          toLabel: transfer.counterpartyLabel,
+          toClass: transfer.counterpartyClass,
+          explorerUrl: transfer.explorerUrl,
+        },
+      ],
+      serviceName: transfer.counterpartyLabel,
+      serviceKind: kind,
+      asset: transfer.asset,
+      amount: transfer.amount,
+      confidence: scored.confidence,
+      reasons: [`Bezpośredni przelew na adres usługi „${transfer.counterpartyLabel}”; etykieta: ${classified.classificationSource}.`, ...scored.reasons],
+      openQuestions: [
+        `${transfer.counterpartyLabel} może potwierdzić właściciela konta, na które wpłynęło ${formatAmount(transfer.amount)} ${transfer.asset} ${day} (tx ${transfer.txid}).`,
+        'Czy po tej wpłacie nastąpiła sprzedaż i wypłata na rachunek bankowy (historia konta w usłudze, wyciąg bankowy)?',
+      ],
+    });
+  }
+  const allTrails = [...direct, ...traced].sort((a, b) => Date.parse(a.hops[0]!.time) - Date.parse(b.hops[0]!.time));
+
+  // Ścieżka, której żaden krok nie ma jeszcze wskaźnika wypłaty, dostaje własny wskaźnik
+  // (np. wpłata na giełdę z adresu reszty). Istniejących wskaźników nie dublujemy.
+  for (const trail of traced) {
+    if (trail.hops.some((hop) => detected.some((item) => item.txid === hop.txid))) continue;
+    const last = trail.hops.at(-1)!;
+    const intermediates = trail.hops.length - 1;
+    const indicator: CashOutIndicator = {
+      kind: trail.serviceKind,
+      txid: last.txid,
+      time: last.time,
+      asset: trail.asset,
+      amount: trail.amount,
+      counterparty: last.to,
+      counterpartyLabel: trail.serviceName,
+      explanation:
+        (intermediates > 0 || last.inferred
+          ? `WNIOSKOWANIE (nie ustalony fakt): ${formatAmount(trail.amount)} ${trail.asset} dotarło do usługi „${trail.serviceName}” ` +
+            `ścieżką o ${trail.hops.length} krokach zaczynającą się od portfela podmiotu (pewność ścieżki ${trail.confidence}/100). `
+          : `Przelew ${formatAmount(trail.amount)} ${trail.asset} na adres usługi „${trail.serviceName}” (jedno z wyjść transakcji). `) +
+        trail.hops
+          .map((hop, index) => `Krok ${index + 1}: ${hop.from} → ${hop.to}, ${formatAmount(hop.amount)} ${hop.asset}, tx ${hop.txid}${hop.reason ? ` (${hop.reason})` : ''}.`)
+          .join(' '),
+      explorerUrl: last.explorerUrl,
+    };
+    detected.push(indicator);
+  }
   detected.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 
   const cashOuts = await valueCashOuts(detected, rateSource);
+  const trails: CashOutTrail[] = await Promise.all(
+    allTrails.map(async (trail) => {
+      const last = trail.hops.at(-1)!;
+      const valued = await valueAmount(rateSource, trail.asset, trail.amount, last.time);
+      return valued ? { ...trail, valuePln: valued.valuePln, valuation: valued.valuation } : trail;
+    }),
+  );
   const limitations = [...warnings, ...raw.limitations];
   if (cashOuts.length > 0) {
     limitations.push(
@@ -196,7 +291,10 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
   }
   const unvalued = cashOuts.filter((cashOut) => cashOut.valuePln === undefined).length;
   if (unvalued > 0) {
-    limitations.push(`Dla ${unvalued} wskaźników wypłaty brak kursu — nie są ujęte w sumach PLN.`);
+    limitations.push(
+      `Dla ${unvalued} wskaźników wypłaty brak kursu — nie są ujęte w sumach PLN.` +
+        (rateSource.lastFailure ? ` Ostatni błąd źródła kursów: ${rateSource.lastFailure}.` : ''),
+    );
   }
 
   const complete = raw.historyComplete ?? true;
@@ -223,6 +321,8 @@ export async function buildChainActivity(raw: RawAddressData, options: ActivityO
     cashOuts,
     cashOutPlnByYear: summarizeByTaxYear(cashOuts),
     limitations,
+    ...(trails.length > 0 ? { trails } : {}),
+    ...(raw.cluster ? { cluster: raw.cluster } : {}),
   };
 }
 
