@@ -50,7 +50,7 @@
     { "id": "worldchain", "name": "World Chain", "chainId": 480, "nativeAsset": "ETH", "apiUrl": "https://worldchain-mainnet.explorer.alchemy.com", "explorerUrl": "https://worldchain-mainnet.explorer.alchemy.com", "stablecoins": [] }
   ],
   "unavailable": [
-    { "id": "base", "name": "Base", "host": "base.blockscout.com", "reason": "HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka User-Agent „OLCyS-research/0.1”; odpowiada 200 dopiero na nagłówek w postaci „Mozilla/5.0 (compatible; …)”. Nie zmieniamy nagłówka, żeby obejść blokadę — do decyzji zespołu." },
+    { "id": "base", "name": "Base", "host": "base.blockscout.com", "reason": "HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka User-Agent „OLCyS-research/0.1”; odpowiada 200 dopiero na nagłówek w postaci „Mozilla/5.0 (compatible; …)”. Warunki sprawdzone 2026-11-21: robots.txt nie zabrania /api/, ale dokumentacja Blockscout ogłasza wycofanie dostępu do API pojedynczych instancji i kieruje do API z kluczem (dev.blockscout.com), a regulamin zakazuje obchodzenia ograniczeń dostępu. Warunki są niejednoznaczne, więc nagłówka nie zmieniamy; właściwa droga to darmowy klucz API Blockscout." },
     { "id": "arbitrum", "name": "Arbitrum One", "host": "arbitrum.blockscout.com", "reason": "jak Base: HTTP 403 dla naszego nagłówka User-Agent." },
     { "id": "polygon", "name": "Polygon PoS", "host": "polygon.blockscout.com", "reason": "jak Base: HTTP 403 dla naszego nagłówka User-Agent." },
     { "id": "gnosis", "name": "Gnosis", "host": "gnosis.blockscout.com", "reason": "przekierowanie 301 na gnosisscan.io, który odpowiada HTTP 403 (Cloudflare)." },
