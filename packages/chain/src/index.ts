@@ -15,7 +15,7 @@ import { DEFAULT_REQUEST_BUDGET } from './deposit.ts';
 import { DEEP_FUNDING_BUDGET, DEFAULT_FUNDING_BUDGET } from './funding.ts';
 import { DEEP_LINK_BUDGET, DEFAULT_LINK_BUDGET } from './links.ts';
 import type { LinkOptions } from './links.ts';
-import { BLOCKSCOUT_KEYED_API, EvmMultiChainProvider, createKeyedFetch, resolveEvmNetworks } from './networks.ts';
+import { BLOCKSCOUT_KEYED_API, EvmMultiChainProvider, FailoverProvider, createKeyedFetch, resolveEvmNetworks } from './networks.ts';
 import { TronScanTagClient, WalletExplorerClient } from './party-labels.ts';
 import { MarketRateSource, StaticRateSource } from './valuation.ts';
 
@@ -83,6 +83,8 @@ export interface ChainConfig extends ActivityOptions, HistoryOptions {
    * przerywana limitem czasu — dlatego domyślny jest tryb `required`.
    */
   blockscoutKeyScope?: 'all' | 'required';
+  /** Limit czasu jednego żądania do eksploratorów EVM w ms; domyślnie 25 000. */
+  evmTimeoutMs?: number;
   /** `false` wyłącza wykrywanie innych sieci EVM (zostaje sam Ethereum mainnet). */
   evmNetworks?: boolean;
   /** Ile innych sieci EVM (o największej aktywności adresu) analizować w pełni: domyślnie 0, w trybie głębokim 3. */
@@ -173,8 +175,28 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
     const evm = {
       ...live,
       balances: true,
+      timeoutMs: config.evmTimeoutMs,
       ...(externalLabels ? { metadataUrl: keyedAll ? `${BLOCKSCOUT_KEYED_API}/services/metadata` : 'https://metadata.services.blockscout.com' } : {}),
     };
+    // Ethereum: z kluczem są dwie drogi do tych samych danych (publiczna instancja ↔ wspólne API z kluczem);
+    // gdy pierwsza zawiedzie, przez 10 minut pytamy od razu drugą.
+    const routeChain = (keyed: boolean) => resolveEvmNetworks(keyed).find((item) => item.id === 'ethereum');
+    const routeProvider = (keyed: boolean) =>
+      new BlockscoutProvider({
+        ...evm,
+        chain: routeChain(keyed),
+        metadataUrl: externalLabels ? (keyed ? `${BLOCKSCOUT_KEYED_API}/services/metadata` : 'https://metadata.services.blockscout.com') : undefined,
+      });
+    const publicRoute = 'publiczna instancja eth.blockscout.com';
+    const keyedRoute = 'API Blockscout z kluczem (api.blockscout.com)';
+    const ethereumProvider: ChainProvider = apiKey
+      ? new FailoverProvider({
+          primary: routeProvider(keyedAll),
+          secondary: routeProvider(!keyedAll),
+          primaryRoute: keyedAll ? keyedRoute : publicRoute,
+          secondaryRoute: keyedAll ? publicRoute : keyedRoute,
+        })
+      : new BlockscoutProvider({ ...evm, chain: evmNetworks.find((item) => item.id === 'ethereum') });
     providers.push(
       new EsploraProvider({
         ...live,
@@ -197,29 +219,17 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
       // Ethereum mainnet + wykrywanie innych sieci EVM; w trybie głębokim pełna analiza sieci o największej aktywności.
       (config.evmNetworks ?? true)
         ? new EvmMultiChainProvider({
-            main: new BlockscoutProvider({ ...evm, chain: evmNetworks.find((item) => item.id === 'ethereum') }),
+            main: ethereumProvider,
             createProvider: (chain) => new BlockscoutProvider({ ...evm, chain }),
             fetch: fetchImpl,
+            maxExtraNetworks: config.maxExtraNetworks ?? (deep ? 3 : 0),
             networks: evmNetworks,
             // Wspólne API obsługuje 2 żądania naraz, więc sprawdzenie kilkunastu sieci trwa dłużej niż na publicznych instancjach.
             ...(keyedAll ? { discoveryTimeoutMs: 25_000 } : {}),
-            maxExtraNetworks: config.maxExtraNetworks ?? (deep ? 3 : 0),
           })
-        : new BlockscoutProvider({ ...evm, chain: evmNetworks.find((item) => item.id === 'ethereum') }),
+        : ethereumProvider,
       new TronGridProvider({ ...live, labelLookup: tronScan, ...(externalLabels ? { tronScanUrl: 'https://apilist.tronscanapi.com' } : {}) }),
     );
-    if (apiKey) {
-      // Druga droga do Ethereum na wypadek awarii pierwszej: wspólne API z kluczem ↔ publiczna instancja.
-      const other = resolveEvmNetworks(!keyedAll).find((item) => item.id === 'ethereum');
-      const fallback = new BlockscoutProvider({
-        ...evm,
-        chain: other,
-        metadataUrl: externalLabels ? (keyedAll ? 'https://metadata.services.blockscout.com' : `${BLOCKSCOUT_KEYED_API}/services/metadata`) : undefined,
-      });
-      fallback.id = 'blockscout-ethereum-fallback';
-      fallback.label = keyedAll ? 'Blockscout (Ethereum, publiczna instancja — zapas)' : 'Blockscout (Ethereum, API z kluczem — zapas)';
-      providers.push(fallback);
-    }
   }
   return providers;
 }

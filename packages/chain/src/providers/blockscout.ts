@@ -81,6 +81,8 @@ interface BlockscoutTokenTransfer {
 }
 
 export const TRANSACTION_LIMIT = 50;
+/** Domyślny limit czasu żądania do eksploratora EVM. */
+export const EVM_REQUEST_TIMEOUT_MS = 25_000;
 /** Nazwa źródła etykiet w `classificationSource`. */
 export const BLOCKSCOUT_LABEL_SOURCE = 'Blockscout';
 
@@ -172,6 +174,8 @@ export interface BlockscoutProviderConfig extends ActivityOptions {
   chain?: EvmNetwork;
   /** Czy pobrać salda tokenów (jedno żądanie) i wyliczyć stan posiadania; domyślnie nie. */
   balances?: boolean;
+  /** Limit czasu jednego żądania do eksploratora w ms; domyślnie 25 s (eksploratory EVM bywają wolne dla aktywnych adresów). */
+  timeoutMs?: number;
   /**
    * Tryb głęboki: dwa dodatkowe żądania o najnowsze przelewy WYCHODZĄCE (ETH i ERC-20), gdy
    * historia adresu nie mieści się na pierwszej stronie.
@@ -209,6 +213,7 @@ export class BlockscoutProvider implements ChainProvider {
   /** Identyfikator sieci dopisywany do wyniku; brak dla Ethereum mainnet. */
   chainTag: string | undefined;
   balances: boolean;
+  timeoutMs: number;
 
   constructor(config: BlockscoutProviderConfig = {}) {
     this.chain = config.chain;
@@ -216,6 +221,7 @@ export class BlockscoutProvider implements ChainProvider {
     this.siteUrl = (config.siteUrl ?? config.chain?.apiUrl ?? 'https://eth.blockscout.com').replace(/\/+$/, '');
     this.explorerUrl = (config.chain?.explorerUrl ?? this.siteUrl).replace(/\/+$/, '');
     this.balances = config.balances ?? false;
+    this.timeoutMs = config.timeoutMs ?? EVM_REQUEST_TIMEOUT_MS;
     if (config.chain) {
       this.id = `blockscout-${config.chain.id}`;
       this.label = `Blockscout (${config.chain.name})`;
@@ -255,7 +261,7 @@ export class BlockscoutProvider implements ChainProvider {
     const body = await fetchJson<{ addresses?: Record<string, { tags?: BlockscoutTag[] } | undefined> }>(
       this.fetchImpl,
       `${this.metadataUrl}/api/v1/metadata?addresses=${pending.join(',')}&chainId=${this.chainId}&tagsLimit=20`,
-      { source: 'Blockscout (metadane adresów)', signal },
+      { source: 'Blockscout (metadane adresów)', signal, timeoutMs: this.timeoutMs },
     );
     const byAddress = new Map<string, BlockscoutTag[]>();
     for (const [address, entry] of Object.entries(body.addresses ?? {})) {
@@ -339,7 +345,7 @@ export class BlockscoutProvider implements ChainProvider {
     const labels = this.options.labels ?? getDefaultLabels();
     const base = `${this.siteUrl}/api/v2/addresses`;
     const api = `${base}/${encodeURIComponent(address)}`;
-    const request = { source: this.label, signal: context.signal };
+    const request = { source: this.label, signal: context.signal, timeoutMs: this.timeoutMs };
     const budget = new RequestBudget(traceBudgetLimit(context, this.requestBudget));
     const self = normalizeAddress(address);
     const limitations: string[] = [];

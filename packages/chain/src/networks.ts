@@ -227,6 +227,95 @@ export async function discoverNetworks(
   return { networks: found.filter((item): item is NetworkPresence => item !== undefined).sort((a, b) => b.txCount + b.tokenTransfers - (a.txCount + a.tokenTransfers)), limitations };
 }
 
+/** Jak długo po awarii pierwszej drogi pytamy od razu drugą. */
+export const FAILOVER_COOLDOWN_MS = 10 * 60_000;
+
+export interface FailoverConfig {
+  primary: ChainProvider;
+  secondary: ChainProvider;
+  /** Opisy dróg do wpisu w `limitations`, np. „publiczna instancja eth.blockscout.com”. */
+  primaryRoute: string;
+  secondaryRoute: string;
+  cooldownMs?: number;
+  now?: () => number;
+}
+
+/**
+ * Dwie drogi do tych samych danych (publiczna instancja ↔ API z kluczem). Gdy pierwsza przekroczy czas,
+ * zwróci błąd albo niepoprawną odpowiedź, przez `cooldownMs` (10 min) pytamy od razu drugą — bez czekania
+ * na limit czasu pierwszej przy każdej analizie — a potem próbujemy pierwszej ponownie. Stan jest wspólny
+ * dla całego procesu. Wynik zawsze mówi, którą drogą przyszły dane.
+ */
+export class FailoverProvider implements ChainProvider {
+  id: string;
+  label: string;
+  config: FailoverConfig;
+  /** Do kiedy pomijamy pierwszą drogę (ms od epoki). */
+  skipPrimaryUntil = 0;
+  lastFailure: string | undefined;
+
+  constructor(config: FailoverConfig) {
+    this.config = config;
+    this.id = config.primary.id;
+    this.label = config.primary.label;
+  }
+
+  supports(network: Network, address: string): boolean {
+    return this.config.primary.supports(network, address);
+  }
+
+  // Ustawienia pierwszej drogi są widoczne przez dostawcę zbiorczego (druga ma takie same).
+  private get primarySettings(): Record<string, unknown> {
+    return this.config.primary as unknown as Record<string, unknown>;
+  }
+
+  get options(): unknown {
+    return this.primarySettings.options;
+  }
+
+  get requestBudget(): unknown {
+    return this.primarySettings.requestBudget;
+  }
+
+  get linkBudget(): unknown {
+    return this.primarySettings.linkBudget;
+  }
+
+  get findLinks(): unknown {
+    return this.primarySettings.findLinks;
+  }
+
+  get history(): unknown {
+    return this.primarySettings.history;
+  }
+
+  async getActivity(network: Network, address: string, context: ConnectorContext): Promise<ChainActivity> {
+    const now = this.config.now ?? Date.now;
+    const { primary, secondary, primaryRoute, secondaryRoute } = this.config;
+    const viaSecondary = async (why: string) => {
+      const activity = await secondary.getActivity(network, address, context);
+      return { ...activity, limitations: [`Droga danych: ${secondaryRoute} — ${why}.`, ...activity.limitations] };
+    };
+    if (now() < this.skipPrimaryUntil) {
+      const minutes = Math.max(1, Math.ceil((this.skipPrimaryUntil - now()) / 60_000));
+      return viaSecondary(`${primaryRoute} zawiodła niedawno (${this.lastFailure ?? 'błąd'}), więc przez najbliższe ${minutes} min jest pomijana`);
+    }
+    try {
+      const activity = await primary.getActivity(network, address, context);
+      return { ...activity, limitations: [`Droga danych: ${primaryRoute}.`, ...activity.limitations] };
+    } catch (error) {
+      if (context.signal?.aborted) throw error;
+      const code = (error as { code?: string }).code;
+      // „Nieznany adres” to odpowiedź merytoryczna, a nie awaria drogi.
+      if (code === 'not_found') throw error;
+      this.lastFailure = error instanceof Error ? error.message : String(error);
+      this.skipPrimaryUntil = now() + (this.config.cooldownMs ?? FAILOVER_COOLDOWN_MS);
+      context.log(`${primaryRoute} zawiodła (${this.lastFailure}) — przez 10 min dane pobierane będą drogą: ${secondaryRoute}.`);
+      return viaSecondary(`${primaryRoute} zawiodła (${this.lastFailure})`);
+    }
+  }
+}
+
 /** Wynik analizy adresu EVM z polami dodatkowymi (poza kontraktem core). */
 export type MultiChainActivity = ChainActivity & {
   networks?: NetworkPresence[];
