@@ -27,6 +27,7 @@ import { renderOrganizationSections } from './report-org.ts';
 import { renderBusinessSection } from './report-business.ts';
 import { renderMixerSection } from './mixers.ts';
 import { renderScamSection } from './report-scam.ts';
+import { SYNTHESIS_STYLE, renderSynthesis } from './report-synthesis.ts';
 import type { CaseSummary } from './storage.ts';
 
 export interface ConnectorInfo {
@@ -353,7 +354,10 @@ function renderRejected(finding: DossierFinding): string {
   </section>`;
 }
 
-/** Strona tytułowa: to, co analityk ma wiedzieć po minucie czytania. */
+/** Ile kluczowych ustaleń pokazuje Część I — reszta jest w załącznikach. */
+const KEY_FINDINGS_LIMIT = 8;
+
+/** Kluczowe ustalenia pod syntezą: najważniejsze zdania z warstwą informacji. */
 function renderKeyFindings(dossier: DossierView): string {
   return `<div class="ustalenia">
     <h3>Kluczowe ustalenia</h3>
@@ -370,10 +374,13 @@ function renderKeyFindings(dossier: DossierView): string {
             .join('')}</ul>`
         : ''
     }
-    <ol>${dossier.keyFindings.map((item) => `<li>${layerTag(item.layer, item.text)} ${esc(item.text)}</li>`).join('')}</ol>
-    <p><span class="priorytet">Priorytet sprawy: ${dossier.totals.priority}/100</span></p>
-    <ul>${dossier.totals.priorityReasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>
-    <p class="meta">Priorytet jest wynikiem obliczeń według jawnego wzoru i służy do porządkowania kolejki spraw; nie jest oceną podmiotu.</p>
+    <ol>${dossier.keyFindings.slice(0, KEY_FINDINGS_LIMIT).map((item) => `<li>${layerTag(item.layer, item.text)} ${esc(item.text)}</li>`).join('')}</ol>
+    ${
+      dossier.keyFindings.length > KEY_FINDINGS_LIMIT
+        ? `<p class="meta">Pozostałe ustalenia (${dossier.keyFindings.length - KEY_FINDINGS_LIMIT}) — w załącznikach i w pakiecie <code>report.json</code>.</p>`
+        : ''
+    }
+    <p class="meta">Priorytet sprawy: ${dossier.totals.priority}/100 — sposób wyliczenia w załączniku Z12.</p>
   </div>`;
 }
 
@@ -709,148 +716,7 @@ export function renderReportHtml(
     )
     .join('');
 
-  return `<!doctype html>
-<html lang="pl">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Raport OŁCyŚ — ${esc(caseSummary.name)}</title>
-<style>${STYLE}</style>
-</head>
-<body>
-<header>
-  <h1>Raport z analizy śladów kryptowalutowych</h1>
-  <p class="meta">Sprawa: <strong>${esc(caseSummary.name)}</strong> (nr ${esc(caseSummary.id)})<br>
-    Analiza nr ${esc(run.id)} — rozpoczęta ${dateTime(run.startedAt)}, zakończona ${dateTime(run.finishedAt)}, stan: ${esc(run.status)}<br>
-    Raport wygenerowano ${dateTime(context.generatedAt)} narzędziem OŁCyŚ w wersji ${esc(context.version)}</p>
-</header>
-
-${renderKeyFindings(dossier)}
-
-<h2>Ustalenie osoby</h2>
-${renderPersons(dossier)}
-
-${renderOrganizationSections(dossier)}
-
-<h2>Dowód spieniężenia</h2>
-${renderProofSection(dossier.cashOutProof)}
-
-${renderMixerSection(dossier.mixerExposure)}
-
-${renderScamSection((dossier as { scamWarnings?: Parameters<typeof renderScamSection>[0] }).scamWarnings)}
-
-${
-  dossier.unconfirmedAddresses.length > 0
-    ? `<h2>Adresy do potwierdzenia</h2>
-      ${inference(`<p>Adresy znalezione w analizie, których nie przypisano podmiotowi. Nie wchodzą do sum ani priorytetu; decyzja analityka „potwierdzony” dla profilu lub adresu przeliczy teczkę.</p>
-        <table>
-          <tr><th>Adres</th><th class="liczba">Wskaźnik osoba–adres</th><th>Dlaczego niepotwierdzony</th><th>Aktywność w blockchainie</th></tr>
-          ${dossier.unconfirmedAddresses
-            .map(
-              (item) => `<tr><td class="mono">${esc(item.address)}<br><span class="meta">${esc(NETWORK_LABEL[item.network] ?? item.network)}; źródła: ${item.sources.map((source) => link(source.url, source.service)).join(', ')}</span></td>
-                <td class="liczba">${item.personAddressProbability}/100</td>
-                <td><ul>${item.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul></td>
-                <td>${
-                  item.chain
-                    ? `przelewów: ${item.chain.transfers}; otrzymano ${esc(amount(item.chain.totalReceived))}, wysłano ${esc(amount(item.chain.totalSent))} ${esc(item.chain.asset)}; usługi: ${esc(item.chain.services.join(', ') || 'brak')}; ścieżek do usług: ${item.chain.trails}`
-                    : 'nie analizowano'
-                }</td></tr>`,
-            )
-            .join('')}
-        </table>`)}`
-    : ''
-}
-
-<h2>Powiązania z giełdami, portfelami i usługami</h2>
-${renderServiceSection(dossier.serviceLinks)}
-
-<h2>Odpowiedzi usług (dokumenty spoza OSINT)</h2>
-${renderServiceReplies(dossier)}
-
-${renderIndicatorSections(dossier.indicators, dossier.persons)}
-
-${renderBusinessSection(dossier.indicators?.businessActivity)}
-
-<h2>Jak czytać ten raport</h2>
-${renderMethodologyBox()}
-<p>Każda informacja należy do jednej z trzech warstw. Warstwy są oznaczone etykietą i rodzajem obramowania:</p>
-${fact('<p>Informacja pobrana wprost z publicznego źródła lub z blockchaina. Można ją sprawdzić pod podanym adresem; skrót SHA-256 pozwala potwierdzić, że zapisana kopia treści nie została zmieniona.</p>')}
-${calc('<p>Liczba policzona przez narzędzie według jawnych reguł (np. Wskaźnik Pewności, suma w PLN, priorytet). Każdy krok obliczenia jest pokazany i można go powtórzyć.</p>')}
-${inference('<p>Interpretacja narzędzia (np. ustalenie osoby, wskaźnik wypłaty, osoby powiązane). Nie jest ustaleniem faktycznym — wymaga potwierdzenia przez analityka, np. danymi od giełdy lub innego pośrednika.</p>')}
-${(dossier.serviceReplies ?? []).length > 0 ? external('<p>Informacja z odpowiedzi usługi wprowadzonej przez analityka. Nie pochodzi ze źródeł publicznych ani z blockchaina i nie jest wnioskiem narzędzia; za dokument odpowiada analityk, a jego wycofanie przywraca wynik sprzed wprowadzenia.</p>') : ''}
-
-<h2>1. Dane wejściowe i parametry wyszukiwania</h2>
-${fact(`
-  <h4>Identyfikatory podmiotu podane przez analityka</h4>
-  <table>
-    <tr><th>Rodzaj</th><th>Wartość</th></tr>
-    ${run.query.identifiers.map((identifier) => `<tr><td>${esc(IDENTIFIER_LABEL[identifier.type] ?? identifier.type)}</td><td>${esc(identifier.value)}</td></tr>`).join('')}
-  </table>
-  ${
-    discovered.length > 0
-      ? `<h4>Identyfikatory odkryte w toku analizy — ścieżka dojścia</h4>
-        <table>
-          <tr><th>Krok</th><th>Identyfikator</th><th>Wskazany w publikacji</th><th>Do której doprowadził</th><th>Wyszukiwany dalej</th></tr>
-          ${discovered
-            .map(
-              (item) => `<tr><td>${item.step ?? '—'}</td><td>${esc(IDENTIFIER_LABEL[item.identifier.type] ?? item.identifier.type)} „${esc(item.identifier.value)}”</td>
-                <td>${item.sourceUrl ? link(item.sourceUrl) : '—'}</td>
-                <td>${item.via ? `${esc(IDENTIFIER_LABEL[item.via.type] ?? item.via.type)} „${esc(item.via.value)}”` : '—'}</td>
-                <td>${item.followed ? 'tak' : 'nie (limit kroków lub liczby identyfikatorów)'}</td></tr>`,
-            )
-            .join('')}
-        </table>`
-      : ''
-  }
-  <h4>Przeszukane źródła (łączniki)</h4>
-  <table>
-    <tr><th>Źródło</th><th>Usługa</th><th>Co i jak jest przeszukiwane</th></tr>
-    ${usedConnectors.map((connector) => `<tr><td>${esc(connector.label)}<br><code>${esc(connector.id)}</code></td><td>${esc(connector.service)}</td><td>${esc(connector.description)}</td></tr>`).join('')}
-  </table>
-  <p class="meta">Wyszukiwanie obejmuje identyfikatory wejściowe oraz kolejne kroki dla identyfikatorów odkrytych w znalezionych profilach
-    (z limitem kroków i liczby identyfikatorów). Przeszukiwane są wyłącznie źródła publiczne, bez logowania i bez obchodzenia zabezpieczeń.</p>`)}
-
-<h2>2. Podsumowanie wyników</h2>
-${calc(
-  findings.length === 0
-    ? '<p>W przeszukanych źródłach nie znaleziono żadnego adresu kryptowalutowego.</p>'
-    : `<p>Znalezione adresy: ${findings.length}, w tym odrzucone: ${rejected.length}. Wyniki liczone względem osoby głównej, z uwzględnieniem decyzji analityka.</p>
-      <table>
-        <tr><th>Adres</th><th>Sieć</th><th class="liczba">Wskaźnik Pewności</th><th>Poziom</th><th class="liczba">Ślady</th><th>Klasyfikacja</th></tr>
-        ${summaryRows}
-      </table>
-      <p class="meta">Poziomy: ${[...context.rules.tiers].sort((a, b) => b.min - a.min).map((tier) => `od ${tier.min}% — ${esc(tier.label)}`).join('; ')}.</p>`,
-)}
-
-<h2>3. Profile i ocena tożsamości</h2>
-${renderProfiles(dossier)}
-
-<h2>4. Adresy powiązane z podmiotem</h2>
-${accepted.length === 0 ? '<p>Brak adresów, które można rozważać jako powiązane z podmiotem.</p>' : accepted.map((finding, index) => renderFinding(finding, index + 1, context.rules)).join('')}
-
-<h2>Ścieżka dowodowa</h2>
-<p>Dla każdego adresu powiązanego z podmiotem: od identyfikatora wejściowego, przez konto i publikację, do adresu, ustaleń z blockchaina i usługi.</p>
-${renderEvidencePaths(dossier)}
-
-<h2>5. Adresy odrzucone</h2>
-<p>Adresy znalezione przy podmiocie, których <strong>nie</strong> przypisuje się mu, ponieważ należą do pośredników lub są współdzielone
-  (giełdy, smart kontrakty, zbiórki, miksery, instytucje) albo zostały odrzucone decyzją analityka.</p>
-${rejected.length === 0 ? '<p>Żaden adres nie został odrzucony.</p>' : rejected.map(renderRejected).join('')}
-
-<h2>6. Podmiany adresów w czasie</h2>
-${
-  replacements.length === 0
-    ? '<p>Nie stwierdzono podmiany adresu między wersją archiwalną a bieżącą żadnej publikacji.</p>'
-    : fact(`<p>W tym samym miejscu publikacji starsza wersja zawierała inny adres niż nowsza:</p>
-        <table>
-          <tr><th>Publikacja</th><th>Adres wcześniejszy</th><th>Stan z</th><th>Adres późniejszy</th><th>Stan z</th></tr>
-          ${replacements.map((item) => `<tr><td>${link(item.url)}</td><td class="mono">${esc(item.from)}</td><td>${dateTime(item.archivedAt)}</td><td class="mono">${esc(item.to)}</td><td>${dateTime(item.observedAt)}</td></tr>`).join('')}
-        </table>`) +
-      inference('<p>Podmiana adresu w profilu może oznaczać zmianę portfela przez podmiot albo próbę ukrycia wcześniejszego adresu. Oba adresy warto analizować łącznie.</p>')
-}
-
-${
-  dossier.seizures.length + dossier.fundingSources.length > 0
+  const seizureHtml = dossier.seizures.length + dossier.fundingSources.length > 0
     ? `<h2>Zajęcie i pochodzenie środków</h2>
       ${
         dossier.seizures.length > 0
@@ -881,14 +747,72 @@ ${
               .join('')}</table>`)
           : ''
       }`
+    : '';
+  const risks = [
+    renderMixerSection(dossier.mixerExposure),
+    renderScamSection((dossier as { scamWarnings?: Parameters<typeof renderScamSection>[0] }).scamWarnings),
+    seizureHtml,
+  ]
+    .join('\n')
+    .trim();
+
+  return `<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raport OŁCyŚ — ${esc(caseSummary.name)}</title>
+<style>${STYLE}${SYNTHESIS_STYLE}</style>
+</head>
+<body>
+<header>
+  <h1>Raport z analizy śladów kryptowalutowych</h1>
+  <p class="meta">Sprawa: <strong>${esc(caseSummary.name)}</strong> (nr ${esc(caseSummary.id)})<br>
+    Analiza nr ${esc(run.id)} — rozpoczęta ${dateTime(run.startedAt)}, zakończona ${dateTime(run.finishedAt)}, stan: ${esc(run.status)}<br>
+    Raport wygenerowano ${dateTime(context.generatedAt)} narzędziem OŁCyŚ w wersji ${esc(context.version)}</p>
+</header>
+
+${renderSynthesis(dossier)}
+
+<ol class="spis">
+  <li><a href="#synteza">Synteza sprawy</a></li>
+  <li><a href="#ustalenia">Kluczowe ustalenia</a></li>
+  <li><a href="#osoba">Ustalenie osoby</a></li>
+  <li><a href="#pieniadze">Dowód spieniężenia i usługi</a></li>
+  ${risks ? '<li><a href="#alerty">Alerty ryzyka</a></li>' : ''}
+  ${dossier.linkedIdentities.length > 0 ? '<li><a href="#tozsamosci">Powiązane tożsamości</a></li>' : ''}
+  <li><a href="#zalaczniki">Załączniki Z1–Z12: szczegóły, dowody, źródła</a></li>
+</ol>
+
+<h2 class="czesc">Część I — Najważniejsze ustalenia</h2>
+
+<div id="ustalenia">${renderKeyFindings(dossier)}</div>
+
+<h2 id="osoba">Ustalenie osoby</h2>
+${renderPersons(dossier)}
+
+${renderOrganizationSections(dossier)}
+
+<h2 id="pieniadze">Dowód spieniężenia</h2>
+${renderProofSection(dossier.cashOutProof)}
+
+<h2>Powiązania z giełdami, portfelami i usługami</h2>
+${renderServiceSection(dossier.serviceLinks)}
+
+${
+  (dossier.serviceReplies ?? []).length > 0
+    ? `<h2>Odpowiedzi usług (dokumenty spoza OSINT)</h2>
+${renderServiceReplies(dossier)}`
     : ''
 }
 
-<h2>Powiązane tożsamości i ścieżki dojścia</h2>
+${risks ? `<div id="alerty">${risks}</div>` : ''}
+
 ${
   dossier.linkedIdentities.length === 0
-    ? `<p>Rozszerzanie analizy (wspólne cechy profili, ten sam adres, adresy powiązane w blockchainie) nie wskazało innych tożsamości. Słabe tropy niewykazane: ${dossier.weakLeadsHidden}.</p>`
-    : inference(`<p>Inne nazwy, dla których istnieją przesłanki wspólnego operatora z kontami podmiotu, oraz możliwe osoby bliskie lub podstawione.
+    ? ''
+    : `<h2 id="tozsamosci">Powiązane tożsamości i ścieżki dojścia</h2>
+    ${inference(`<p>Inne nazwy, dla których istnieją przesłanki wspólnego operatora z kontami podmiotu, oraz możliwe osoby bliskie lub podstawione.
         To hipotezy: żadna z tych tożsamości nie jest scalona z osobą główną — rozstrzyga analityk. Łączne szacunkowe wypłaty osoby głównej i tożsamości
         o relacji „prawdopodobnie ta sama osoba” (nazwa relacji, nie ustalenie): <strong>${esc(pln(dossier.totals.cashOutPlnTotalWithLikelySame))}</strong>
         (sama osoba główna: ${esc(pln(dossier.totals.cashOutPlnTotal))}).</p>
@@ -908,23 +832,132 @@ ${
             <p class="meta">${esc(identity.note)}</p>
           </div>`,
         )
-        .join('')}`)
+        .join('')}`)}`
 }
 
-<h2>7. Osoby powiązane</h2>
+<h2 class="czesc zalaczniki" id="zalaczniki">Część II — Załączniki</h2>
+<p class="zalacznik-wstep">Szczegóły potrzebne do weryfikacji i odtworzenia analizy: rozbicie wskaźników, pełne ślady, adresy odrzucone, źródła i dziennik.
+  Najważniejsze wnioski są w Części I.</p>
+
+${renderIndicatorSections(dossier.indicators, dossier.persons)}
+
+${renderBusinessSection(dossier.indicators?.businessActivity)}
+
+<h2>Z1. Adresy powiązane z podmiotem — szczegóły</h2>
+${calc(
+  findings.length === 0
+    ? '<p>W przeszukanych źródłach nie znaleziono żadnego adresu kryptowalutowego.</p>'
+    : `<p>Znalezione adresy: ${findings.length}, w tym odrzucone: ${rejected.length}. Wyniki liczone względem osoby głównej, z uwzględnieniem decyzji analityka.</p>
+      <table>
+        <tr><th>Adres</th><th>Sieć</th><th class="liczba">Wskaźnik Pewności</th><th>Poziom</th><th class="liczba">Ślady</th><th>Klasyfikacja</th></tr>
+        ${summaryRows}
+      </table>
+      <p class="meta">Poziomy: ${[...context.rules.tiers].sort((a, b) => b.min - a.min).map((tier) => `od ${tier.min}% — ${esc(tier.label)}`).join('; ')}.</p>`,
+)}
+${accepted.length === 0 ? '<p>Brak adresów, które można rozważać jako powiązane z podmiotem.</p>' : accepted.map((finding, index) => renderFinding(finding, index + 1, context.rules)).join('')}
+
+<h2>Z2. Ścieżka dowodowa</h2>
+<p>Dla każdego adresu powiązanego z podmiotem: od identyfikatora wejściowego, przez konto i publikację, do adresu, ustaleń z blockchaina i usługi.</p>
+${renderEvidencePaths(dossier)}
+
+<h2>Z3. Adresy odrzucone</h2>
+<p>Adresy znalezione przy podmiocie, których <strong>nie</strong> przypisuje się mu, ponieważ należą do pośredników lub są współdzielone
+  (giełdy, smart kontrakty, zbiórki, miksery, instytucje) albo zostały odrzucone decyzją analityka.</p>
+${rejected.length === 0 ? '<p>Żaden adres nie został odrzucony.</p>' : rejected.map(renderRejected).join('')}
+
+<h2>Z4. Adresy do potwierdzenia</h2>
+${
+  dossier.unconfirmedAddresses.length === 0
+    ? '<p>Brak adresów oczekujących na decyzję analityka.</p>'
+    : inference(`<p>Adresy znalezione w analizie, których nie przypisano podmiotowi. Nie wchodzą do sum ani priorytetu; decyzja analityka „potwierdzony” dla profilu lub adresu przeliczy teczkę.</p>
+        <table>
+          <tr><th>Adres</th><th class="liczba">Wskaźnik osoba–adres</th><th>Dlaczego niepotwierdzony</th><th>Aktywność w blockchainie</th></tr>
+          ${dossier.unconfirmedAddresses
+            .map(
+              (item) => `<tr><td class="mono">${esc(item.address)}<br><span class="meta">${esc(NETWORK_LABEL[item.network] ?? item.network)}; źródła: ${item.sources.map((source) => link(source.url, source.service)).join(', ')}</span></td>
+                <td class="liczba">${item.personAddressProbability}/100</td>
+                <td><ul>${item.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul></td>
+                <td>${
+                  item.chain
+                    ? `przelewów: ${item.chain.transfers}; otrzymano ${esc(amount(item.chain.totalReceived))}, wysłano ${esc(amount(item.chain.totalSent))} ${esc(item.chain.asset)}; usługi: ${esc(item.chain.services.join(', ') || 'brak')}; ścieżek do usług: ${item.chain.trails}`
+                    : 'nie analizowano'
+                }</td></tr>`,
+            )
+            .join('')}
+        </table>`)
+}
+
+<h2>Z5. Podmiany adresów w czasie</h2>
+${
+  replacements.length === 0
+    ? '<p>Nie stwierdzono podmiany adresu między wersją archiwalną a bieżącą żadnej publikacji.</p>'
+    : fact(`<p>W tym samym miejscu publikacji starsza wersja zawierała inny adres niż nowsza:</p>
+        <table>
+          <tr><th>Publikacja</th><th>Adres wcześniejszy</th><th>Stan z</th><th>Adres późniejszy</th><th>Stan z</th></tr>
+          ${replacements.map((item) => `<tr><td>${link(item.url)}</td><td class="mono">${esc(item.from)}</td><td>${dateTime(item.archivedAt)}</td><td class="mono">${esc(item.to)}</td><td>${dateTime(item.observedAt)}</td></tr>`).join('')}
+        </table>`) +
+      inference('<p>Podmiana adresu w profilu może oznaczać zmianę portfela przez podmiot albo próbę ukrycia wcześniejszego adresu. Oba adresy warto analizować łącznie.</p>')
+}
+
+<h2>Z6. Profile i ocena tożsamości</h2>
+${renderProfiles(dossier)}
+
+<h2>Z7. Osoby powiązane</h2>
 ${renderRelated(dossier)}
 
-<h2>8. Oś czasu</h2>
+<h2>Z8. Oś czasu</h2>
 ${renderTimeline(dossier)}
 
-<h2>9. Rejestr decyzji analityka</h2>
+<h2>Z9. Dane wejściowe i przeszukane źródła</h2>
+${fact(`
+  <h4>Identyfikatory podmiotu podane przez analityka</h4>
+  <table>
+    <tr><th>Rodzaj</th><th>Wartość</th></tr>
+    ${run.query.identifiers.map((identifier) => `<tr><td>${esc(IDENTIFIER_LABEL[identifier.type] ?? identifier.type)}</td><td>${esc(identifier.value)}</td></tr>`).join('')}
+  </table>
+  ${
+    discovered.length > 0
+      ? `<h4>Identyfikatory odkryte w toku analizy — ścieżka dojścia</h4>
+        <table>
+          <tr><th>Krok</th><th>Identyfikator</th><th>Wskazany w publikacji</th><th>Do której doprowadził</th><th>Wyszukiwany dalej</th></tr>
+          ${discovered
+            .map(
+              (item) => `<tr><td>${item.step ?? '—'}</td><td>${esc(IDENTIFIER_LABEL[item.identifier.type] ?? item.identifier.type)} „${esc(item.identifier.value)}”</td>
+                <td>${item.sourceUrl ? link(item.sourceUrl) : '—'}</td>
+                <td>${item.via ? `${esc(IDENTIFIER_LABEL[item.via.type] ?? item.via.type)} „${esc(item.via.value)}”` : '—'}</td>
+                <td>${item.followed ? 'tak' : 'nie (limit kroków lub liczby identyfikatorów)'}</td></tr>`,
+            )
+            .join('')}
+        </table>`
+      : ''
+  }
+  <h4>Przeszukane źródła (${usedConnectors.length})</h4>
+  <table class="lista-zrodel">
+    <tr><th>Źródło</th><th>Usługa</th><th>Co i jak jest przeszukiwane</th></tr>
+    ${usedConnectors.map((connector) => `<tr><td>${esc(connector.label)}<br><code>${esc(connector.id)}</code></td><td>${esc(connector.service)}</td><td>${esc(connector.description)}</td></tr>`).join('')}
+  </table>
+  <p class="meta">Wyszukiwanie obejmuje identyfikatory wejściowe oraz kolejne kroki dla identyfikatorów odkrytych w znalezionych profilach
+    (z limitem kroków i liczby identyfikatorów). Przeszukiwane są wyłącznie źródła publiczne, bez logowania i bez obchodzenia zabezpieczeń.</p>`)}
+
+<h2>Z10. Rejestr decyzji analityka</h2>
 ${renderDecisions(dossier)}
 
-<h2>10. Dziennik przebiegu analizy</h2>
-<table>
+<h2>Z11. Dziennik przebiegu analizy</h2>
+<table class="dziennik">
   <tr><th>Czas</th><th>Zdarzenie</th></tr>
   ${run.log.map((entry) => `<tr><td class="meta" style="white-space:nowrap">${dateTime(entry.time)}</td><td>${esc(entry.message)}</td></tr>`).join('')}
 </table>
+
+<h2>Z12. Jak czytać ten raport i jak liczony jest priorytet</h2>
+${renderMethodologyBox()}
+<p>Każda informacja należy do jednej z warstw. Warstwy są oznaczone etykietą i rodzajem obramowania:</p>
+${fact('<p>Informacja pobrana wprost z publicznego źródła lub z blockchaina. Można ją sprawdzić pod podanym adresem; skrót SHA-256 pozwala potwierdzić, że zapisana kopia treści nie została zmieniona.</p>')}
+${calc('<p>Liczba policzona przez narzędzie według jawnych reguł (np. Wskaźnik Pewności, suma w PLN, priorytet). Każdy krok obliczenia jest pokazany i można go powtórzyć.</p>')}
+${inference('<p>Interpretacja narzędzia (np. ustalenie osoby, wskaźnik wypłaty, osoby powiązane). Nie jest ustaleniem faktycznym — wymaga potwierdzenia przez analityka, np. danymi od giełdy lub innego pośrednika.</p>')}
+${(dossier.serviceReplies ?? []).length > 0 ? external('<p>Informacja z odpowiedzi usługi wprowadzonej przez analityka. Nie pochodzi ze źródeł publicznych ani z blockchaina i nie jest wnioskiem narzędzia; za dokument odpowiada analityk, a jego wycofanie przywraca wynik sprzed wprowadzenia.</p>') : ''}
+<h4>Priorytet sprawy: ${dossier.totals.priority}/100</h4>
+<ul>${dossier.totals.priorityReasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>
+<p class="meta">Priorytet jest wynikiem obliczeń według jawnego wzoru i służy do porządkowania kolejki spraw; nie jest oceną podmiotu.</p>
 
 <div class="zastrzezenie">
   <strong>Zastrzeżenie.</strong> Raport jest materiałem analitycznym wspierającym pracę analityka, a nie rozstrzygnięciem.

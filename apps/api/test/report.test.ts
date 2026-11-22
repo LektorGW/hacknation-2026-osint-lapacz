@@ -193,7 +193,7 @@ test('raport: złośliwa nazwa konta i wyjaśnienie są escapowane', async () =>
 test('raport: ścieżka dowodowa adresu od identyfikatora do usługi', async () => {
   const base = await baseDossier();
   const html = render(base);
-  const section = html.slice(html.indexOf('<h2>Ścieżka dowodowa</h2>'), html.indexOf('<h2>5. Adresy odrzucone</h2>'));
+  const section = html.slice(html.indexOf('<h2>Z2. Ścieżka dowodowa</h2>'), html.indexOf('<h2>Z3. Adresy odrzucone</h2>'));
   for (const expected of [
     '1. Identyfikator wejściowy',
     'pseudonim (nick) „krypto_janek”',
@@ -219,7 +219,7 @@ test('raport: rejestr decyzji pokazuje decyzję wycofaną i decyzję o parze kon
     { ...decision('profile', GIT, 'confirmed'), target: 'link' as const, key: `${FORUM}<->${GIT}` },
   ];
   const html = render({ ...base, decisions });
-  const section = html.slice(html.indexOf('9. Rejestr decyzji analityka'));
+  const section = html.slice(html.indexOf('Z10. Rejestr decyzji analityka'));
   assert.ok(section.includes('<strong>wycofana</strong> 2026-11-21 11:30:00 UTC przez: kierownik'));
   assert.ok(section.includes('hipoteza wspólnego operatora (para kont)'));
   assert.ok(section.includes('Decyzji w rejestrze: 2, w tym wycofanych: 1.'));
@@ -273,4 +273,22 @@ test('raport z teczki: wskaźniki policzone przez analizę trafiają do raportu'
     for (const item of link.indicator.components) assert.ok(html.includes(`<code>${esc(item.rule)}</code>`), `brak reguły ${item.rule}`);
   }
   for (const item of base.indicators.cashOut) assert.ok(html.includes(esc(item.statement)));
+});
+
+test('raport: synteza na pierwszej stronie, potem Część I i załączniki', async () => {
+  const base = await baseDossier();
+  const html = render(base);
+  const synthesis = html.indexOf('<h2>Synteza sprawy</h2>');
+  const partOne = html.indexOf('Część I — Najważniejsze ustalenia');
+  const appendix = html.indexOf('Część II — Załączniki');
+  assert.ok(synthesis > 0 && synthesis < partOne && partOne < appendix, 'kolejność: synteza → Część I → załączniki');
+  const box = html.slice(synthesis, partOne);
+  for (const label of ['<th>Kto</th>', '<th>Adresy krypto</th>', '<th>Pieniądze</th>', '<th>Ryzyko</th>', '<th>Priorytet</th>']) {
+    assert.ok(box.includes(label), `synteza powinna mieć wiersz ${label}`);
+  }
+  assert.ok(box.includes('Giełda Testowa'), 'synteza wymienia usługę, do której trafiły środki');
+  assert.ok(box.includes('niepotwierdzona — potwierdza ją tylko usługa'), 'wypłata na rachunek bez odpowiedzi usługi jest hipotezą');
+  // Szczegóły (dziennik, ścieżka dowodowa) są w załącznikach, nie w Części I.
+  assert.ok(html.indexOf('Z11. Dziennik przebiegu analizy') > appendix);
+  assert.ok(html.indexOf('<h2>Z2. Ścieżka dowodowa</h2>') > appendix);
 });
