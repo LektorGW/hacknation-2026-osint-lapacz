@@ -16,9 +16,11 @@ import { normalize } from '../identity.ts';
 import { linkedAddressesOf } from '../pivot.ts';
 import { accountKey, addressNodeKey, canonicalValue, documentKey, domainOf, edgeFrom, identifierNode, organizationKey, phoneDigits, sanctionsEntryKey } from './entities.ts';
 import { LEGAL, isSyntheticConnector, searchConnector } from './expander.ts';
+import { roundTripExpander } from './roundtrip-expander.ts';
+import { socialExpander } from './social-expander.ts';
 import type { ExpandContext, Expander } from './expander.ts';
 import type { SanctionsHit, SanctionsQuery } from './sanctions.ts';
-import type { EdgeDraft, Entity, EntityMeta, ExpanderOutput, ExpansionSourceError, IdentifierKind, NetworkEdge, NetworkNode } from './types.ts';
+import type { EdgeDraft, Entity, EntityMeta, ExpanderOutput, ExpansionSourceError, ExpansionStop, IdentifierKind, NetworkEdge, NetworkNode } from './types.ts';
 
 /** Najwyżej tyle nowych bytów z jednego ekspandera dla jednego bytu. */
 export const PER_EXPANDER_LIMIT = 12;
@@ -718,7 +720,14 @@ const organizationRegistries: Expander = {
 
 // ---------- 11. Osoba w roli → inne organizacje ----------
 
-const wikidataOf = (entity: Entity) => entity.meta.registry?.wikidata ?? /^person:wikidata:(Q\d+)/.exec(entity.key)?.[1];
+// Osoby w rolach z teczki mają klucz `regperson:Q…` (ten sam co węzeł osoby publicznej) — też są rozwijalne.
+const wikidataOf = (entity: Entity) => entity.meta.registry?.wikidata ?? /^(?:person:wikidata:|regperson:)(Q\d+)(?![\w:])/.exec(entity.key)?.[1];
+
+/** Osoba publiczna dopasowana tylko nazwiskiem (albo jedna z kilku) — rozwinięcie dopiero po decyzji analityka. */
+const unconfirmedFigure = (entity: Entity): ExpansionStop | null =>
+  entity.meta.publicFigure === 'name_only' || entity.meta.publicFigure === 'ambiguous'
+    ? { reason: 'not_applicable', detail: `„${entity.label}”: dopasowanie do wpisu Wikidata opiera się tylko na imieniu i nazwisku — najpierw potwierdź je (decyzja analityka), potem rozwijaj.` }
+    : null;
 
 const personOrganizations: Expander = {
   id: 'osoba-organizacje',
@@ -730,12 +739,13 @@ const personOrganizations: Expander = {
   produces: ['holds_role'],
   applies: (entity) => entity.kind === 'person' && Boolean(wikidataOf(entity)),
   cost: () => 1,
-  unavailable: (_entity, context) =>
-    !context.live
+  unavailable: (entity, context) =>
+    unconfirmedFigure(entity) ??
+    (!context.live
       ? { reason: 'not_live', detail: 'Zapytanie do Wikidata wymaga włączenia źródeł publicznych (ENABLE_LIVE).' }
       : !context.organizations?.rolesOf
         ? { reason: 'no_provider', detail: 'Moduł sieci organizacji nie jest dostępny.' }
-        : null,
+        : null),
   async run(entity, context) {
     const out = collector(this.id);
     let used = 0;
@@ -751,6 +761,65 @@ const personOrganizations: Expander = {
       out.count(used);
     }
     if (out.size === 0) out.note({ reason: 'no_results', detail: `${entity.label}: rejestr nie wskazał innych organizacji.` });
+    return out.done();
+  },
+};
+
+// ---------- 11a. Osoba (Wikidata) → relacje rodzinne — WYŁĄCZNIE na żądanie analityka ----------
+
+const FAMILY_CAVEAT = 'Relacja rodzinna według Wikidata nie jest dowodem czegokolwiek — ani wspólnych interesów, ani udziału w czynach, ani własności adresu.';
+
+const personFamily: Expander = {
+  id: 'osoba-rodzina',
+  group: 'family',
+  label: 'Osoba → relacje rodzinne (Wikidata)',
+  reads: 'Małżonek, rodzice, rodzeństwo i dzieci wskazani we wpisie osoby w Wikidata — tylko osoby, które same mają wpis w Wikidata.',
+  provider: 'Wikidata (wbgetentities) przez moduł osoby publicznej',
+  legalBasis: LEGAL.registries,
+  produces: ['family_relation'],
+  applies: (entity) => entity.kind === 'person' && Boolean(wikidataOf(entity)),
+  cost: () => 2,
+  unavailable: (entity, context) =>
+    unconfirmedFigure(entity) ??
+    (!context.live
+      ? { reason: 'not_live', detail: 'Zapytanie do Wikidata wymaga włączenia źródeł publicznych (ENABLE_LIVE).' }
+      : !context.organizations?.familyOf
+        ? { reason: 'no_provider', detail: 'Moduł osoby publicznej nie jest dostępny.' }
+        : null),
+  async run(entity, context) {
+    const out = collector(this.id);
+    let used = 0;
+    try {
+      const relations = await context.organizations!.familyOf!({ wikidata: wikidataOf(entity)!, name: entity.label }, { reserve: () => (context.reserve() ? (used++, true) : false), log: context.log, ...(context.signal ? { signal: context.signal } : {}) });
+      for (const relation of relations.slice(0, PER_EXPANDER_LIMIT)) {
+        const url = `https://www.wikidata.org/wiki/${relation.wikidataId}`;
+        const to = out.node({
+          id: `person:wikidata:${relation.wikidataId}`,
+          kind: 'person',
+          label: relation.label,
+          sublabel: `relacja rodzinna według Wikidata: ${relation.relation}${relation.description ? ` · ${relation.description}` : ''}`,
+          status: 'source_fact',
+          entityKind: 'person',
+          url,
+          meta: { registry: { wikidata: relation.wikidataId } },
+        });
+        out.edge({
+          from: entity.key,
+          to,
+          relation: 'family_relation',
+          kind: 'related',
+          label: `relacja rodzinna według Wikidata: ${relation.relation} (${relation.property})`,
+          explanation: `Według Wikidata ${relation.label} — ${relation.relation} osoby ${entity.label}. ${FAMILY_CAVEAT}`,
+          evidence: [{ kind: 'url', value: relation.source }, { kind: 'url', value: url }],
+          retrievedAt: relation.retrievedAt,
+        });
+      }
+    } catch (error) {
+      out.error('Wikidata', error);
+    } finally {
+      out.count(used);
+    }
+    if (out.size === 0) out.note({ reason: 'no_results', detail: `${entity.label}: Wikidata nie wskazuje relacji rodzinnych z osobami, które mają własny wpis.` });
     return out.done();
   },
 };
@@ -849,7 +918,7 @@ const sanctions: Expander = {
 const providersFor = (entity: Entity, context: ExpandContext) =>
   context.sanctions.filter((provider) => (provider.syntheticOnly ? Boolean(entity.meta.synthetic || context.synthetic) : true) && (!provider.outbound || context.live));
 
-/** Wszystkie ekspandery w kolejności wykonania. */
+/** Wszystkie ekspandery w kolejności wykonania (obieg środków — tylko na żądanie, grupa `roundtrip`). */
 export const EXPANDERS: Expander[] = [
   accountIdentifiers,
   accountLinks,
@@ -862,5 +931,8 @@ export const EXPANDERS: Expander[] = [
   documentMentions,
   organizationRegistries,
   personOrganizations,
+  personFamily,
   sanctions,
+  roundTripExpander,
+  socialExpander,
 ];

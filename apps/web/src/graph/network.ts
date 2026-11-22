@@ -4,8 +4,12 @@ import type { ClaimStatus, GraphEdge, GraphNode } from '@olcys/core';
 import { PATH_LEVEL_LABEL, describePath, linkToSubjectLabel, strongestPath } from '../../../../packages/core/src/network-path.ts';
 import type { PathEdge, StrengthPath } from '../../../../packages/core/src/network-path.ts';
 import type { EvidencePath } from './investigation.ts';
+import type { RoundTripReport, RoundTripRequest } from './roundtrip.ts';
 
-export type RelationGroup = 'accounts' | 'flows' | 'organizations' | 'sanctions' | 'publications';
+export type RelationGroup = 'accounts' | 'flows' | 'organizations' | 'sanctions' | 'publications' | 'roundtrip' | 'family' | 'social';
+
+/** Grupy wyłącznie na wyraźne żądanie — nigdy nie są zaznaczone domyślnie. */
+export const ON_DEMAND_GROUPS: ReadonlySet<RelationGroup> = new Set<RelationGroup>(['roundtrip', 'family', 'social']);
 
 export const RELATION_GROUP_LABEL: Record<RelationGroup, string> = {
   accounts: 'konta i identyfikatory',
@@ -13,6 +17,9 @@ export const RELATION_GROUP_LABEL: Record<RelationGroup, string> = {
   organizations: 'organizacje i role',
   sanctions: 'listy sankcyjne',
   publications: 'publikacje',
+  roundtrip: 'obieg środków (ping-pong)',
+  family: 'relacje rodzinne (Wikidata) — tylko na żądanie',
+  social: 'relacje w serwisach (GitHub: organizacje, obserwujący, współtwórcy) — tylko na żądanie',
 };
 
 export const RELATION_GROUP_ORDER: RelationGroup[] = ['accounts', 'flows', 'organizations', 'sanctions', 'publications'];
@@ -70,7 +77,8 @@ export interface ExpansionRecord {
   startedAt: string;
   finishedAt: string;
   requestedBy: string;
-  results: { nodes: NetworkNode[]; edges: NetworkEdge[]; runs: ExpanderRun[] };
+  /** `roundtrip` — wynik „Szukaj dalej” (obieg środków), tylko w rozwinięciach tej grupy. */
+  results: { nodes: NetworkNode[]; edges: NetworkEdge[]; runs: ExpanderRun[]; roundtrip?: RoundTripReport };
   stops: ExpansionStop[];
   sourceErrors: { source: string; expander: string; message: string }[];
   runId?: string;
@@ -114,6 +122,8 @@ export interface NetworkPlan {
   items: PlanItem[];
   groups: { id: RelationGroup; label: string; cost: number; available: boolean; done: boolean }[];
   limits?: { defaultBudget: number; maxBudget: number; maxDepth: number };
+  /** „Szukaj dalej” (obieg środków) — dostępność dla adresu; brak u starszej usługi i dla innych bytów. */
+  roundtrip?: { available: boolean; reason?: string; limits?: { maxHops: number; maxBudget: number; maxWindowDays: number } };
 }
 
 export interface ExpandRequest {
@@ -122,6 +132,8 @@ export interface ExpandRequest {
   depth: number;
   budget?: number;
   force?: boolean;
+  /** Parametry „Szukaj dalej” (tylko z grupą `roundtrip`). */
+  roundtrip?: RoundTripRequest;
 }
 
 export interface ExpandResult {
@@ -222,6 +234,10 @@ export function riskBadgeOf(
 export function expansionSummary(record: ExpansionRecord, label: (id: string) => string): string {
   const fresh = record.results.nodes.filter((node) => !node.known).length;
   const groups = record.relations.length > 0 ? record.relations.map((group) => RELATION_GROUP_LABEL[group] ?? group).join(', ') : 'wszystkie grupy';
+  const roundtrip = record.results.roundtrip;
+  if (roundtrip) {
+    return `${label(record.nodeId)} — ${groups}; znalezione obiegi: ${roundtrip.cycles.length}; do ${roundtrip.params.maxHops} przelewów, okno ${roundtrip.params.windowDays} dni; nowych węzłów: ${fresh}; pobranych adresów: ${roundtrip.stats.addressesFetched}/${roundtrip.params.budget}`;
+  }
   return `${label(record.nodeId)} — ${groups}; ${record.depth === 1 ? '1 krok' : `${record.depth} kroki`}; nowych węzłów: ${fresh}, relacji: ${record.results.edges.length}; zapytań: ${record.budget.used}/${record.budget.limit}`;
 }
 

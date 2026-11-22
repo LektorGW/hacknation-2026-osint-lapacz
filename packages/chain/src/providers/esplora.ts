@@ -1,4 +1,5 @@
-// Bitcoin przez publiczne API Esplora (blockstream.info, mempool.space).
+// Bitcoin przez publiczne API Esplora (blockstream.info, mempool.space); Litecoin przez
+// litecoinspace.org (to samo API — fork mempool.space z zapleczem Esplora).
 // Najwyżej trzy żądania na adres: statystyki oraz dwie strony historii.
 // Opcjonalnie: etykiety portfeli z WalletExplorer i dalsza droga środków
 // (prawdopodobne adresy wpłat na giełdy) — w ramach wspólnego budżetu żądań.
@@ -60,9 +61,15 @@ function pauseFor(ms: number, signal?: AbortSignal): Promise<void> {
 }
 const SATOSHI = 1e8;
 
+/** Sieci głównej UTXO obsługiwane przez API Esplora. */
+export type EsploraNetwork = 'bitcoin' | 'litecoin';
+const NETWORK_NAME: Record<EsploraNetwork, string> = { bitcoin: 'Bitcoin', litecoin: 'Litecoin' };
+
 export interface EsploraProviderConfig extends ActivityOptions {
   id: string;
   label: string;
+  /** Sieć główna dostawcy; domyślnie `bitcoin`. Sieć testowa istnieje tylko dla Bitcoina. */
+  network?: EsploraNetwork;
   /** Adres strony eksploratora sieci głównej, np. `https://blockstream.info`. */
   siteUrl: string;
   /** Adres strony eksploratora sieci testowej; bez niego dostawca obsługuje tylko sieć główną. */
@@ -162,6 +169,7 @@ export function esploraTransfer(
 export class EsploraProvider implements ChainProvider {
   id: string;
   label: string;
+  network: EsploraNetwork;
   siteUrl: string;
   testnetSiteUrl: string | undefined;
   fetchImpl: FetchLike;
@@ -180,8 +188,9 @@ export class EsploraProvider implements ChainProvider {
   constructor(config: EsploraProviderConfig) {
     this.id = config.id;
     this.label = config.label;
+    this.network = config.network ?? 'bitcoin';
     this.siteUrl = config.siteUrl.replace(/\/+$/, '');
-    this.testnetSiteUrl = config.testnetSiteUrl?.replace(/\/+$/, '');
+    this.testnetSiteUrl = this.network === 'bitcoin' ? config.testnetSiteUrl?.replace(/\/+$/, '') : undefined;
     this.fetchImpl = config.fetch ?? fetch;
     this.options = {
       labels: config.labels,
@@ -203,7 +212,7 @@ export class EsploraProvider implements ChainProvider {
   }
 
   supports(network: Network): boolean {
-    return network === 'bitcoin' || (network === 'bitcoin-testnet' && this.testnetSiteUrl !== undefined);
+    return network === this.network || (network === 'bitcoin-testnet' && this.testnetSiteUrl !== undefined);
   }
 
   async getActivity(network: Network, address: string, context: ConnectorContext): Promise<ChainActivity> {
@@ -239,7 +248,7 @@ export class EsploraProvider implements ChainProvider {
     let historyRequests = stats.tx_count > 0 ? 1 : 0;
     let stoppedBy: string | undefined;
     let usedFallback = false;
-    const fallback = network === 'bitcoin' && this.fallbackSiteUrl !== site ? this.fallbackSiteUrl : undefined;
+    const fallback = network === this.network && this.fallbackSiteUrl !== site ? this.fallbackSiteUrl : undefined;
     while (lastPageSize === PAGE_SIZE && stats.tx_count > txs.length && (full || txs.length < TRANSACTION_LIMIT)) {
       const oldest = (txs.at(-1)!.status?.block_time ?? 0) * 1000;
       if (plan.since !== undefined && oldest < plan.since) {
@@ -311,21 +320,22 @@ export class EsploraProvider implements ChainProvider {
       if (received !== spent) flows.push({ asset, time, delta: (received - spent) / SATOSHI });
     }
 
+    const name = NETWORK_NAME[this.network];
     const limitations = [
-      'Bitcoin: kontrahent transakcji jest uproszczeniem — dla wypłat to odbiorca największej kwoty, ' +
+      `${name}: kontrahent transakcji jest uproszczeniem — dla wypłat to odbiorca największej kwoty, ` +
         'dla wpłat pierwszy adres nadawcy. Transakcja może mieć wielu nadawców i odbiorców; zweryfikuj ją w eksploratorze.',
     ];
     if (changeSkipped > 0) {
       limitations.push(
-        `Bitcoin: w ${changeSkipped} transakcjach wychodzących jedno z dwóch wyjść uznano HEURYSTYCZNIE za resztę wracającą do portfela nadawcy ` +
+        `${name}: w ${changeSkipped} transakcjach wychodzących jedno z dwóch wyjść uznano HEURYSTYCZNIE za resztę wracającą do portfela nadawcy ` +
           '(typ skryptu zgodny z wejściem albo „nieokrągła” kwota) — nie jest liczone jako płatność ani jako kontrahent. Kwota przelewu to wtedy samo wyjście-płatność; ' +
           'gdy heurystyka się myli, faktycznym odbiorcą jest drugie wyjście (do weryfikacji w eksploratorze).',
       );
     }
     if (multiRecipient.count > 0) {
       limitations.push(
-        `Bitcoin: ${multiRecipient.count} transakcji wychodzących miało więcej niż jednego odbiorcę. Na liście przelewów jest odbiorca największej kwoty z kwotą, która trafiła do niego; ` +
-          `pozostałe wyjścia (łącznie ${multiRecipient.satoshi / SATOSHI} BTC do ${multiRecipient.recipients} adresów) nie są pokazane jako osobne przelewy ani przypisane temu odbiorcy — ` +
+        `${name}: ${multiRecipient.count} transakcji wychodzących miało więcej niż jednego odbiorcę. Na liście przelewów jest odbiorca największej kwoty z kwotą, która trafiła do niego; ` +
+          `pozostałe wyjścia (łącznie ${multiRecipient.satoshi / SATOSHI} ${asset} do ${multiRecipient.recipients} adresów) nie są pokazane jako osobne przelewy ani przypisane temu odbiorcy — ` +
           'pełny podział jest w eksploratorze, a śledzenie środków bada wyjścia osobno.',
       );
     }
@@ -350,7 +360,14 @@ export class EsploraProvider implements ChainProvider {
     }
 
     // Etykiety i dalsza droga środków tylko w sieci głównej — monety testowe nie trafiają na giełdy.
-    const mainnet = network === 'bitcoin';
+    const mainnet = network === this.network;
+    if (mainnet && this.network === 'litecoin') {
+      limitations.push(
+        'Litecoin: zbiór etykiet narzędzia nie zawiera adresów giełd w sieci Litecoin, a WalletExplorer obejmuje tylko Bitcoin — ' +
+          'wypłata na giełdę jest rozpoznawana wyłącznie po etykiecie dodanej przez analityka (data/labels.local.json). ' +
+          'Klaster portfela (wspólne wejścia, adres reszty) i powiązane adresy liczone są tak jak dla Bitcoina.',
+      );
+    }
     const lookup = mainnet ? this.labelLookup : undefined;
     const follow = mainnet && this.followDeposits && (this.options.deposit?.enabled ?? DEFAULT_DEPOSIT_OPTIONS.enabled);
     let subjectLabel: string | undefined;
@@ -391,6 +408,7 @@ export class EsploraProvider implements ChainProvider {
         lookup,
         signal: context.signal,
         pageSize: PAGE_SIZE,
+        asset,
         txUrl: (txid) => `${site}/tx/${txid}`,
         fetchTxs: async (other) => {
           const page = await fetchJson<EsploraTx[]>(this.fetchImpl, `${site}/api/address/${encodeURIComponent(other)}/txs`, request);
@@ -479,7 +497,7 @@ export class EsploraProvider implements ChainProvider {
                 current: [{ asset, amount: (stats.funded_txo_sum - stats.spent_txo_sum) / SATOSHI }],
                 flows,
                 complete: complete ? [asset] : [],
-                networkName: 'Bitcoin',
+                networkName: name,
               },
             }
           : {}),

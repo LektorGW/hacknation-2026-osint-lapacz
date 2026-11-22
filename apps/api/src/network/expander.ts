@@ -2,7 +2,9 @@
 // przez jakiego dostawcę, na jakiej podstawie prawnej (odwołanie do docs/ZRODLA-PODSTAWA-PRAWNA.md),
 // ile kosztuje (liczba zapytań) i jakie relacje tworzy. Nic poza tym kontraktem nie wychodzi na zewnątrz.
 
+import type { RoundTripParams, RoundTripProgress } from '@olcys/chain';
 import type { ChainProvider, Finding, NetworkRelation, ProfileCard, SourceConnector } from '@olcys/core';
+import type { SocialGraphProvider } from '@olcys/sources';
 import type { ActivityResolver } from '../analysis.ts';
 import type { CapturedDocument } from '../analysis.ts';
 import type { CorpusDocument } from '../storage.ts';
@@ -31,6 +33,8 @@ export interface ExpandContext {
   rdap?: RdapClient;
   organizations?: OrganizationProvider;
   sanctions: SanctionsProvider[];
+  /** Dostawcy relacji kont w serwisach z kodem (grupa `social`, tylko na żądanie); brak = droga niedostępna. */
+  social?: SocialGraphProvider[];
   /** Węzły znane w chwili rozwijania (teczka, wcześniejsze rozwinięcia i bieżące) — do wzajemnych odnośników. */
   nodes: Map<string, NetworkNode>;
   /** Sprawa oparta wyłącznie na danych demonstracyjnych (piaskownica, laboratorium). */
@@ -40,6 +44,10 @@ export interface ExpandContext {
   now: () => Date;
   log: (message: string) => void;
   signal?: AbortSignal;
+  /** Parametry „Szukaj dalej” (obieg środków): limit kroków, budżet pobrań, okno czasu. */
+  roundtrip?: Partial<RoundTripParams>;
+  /** Postęp wyszukiwania obiegu (pobrane adresy, głębokość, znalezione obiegi). */
+  onRoundTripProgress?: (progress: RoundTripProgress) => void;
 }
 
 export interface Expander {

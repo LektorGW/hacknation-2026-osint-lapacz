@@ -20,7 +20,7 @@ export function edgeStatus(edge: Pick<GraphEdge, 'status' | 'inferred'>): ClaimS
 /** Warstwa relacji: przepływy blockchain rysujemy osobno od powiązań tożsamości. */
 export function edgeLayer(edge: Pick<GraphEdge, 'layer' | 'kind'>): GraphLayer {
   if (edge.layer === 'chain' || edge.layer === 'identity') return edge.layer;
-  return edge.kind === 'transfer' || edge.kind === 'cash_out' ? 'chain' : 'identity';
+  return edge.kind === 'transfer' || edge.kind === 'cash_out' || edge.kind === 'payment' ? 'chain' : 'identity';
 }
 
 const HYPOTHESIS_BY_DEFAULT: GraphNodeKind[] = ['operator', 'person'];

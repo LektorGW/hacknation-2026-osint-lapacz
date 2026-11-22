@@ -6,6 +6,7 @@
 // (tabela `network_expansions`): kto, kiedy, co rozwinął, jakie źródła odpowiedziały, z jakimi dowodami.
 
 import type { ClaimStatus, EvidenceRef, GraphEdge, GraphNode, NetworkRelation } from '@olcys/core';
+import type { RoundTripCycle, RoundTripResult } from '@olcys/chain';
 
 /** Rodzaje bytów rozwijanej sieci. */
 export type EntityKind = 'subject' | 'person' | 'organization' | 'account' | 'identifier' | 'crypto_address' | 'service' | 'document';
@@ -14,7 +15,7 @@ export type EntityKind = 'subject' | 'person' | 'organization' | 'account' | 'id
 export type IdentifierKind = 'email' | 'phone' | 'nick' | 'domain' | 'url' | 'messenger' | 'name' | 'ens';
 
 /** Grupy relacji pokazywane analitykowi jako pola wyboru przy „Rozwiń”. */
-export type RelationGroup = 'accounts' | 'flows' | 'organizations' | 'sanctions' | 'publications';
+export type RelationGroup = 'accounts' | 'flows' | 'organizations' | 'sanctions' | 'publications' | 'roundtrip' | 'family' | 'social';
 
 export const RELATION_GROUPS: { id: RelationGroup; label: string }[] = [
   { id: 'accounts', label: 'konta i identyfikatory' },
@@ -22,7 +23,29 @@ export const RELATION_GROUPS: { id: RelationGroup; label: string }[] = [
   { id: 'organizations', label: 'organizacje i role' },
   { id: 'sanctions', label: 'listy sankcyjne' },
   { id: 'publications', label: 'publikacje' },
+  // Tylko na żądanie (przycisk „Szukaj dalej” przy adresie) — nie wchodzi do „wszystkich grup”.
+  { id: 'roundtrip', label: 'obieg środków (ping-pong)' },
+  // Tylko na żądanie analityka (osoby z wpisem w Wikidata) — nigdy automatycznie.
+  { id: 'family', label: 'relacje rodzinne (Wikidata)' },
+  // Tylko na żądanie analityka (konto w serwisie z kodem) — nie wchodzi do „wszystkich grup”.
+  { id: 'social', label: 'relacje w serwisach (GitHub: organizacje, obserwujący, współtwórcy)' },
 ];
+
+/** Grupy rozwijane, gdy analityk nie wskazał żadnej (obieg środków jest kosztowny i tylko na żądanie). */
+export const DEFAULT_RELATION_GROUPS: RelationGroup[] = ['accounts', 'flows', 'organizations', 'sanctions', 'publications'];
+
+/** Obieg w zapisie rozwinięcia: wynik wyszukiwania + klucze węzłów i krawędzi sieci do podświetlenia ścieżki. */
+export interface RoundTripCycleView extends RoundTripCycle {
+  nodeIds: string[];
+  edgeIds: string[];
+}
+
+/** Wynik „Szukaj dalej” (obieg środków) zapisany w rozwinięciu — odtwarzalny i wycofywalny razem z nim. */
+export interface RoundTripReport extends Omit<RoundTripResult, 'cycles'> {
+  /** Węzeł sieci, od którego szukano (adres badany). */
+  anchor: string;
+  cycles: RoundTripCycleView[];
+}
 
 /** Dodatkowe dane bytu potrzebne do kolejnych rozwinięć (np. atrybuty konta z jego publikacji). */
 export interface EntityMeta {
@@ -42,6 +65,8 @@ export interface EntityMeta {
   synthetic?: boolean;
   /** Byt figuruje na liście sankcyjnej / ryzyka (wpis źródłowy). */
   sanctioned?: { list: string; entryId: string; synthetic?: boolean };
+  /** Węzeł osoby publicznej (dopasowanie do Wikidata): `corroborated` / `confirmed` — rozwijalny; `name_only` / `ambiguous` — najpierw decyzja analityka. */
+  publicFigure?: 'corroborated' | 'confirmed' | 'name_only' | 'ambiguous';
 }
 
 export interface Entity {
@@ -122,7 +147,16 @@ export interface ExpansionRecord {
   startedAt: string;
   finishedAt: string;
   requestedBy: string;
-  results: { nodes: NetworkNode[]; edges: NetworkEdge[]; runs: ExpanderRun[] };
+  /** `roundtrip` — wynik wyszukiwania obiegu środków (tylko grupa „obieg środków”). */
+  results: {
+    nodes: NetworkNode[];
+    edges: NetworkEdge[];
+    runs: ExpanderRun[];
+    roundtrip?: RoundTripReport;
+    /** Rozwinięcie osoby publicznej po decyzji analityka: sieć organizacji (karta „Organizacje i osoby odpowiedzialne”). */
+    organizationNetwork?: unknown;
+    publicFigure?: { wikidataId: string; depth: number; roles: unknown[]; cryptoAddresses: unknown[] };
+  };
   stops: ExpansionStop[];
   sourceErrors: ExpansionSourceError[];
   /** Analiza, której teczka była podstawą (dla odtworzenia). */
@@ -138,6 +172,7 @@ export interface ExpanderOutput {
   errors?: ExpansionSourceError[];
   notes?: ExpansionStop[];
   requests: number;
+  roundtrip?: RoundTripReport;
 }
 
 /** Krawędź-szkic: status i siła z katalogu relacji, jeśli nie podano jawnie. */

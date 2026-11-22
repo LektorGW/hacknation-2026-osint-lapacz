@@ -24,9 +24,12 @@ const EXPLORER_HOSTS = [
   'oklink.com',
   'bitinfocharts.com',
   'blockcypher.com',
+  'litecoinspace.org',
+  'explorer.solana.com',
+  'solscan.io',
 ];
 
-const PAYMENT_URI = /^(?:bitcoin|ethereum|tron|btc|eth|trx|usdt):(?:\/\/)?([A-Za-z0-9]{25,90})/i;
+const PAYMENT_URI = /^(?:bitcoin|ethereum|tron|litecoin|solana|btc|eth|trx|usdt|ltc|sol):(?:\/\/)?([A-Za-z0-9]{25,90})/i;
 const ADDRESS_SEGMENT = /(?:\/|#\/|=)(?:address|addresses|addr|account)\/(?:[a-z]{2,10}\/)?([A-Za-z0-9]{25,90})(?![A-Za-z0-9])/i;
 
 /** Adres wskazany przez odnośnik płatności albo odnośnik do eksploratora bloków; `null`, gdy to zwykły odnośnik. */
@@ -57,7 +60,7 @@ function decodeNumericEntities(text: string): string {
 }
 
 /** Początek adresu którejś z obsługiwanych sieci — od takiego fragmentu próbujemy sklejać. */
-const ADDRESS_START = /^(?:0x[0-9a-fA-F]{2,}|(?:bc|tb)1[0-9a-z]{2,}|[13][1-9A-HJ-NP-Za-km-z]{3,}|T[1-9A-HJ-NP-Za-km-z]{3,})$/;
+const ADDRESS_START = /^(?:0x[0-9a-fA-F]{2,}|(?:bc|tb|ltc)1[0-9a-z]{2,}|[13LM][1-9A-HJ-NP-Za-km-z]{3,}|T[1-9A-HJ-NP-Za-km-z]{3,})$/;
 const ADDRESS_PIECE = /^[0-9A-Za-z]{1,60}$/;
 const MAX_PIECES = 12;
 const MAX_LENGTH = 90;
@@ -86,7 +89,9 @@ function joinSplitAddresses(text: string): string {
       const piece = parts[j]!.slice(0, parts[j]!.length - trailing.length);
       if (!ADDRESS_PIECE.test(piece) || joined.length + piece.length > MAX_LENGTH) break;
       joined += piece;
-      if (validateAddress(joined)) {
+      // Adres Solana nie ma sumy kontrolnej — sklejenie słów w poprawny ciąg Base58 byłoby przypadkiem, nie adresem.
+      const joinedValid = validateAddress(joined);
+      if (joinedValid && joinedValid.network !== 'solana') {
         merged = j;
         tail = trailing;
         break;
@@ -112,14 +117,17 @@ export function normalizeAddressText(text: string): string {
   let normalized = joinSplitAddresses(decodeNumericEntities(text).replace(INVISIBLE, ''));
   const known = new Set(extractAddresses(normalized).map((found) => found.address));
   const extra: string[] = [];
-  for (const match of normalized.matchAll(/(?:https?:\/\/|\b(?:bitcoin|ethereum|tron|btc|eth|trx|usdt):)[^\s<>"')\]]+/gi)) {
+  for (const match of normalized.matchAll(/(?:https?:\/\/|\b(?:bitcoin|ethereum|tron|litecoin|solana|btc|eth|trx|usdt|ltc|sol):)[^\s<>"')\]]+/gi)) {
     const address = addressFromHref(match[0]);
     if (address && !known.has(address)) {
       known.add(address);
       extra.push(address);
     }
   }
-  if (extra.length > 0) normalized += `\n${extra.map((address) => `[adres z odnośnika: ${address}]`).join('\n')}`;
+  // Adres Solana z odnośnika (`solana:`, eksplorator Solany) dostaje słowo wskazujące sieć — bez niego
+  // `extractAddresses` nie przyjmuje adresu Solana (format bez sumy kontrolnej).
+  const line = (address: string) => (validateAddress(address)?.network === 'solana' ? `[adres Solana z odnośnika: ${address}]` : `[adres z odnośnika: ${address}]`);
+  if (extra.length > 0) normalized += `\n${extra.map(line).join('\n')}`;
   return normalized;
 }
 

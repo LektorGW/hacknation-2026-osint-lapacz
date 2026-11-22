@@ -24,6 +24,7 @@ import { serviceLinksFromFindings } from './services.ts';
 import type { ServiceReply, ServiceReplyBody, ServiceReplySample } from './service-reply.ts';
 import type { CaseStat, StatsSummary } from './stats.ts';
 import type { ExpandRequest, ExpandResult, NetworkPlan, NetworkView } from './graph/network.ts';
+import type { NetworkProgress } from './graph/roundtrip.ts';
 import type { DataMode } from './mode.ts';
 
 /**
@@ -326,6 +327,10 @@ export interface Backend {
   expandNetwork(caseId: string, request: ExpandRequest): Promise<ExpandResult>;
   /** Wycofuje rozwinięcie — wpis zostaje w historii (audyt). */
   withdrawExpansion(caseId: string, expansionId: string): Promise<void>;
+  /** Postęp „Szukaj dalej” (obieg środków); `null` bez tej trasy. Brak w trybie demonstracyjnym. */
+  getNetworkProgress?(caseId: string): Promise<NetworkProgress | null>;
+  /** Decyzja o dopasowaniu do osoby publicznej (Wikidata); potwierdzenie rozwija jej sieć organizacji. Brak w trybie demonstracyjnym. */
+  decidePublicFigure?(caseId: string, input: { wikidataId: string; decision: 'confirmed' | 'rejected'; note?: string }): Promise<{ note?: string; expansion: { id: string; counts: { organizations: number; persons: number; relations: number } } | null }>;
   /** Zamyka sprawę z powodem — sprawa staje się tylko do odczytu. */
   closeCase(caseId: string, reason: string): Promise<CaseSummary>;
   /** Przywraca zamkniętą lub zarchiwizowaną sprawę. */
@@ -538,6 +543,8 @@ const httpBackend: Backend = {
   withdrawExpansion: async (caseId, expansionId) => {
     await feature('Rozwijanie sieci', send(`/api/cases/${enc(caseId)}/network/expand/${enc(expansionId)}`, { method: 'DELETE' }));
   },
+  getNetworkProgress: (caseId) => optional(request<NetworkProgress>(`/api/cases/${enc(caseId)}/network/progress`), null),
+  decidePublicFigure: (caseId, input) => feature('Osoba publiczna', post(`/api/cases/${enc(caseId)}/public-figure`, input)),
   closeCase: (caseId, reason) => feature('Zamknięcie sprawy', post(`/api/cases/${enc(caseId)}/close`, { reason })),
   reopenCase: (caseId) => feature('Przywrócenie sprawy', post(`/api/cases/${enc(caseId)}/reopen`, {})),
   archiveCase: (caseId) => feature('Archiwum sprawy', downloadArchive(caseId)),

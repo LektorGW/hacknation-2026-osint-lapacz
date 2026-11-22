@@ -1,7 +1,7 @@
 // Dowód spieniężenia i postęp analizy: lokalne rozszerzenia kontraktu oraz czysta logika widoków.
 import type { FundingSource, Mention, RelatedAddress, Seizure } from './funds.ts';
 import type { LinkedIdentity } from './identities.ts';
-import type { AddressNetwork, DossierOrganization, OrganizationNetwork } from './organizations.ts';
+import type { AddressNetwork, DossierOrganization, OrganizationNetwork, PublicFigure } from './organizations.ts';
 import type { ServiceReplyRef, ServiceReplyView } from './service-reply.ts';
 import type { CashOutTrail, Dossier, Finding, Identifier, Network, StoredEvidence, TextInsight } from '@olcys/core';
 
@@ -67,6 +67,8 @@ export interface DossierExtras {
   organizations?: DossierOrganization[];
   /** Sieć organizacji z rejestrów publicznych: osoby w rolach (nie właściciele adresu), podmioty powiązane. */
   organizationNetwork?: OrganizationNetwork;
+  /** Dopasowanie podmiotu do osoby publicznej w Wikidata (hipoteza, kandydaci, decyzja analityka) — brak pola = starsza usługa. */
+  publicFigure?: PublicFigure;
   /** Siatka adresu: wpływy i wypływy zbiorczo, punkty zapytania. */
   addressNetwork?: AddressNetwork[];
 }

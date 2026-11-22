@@ -133,6 +133,9 @@ export const BINANCE_PAIRS: Record<string, string> = {
   POL: 'POLUSDT',
   BNB: 'BNBUSDT',
   CELO: 'CELOUSDT',
+  // Litecoin i Solana — pary potwierdzone w API Binance 2026-11-22 (`/api/v3/klines?symbol=LTCUSDT` / `SOLUSDT`).
+  LTC: 'LTCUSDT',
+  SOL: 'SOLUSDT',
 };
 /** Ile dni wstecz od dnia poprzedzającego transakcję szukamy tabeli NBP. */
 export const NBP_PRECEDING_LOOKBACK_DAYS = 7;

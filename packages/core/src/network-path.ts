@@ -26,6 +26,7 @@ export type NetworkRelation =
   | 'same_wallet'
   | 'co_depositor'
   | 'counterparty'
+  | 'roundtrip_hop'
   | 'cited_in'
   | 'authored'
   | 'holds_role'
@@ -33,7 +34,13 @@ export type NetworkRelation =
   | 'shared_officer'
   | 'sanctions_hit'
   | 'sanctions_name_match'
-  | 'co_mentioned';
+  | 'co_mentioned'
+  | 'family_relation'
+  | 'org_member'
+  | 'follows'
+  | 'repo_contributor'
+  | 'repo_collaboration'
+  | 'close_collaboration';
 
 export interface RelationSpec {
   label: string;
@@ -59,6 +66,7 @@ export const NETWORK_RELATIONS: Record<NetworkRelation, RelationSpec> = {
   same_wallet: { label: 'ten sam portfel (heurystyka)', strength: 0.6, status: 'hypothesis', caveat: 'Heurystyka portfela (wspólne wejścia, reszta) — wnioskowanie, nie zapis w blockchainie.' },
   co_depositor: { label: 'wspólny adres wpłat', strength: 0.5, status: 'hypothesis', caveat: 'Wpłaty na ten sam adres wpłat usługi — adres wpłat wskazano wnioskowaniem.' },
   counterparty: { label: 'kontrahent przelewu', strength: 0.25, status: 'source_fact', caveat: 'Przelew zapisany w blockchainie; kontrahent (darczyńca, klient) nie jest osobą ze sprawy.' },
+  roundtrip_hop: { label: 'przelew w obiegu środków', strength: 0.25, status: 'source_fact', caveat: 'Przelew zapisany w blockchainie (fakt); to, że w obiegu krążą te same środki albo działa ta sama osoba, jest hipotezą.' },
   cited_in: { label: 'cytowany w publikacji', strength: 0.6, status: 'source_fact', caveat: 'Publikacja zawiera ten identyfikator; cytat nie oznacza własności.' },
   authored: { label: 'autor publikacji', strength: 0.9, status: 'source_fact', caveat: 'Autor wskazany przez serwis.' },
   holds_role: { label: 'rola w organizacji (rejestr)', strength: 0.8, status: 'source_fact', caveat: 'Rola w rejestrze publicznym — nie oznacza własności adresu ani udziału w czynach organizacji.' },
@@ -67,6 +75,13 @@ export const NETWORK_RELATIONS: Record<NetworkRelation, RelationSpec> = {
   sanctions_hit: { label: 'wpis na liście sankcyjnej', strength: 1, status: 'source_fact', caveat: 'Dokładna zgodność identyfikatora z wpisem listy — fakt dotyczy WYŁĄCZNIE bytu z listy, nie osób powiązanych.' },
   sanctions_name_match: { label: 'zgodność nazwy z wpisem listy', strength: 0.4, status: 'hypothesis', caveat: 'Zgodna tylko nazwa — możliwy imiennik; wymaga porównania identyfikatorów.' },
   co_mentioned: { label: 'wspólna wzmianka w publikacji', strength: 0.2, status: 'hypothesis', caveat: 'Dwa identyfikatory w tej samej publikacji — bardzo słaba przesłanka.' },
+  family_relation: { label: 'relacja rodzinna według Wikidata', strength: 0.3, status: 'source_fact', caveat: 'Relacja rodzinna według Wikidata — nie jest dowodem czegokolwiek (ani wspólnych interesów, ani udziału w czynach).' },
+  // Relacje konta w serwisach z kodem (GitHub; rozwinięcie „relacje w serwisach”, tylko na żądanie).
+  org_member: { label: 'członek organizacji w serwisie', strength: 0.5, status: 'source_fact', caveat: 'Publiczne członkostwo konta w organizacji serwisu — relacja zawodowa/projektowa; nie oznacza wspólnego operatora ani udziału w czynach organizacji.' },
+  follows: { label: 'obserwuje konto', strength: 0.1, status: 'source_fact', caveat: 'Obserwowanie konta nie świadczy o znajomości — to bardzo słaba relacja.' },
+  repo_contributor: { label: 'współtwórca repozytorium', strength: 0.4, status: 'source_fact', caveat: 'Współtwórca repozytorium to relacja zawodowa/projektowa — nie dowodzi znajomości ani wspólnego operatora.' },
+  repo_collaboration: { label: 'współpraca w repozytorium', strength: 0.4, status: 'computed', caveat: 'Oba konta mają wkład w to samo repozytorium — relacja zawodowa/projektowa, nie tożsamość.' },
+  close_collaboration: { label: 'bliska współpraca (wzajemne obserwowanie i wspólne repozytorium)', strength: 0.55, status: 'computed', caveat: 'Wzajemne obserwowanie i wspólne repozytorium — przesłanka bliskiej współpracy zawodowej, nie znajomości prywatnej ani tożsamości.' },
 };
 
 /** Zanik siły na każdym kroku-hipotezie (mnożnik). */

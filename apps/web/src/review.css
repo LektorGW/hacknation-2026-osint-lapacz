@@ -1,0 +1,117 @@
+/*
+ * „Do potwierdzenia”: kolejka kart z decyzjami analityka. Jedna karta = jedno pytanie, wyraźnie zaznaczona
+ * karta aktywna (skróty klawiszowe), spokojne wyjście karty po decyzji. Kolory wyłącznie z tokenów motywu.
+ */
+
+.review { display: grid; gap: var(--s4); }
+.review-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s3); }
+.review-head h2 { display: flex; align-items: center; gap: var(--s2); margin: 0 0 var(--s1); }
+.review-head p { margin: 0; max-width: 62ch; }
+
+.review-count {
+  display: inline-grid; place-items: center; min-width: 1.9rem; height: 1.9rem; padding: 0 0.5rem; border-radius: 999px;
+  background: var(--inference); color: var(--surface); font-size: 1rem; font-weight: 800; font-variant-numeric: tabular-nums;
+}
+.review-count.is-zero { background: var(--ok-bg); color: var(--ok); }
+
+.review-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.45rem; margin: 0; font-size: 0.82rem; color: var(--muted); }
+.review-keys kbd + kbd { margin-left: -0.2rem; }
+
+/* ---------- Filtry ---------- */
+.review-filters { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.review-filter {
+  display: inline-flex; align-items: center; gap: 0.4rem; min-height: 2rem; padding: 0.15rem 0.75rem; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 0.86rem; cursor: pointer;
+  transition: background var(--motion-fast, 140ms) ease, border-color var(--motion-fast, 140ms) ease;
+}
+.review-filter:hover { border-color: var(--border-strong); }
+.review-filter[aria-pressed='true'] { background: color-mix(in srgb, var(--primary) 12%, var(--surface)); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.review-filter-count { min-width: 1.2rem; padding: 0 0.3rem; border-radius: 999px; background: var(--surface-sunken); color: var(--muted); font-size: 0.74rem; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+.review-filter[aria-pressed='true'] .review-filter-count { background: color-mix(in srgb, var(--primary) 18%, var(--surface)); color: var(--primary); }
+
+/* ---------- Lista i karta ---------- */
+.review-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); }
+.review-item { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 260ms var(--motion-ease, ease), opacity 260ms var(--motion-ease, ease), transform 260ms var(--motion-ease, ease); }
+.review-item > .review-card { min-height: 0; overflow: hidden; }
+.review-item.is-leaving { grid-template-rows: 0fr; opacity: 0; transform: translateX(24px); }
+.review-item.is-leaving > .review-card { padding-top: 0; padding-bottom: 0; border-width: 0; margin: 0; }
+
+.review-card {
+  --accent: var(--border-strong);
+  display: grid; gap: var(--s3); margin: 0; border-left: 4px solid var(--accent);
+  animation: motion-rise var(--motion, 220ms) var(--motion-ease, ease) backwards;
+}
+.review-card.is-active { box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 55%, transparent), var(--shadow); }
+.review-card.is-skipped { opacity: 0.78; }
+.review-card.kind-cashout { --accent: var(--inference); }
+.review-card.kind-person { --accent: var(--primary); }
+.review-card.kind-address { --accent: var(--fact); }
+.review-card.kind-identity,
+.review-card.kind-operator { --accent: var(--calc); }
+.review-card.kind-organization,
+.review-card.kind-public_figure,
+.review-card.kind-scam_warning,
+.review-card.kind-reply { --accent: var(--muted); }
+
+.review-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.review-card-top .chip { margin: 0; }
+.review-kind { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.review-value { font-weight: 700; }
+
+.review-card-main { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s2) var(--s4); }
+.review-title { flex: 1 1 22rem; margin: 0; font-size: 1.08rem; line-height: 1.35; overflow-wrap: anywhere; }
+.review-why { margin: 0; }
+
+.review-evidence { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--s2); }
+.review-evidence .chip { margin: 0; }
+a.review-evidence-chip { color: var(--primary); text-decoration: none; }
+a.review-evidence-chip:hover { border-color: var(--primary); text-decoration: underline; }
+
+.review-effects { display: grid; gap: var(--s1); margin: 0; padding: var(--s2) var(--s3); border-radius: var(--radius-small); background: var(--surface-alt); font-size: 0.88rem; }
+.review-effects > div { display: grid; grid-template-columns: 6.5rem 1fr; gap: var(--s2); }
+.review-effects dt { font-weight: 700; color: var(--muted); }
+.review-effects dd { margin: 0; }
+
+.review-note summary { cursor: pointer; color: var(--muted); font-size: 0.86rem; }
+.review-note input { width: 100%; max-width: 36rem; margin-top: var(--s2); }
+
+.review-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.review-actions .button kbd { margin-left: 0.35rem; font-size: 0.72em; opacity: 0.8; }
+.review-actions .button-primary kbd { background: transparent; color: inherit; border-color: currentColor; }
+.review-more { margin-left: auto; font-size: 0.86rem; }
+
+/* ---------- Pusto i „Zdecydowane” ---------- */
+.review-empty { display: grid; justify-items: start; gap: var(--s2); padding: var(--s5); border: 1px dashed var(--border-strong); border-radius: var(--radius); background: var(--surface); }
+.review-empty p { margin: 0; max-width: 60ch; }
+.review-empty-title { font-size: 1.1rem; font-weight: 700; color: var(--ok); }
+
+.review-decided-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.review-decided-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) 0; border-bottom: 1px solid var(--border); }
+.review-decided-list li:last-child { border-bottom: 0; }
+.review-decided-list .chip { margin: 0; }
+.review-decided-label { flex: 1 1 18rem; overflow-wrap: anywhere; }
+
+/* ---------- Licznik w nagłówku teczki, nawigacji sekcji i na liście spraw ---------- */
+.review-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.1rem 0.65rem; border-radius: 999px;
+  border: 1px solid var(--inference); background: var(--inference-bg); color: var(--inference); font-size: 0.82rem; font-weight: 700; text-decoration: none;
+}
+.review-chip:hover { text-decoration: underline; }
+.review-chip-small { padding: 0 0.5rem; font-size: 0.74rem; white-space: nowrap; }
+.sections a > .sections-count.is-review,
+.sections a[aria-current='page'] > .sections-count.is-review { background: var(--inference); color: var(--surface); }
+
+@media (max-width: 640px) {
+  .review-effects > div { grid-template-columns: 1fr; gap: 0; }
+  .review-more { margin-left: 0; }
+  .review-actions .button { flex: 1 1 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-item, .review-filter { transition: none; }
+  .review-card { animation: none; }
+}
+
+@media print {
+  .review-actions, .review-note, .review-filters { display: none; }
+}

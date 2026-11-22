@@ -7,7 +7,11 @@
 //   • Wikidata (dane strukturalne na CC0; wbgetentities / wbsearchentities, w trybie głębokim zapytanie SPARQL),
 //   • GLEIF LEI (CC0; jednostka dominująca i spółki zależne po numerze LEI),
 //   • ProPublica Nonprofit Explorer (organizacje non-profit w USA; wyłącznie identyfikacja podmiotu — API nie podaje
-//     członków zarządu; dane z podaniem źródła, bez rozpowszechniania zbioru).
+//     członków zarządu; dane z podaniem źródła, bez rozpowszechniania zbioru),
+//   • CRBR — publiczne API przeglądowe MF (rejestr jawny, art. 67 ustawy AML): spółka po NIP/KRS → beneficjenci
+//     rzeczywiści w roli „beneficjent rzeczywisty (CRBR)”; bez PESEL, dat urodzenia i adresów (CRBR_DISABLE=1 wyłącza),
+//   • SAOS — programowe API orzeczeń: orzeczenia z nazwą organizacji w treści jako KONTEKST organizacji (dopasowanie po
+//     nazwie, zanonimizowane; nigdy przypisanie osoby; SAOS_DISABLE=1 wyłącza).
 //
 // Zasady uczciwości:
 // - osoba pełniąca rolę w organizacji NIE jest właścicielem adresu — relacja „osoba odpowiedzialna za organizację
@@ -18,6 +22,8 @@
 //   zatrzymania jak w innych etapach; krok 2 (inne podmioty tej osoby w rejestrze) tylko w trybie głębokim.
 
 import { beneficiaryKey, registrableDomain } from './beneficiary.ts';
+import { courtDecisionLabel, crbrDisabled, crbrQueryOf, parseSaosSearch, queryCrbr, saosDisabled, saosPhraseFor, saosSearchUrl, CRBR_ENDPOINT, CRBR_ROLE, SAOS_TERMS } from '@olcys/sources';
+import type { CrbrFetch } from '@olcys/sources';
 
 export const ORG_NETWORK_LIMITS = {
   maxPersons: 15,
@@ -29,18 +35,25 @@ export const ORG_NETWORK_LIMITS = {
   deepPersons: 5,
   /** Najwyżej tyle profili publicznych osoby z identyfikatorów podanych przez rejestr. */
   maxProfileLookups: 5,
+  /** Najwyżej tyle obliczonych powiązań osoba ↔ osoba (wspólna organizacja). */
+  maxPersonLinks: 30,
 } as const;
+
+/** Limity sieci w wyniku — domyślne albo nadpisane jawnie (np. sieć osoby publicznej). */
+export type OrgNetworkLimits = { [K in keyof typeof ORG_NETWORK_LIMITS]: number } & { deep: boolean };
 
 /** Zasady Wikimedia wymagają opisowego User-Agent z kontaktem — operator podaje go w `OLCYS_CONTACT` (e-mail albo strona). */
 export const ORG_USER_AGENT = `OLCyS-research/0.1 (${process.env.OLCYS_CONTACT?.trim() || 'hackathon KAS; kontakt przez organizatora'})`;
 
-export type RegistryName = 'KRS' | 'Wikidata' | 'GLEIF' | 'ProPublica';
+export type RegistryName = 'KRS' | 'Wikidata' | 'GLEIF' | 'ProPublica' | 'CRBR' | 'SAOS';
 
 export const REGISTRY_TERMS: Record<RegistryName, string> = {
   KRS: 'Otwarte API KRS Ministerstwa Sprawiedliwości (dane jawne rejestru; dane osobowe zamaskowane przez API)',
   Wikidata: 'Wikidata — dane strukturalne CC0',
   GLEIF: 'GLEIF LEI — dane CC0',
   ProPublica: 'ProPublica Nonprofit Explorer API — z podaniem źródła, bez rozpowszechniania zbioru',
+  CRBR: 'CRBR — publiczne API przeglądowe MF; rejestr jawny (art. 67 ustawy AML), bez PESEL, dat urodzenia i adresów osób',
+  SAOS: SAOS_TERMS,
 };
 
 export interface RegistrySource {
@@ -64,6 +77,26 @@ export interface OrgEntity {
   sources: RegistrySource[];
   /** Wpisy w innych rejestrach zgodne tylko nazwą — NIE scalone z podmiotem. */
   weakCandidates?: { registry: RegistryName; name: string; identifier: string; url: string; note: string }[];
+  /** Beneficjenci rzeczywiści z CRBR (imię i nazwisko jak w rejestrze) — rola wobec organizacji, nie własność adresu. */
+  beneficialOwners?: string[];
+  /** Orzeczenia (SAOS) z nazwą organizacji w treści — kontekst organizacji, dopasowanie po nazwie (słabe). */
+  courtDecisions?: OrgCourtDecision[];
+}
+
+export interface OrgCourtDecision {
+  /** „wyrok, Sąd Okręgowy w …, sygnatura, data”. */
+  label: string;
+  url: string;
+  date?: string;
+  caseNumbers: string[];
+  court?: string;
+  excerpt: string;
+  /** Słowa kluczowe lub fragment o upadłości, likwidacji albo restrukturyzacji. */
+  insolvency: boolean;
+  tax: boolean;
+  /** Zawsze: zgodność nazwy w treści zanonimizowanego orzeczenia — możliwa zbieżność nazw. */
+  match: 'name_only';
+  source: RegistrySource;
 }
 
 export interface PersonInRole {
@@ -80,8 +113,10 @@ export interface PersonInRole {
   /** Identyfikatory opublikowane przez rejestr (Wikidata): profile publiczne OSOBY, niepowiązane z adresem. */
   publishedIdentifiers?: { github?: string; x?: string; website?: string };
   publicProfiles?: { url: string; service: string; title: string }[];
+  /** Udziały / uprawnienia beneficjenta rzeczywistego tak, jak podaje CRBR. */
+  beneficialInterest?: string;
   /** Zawsze: rola w rejestrze, nie własność adresu. */
-  relation: 'osoba odpowiedzialna za organizację (rola w rejestrze)';
+  relation: 'osoba odpowiedzialna za organizację (rola w rejestrze)' | 'beneficjent rzeczywisty organizacji (rola w CRBR)';
 }
 
 export interface OrgRelation {
@@ -118,7 +153,7 @@ export interface OrganizationNetwork {
   sources: RegistrySource[];
   stops: OrgStop[];
   notes: string[];
-  limits: typeof ORG_NETWORK_LIMITS & { deep: boolean };
+  limits: OrgNetworkLimits;
 }
 
 export interface OrgSeed {
@@ -143,12 +178,31 @@ export interface OrgNetworkParams {
   reserve?: () => boolean;
   /** Profile publiczne osoby z identyfikatora podanego przez rejestr (np. login GitHub) — istniejące łączniki. */
   lookupProfile?: (identifier: { type: 'login'; value: string }) => Promise<{ url: string; service: string; title: string }[]>;
+  /** Jawne nadpisanie limitów (sieć osoby publicznej: więcej podmiotów i osób) — widoczne w `limits` wyniku. */
+  limits?: Partial<Omit<OrgNetworkLimits, 'deep'>>;
+  /** Wpisy Wikidata pobrane wcześniej (np. organizacje osoby publicznej) — bez ponownego zapytania. */
+  entityCache?: Map<string, Record<string, unknown>>;
+  /** Podmioty i role znane przed krokiem 1 (role osoby publicznej z Wikidata) — wliczane do limitów i obliczeń. */
+  preset?: { organizations: OrgEntity[]; persons: Omit<PersonInRole, 'relation'>[] };
+  /** Osoba centralna sieci (QID): jej role nie tworzą relacji „wspólny członek zarządu” między wszystkimi jej podmiotami. */
+  centralPerson?: string;
+  /** Bez wyszukiwania organizacji non-profit po nazwie (podmioty rozpoznane po QID). */
+  skipNonprofitSearch?: boolean;
 }
 
 const KRS_API = 'https://api-krs.ms.gov.pl/api/krs/OdpisAktualny';
 const WIKIDATA_API = 'https://www.wikidata.org/w/api.php';
 /** Przerwa przed jedyną ponowną próbą zapytania do rejestru po błędzie sieci, 429 albo 5xx. */
 const REGISTRY_RETRY_DELAY_MS = 1500;
+/** Najmniejszy odstęp między zapytaniami do Wikidata w jednym etapie. */
+const WIKIDATA_SPACING_MS = 250;
+
+/** Przerwa przed ponowieniem po kodzie 429: nagłówek Retry-After (sekundy), najwyżej 8 s; bez nagłówka — 5 s. */
+export function retryAfterMs(response: Response): number | undefined {
+  if (response.status !== 429) return undefined;
+  const seconds = Number(response.headers?.get?.('retry-after'));
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(8_000, seconds * 1000) : 5_000;
+}
 const WIKIDATA_SPARQL = 'https://query.wikidata.org/sparql';
 const GLEIF_API = 'https://api.gleif.org/api/v1/lei-records';
 const PROPUBLICA_API = 'https://projects.propublica.org/nonprofits/api/v2/search.json';
@@ -195,9 +249,11 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
   const now = params.now ?? (() => new Date());
   const log = params.log ?? (() => {});
   const deep = params.deep === true;
-  const limits = { ...ORG_NETWORK_LIMITS, deep };
-  const organizations: OrgEntity[] = [];
-  const persons: PersonInRole[] = [];
+  const limits: OrgNetworkLimits = { ...ORG_NETWORK_LIMITS, ...(params.limits ?? {}), deep };
+  const organizations: OrgEntity[] = [...(params.preset?.organizations ?? [])].slice(0, limits.maxOrganizations);
+  // Role osoby centralnej (osoba publiczna) nie zajmują limitu osób — limit dotyczy pozostałych osób w rolach.
+  const persons: PersonInRole[] = (params.preset?.persons ?? []).filter((person, index) => person.wikidata === params.centralPerson || index < limits.maxPersons).map((person) => ({ ...person, relation: 'osoba odpowiedzialna za organizację (rola w rejestrze)' as const }));
+  const countedPersons = () => (params.centralPerson ? persons.filter((person) => person.wikidata !== params.centralPerson).length : persons.length);
   const relations: OrgRelation[] = [];
   const sources: RegistrySource[] = [];
   const stops: OrgStop[] = [];
@@ -205,6 +261,7 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
   let requests = 0;
   let requestLimitHit = 0;
   const failures = new Map<string, { count: number; message: string }>();
+  let lastWikidataAt = 0;
 
   const get = async (registry: RegistryName, url: string, accept = 'application/json'): Promise<{ json?: Json; source?: RegistrySource; status: number }> => {
     if (requests >= limits.maxRequests || (params.reserve && !params.reserve())) {
@@ -213,13 +270,19 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
     }
     requests++;
     const retrievedAt = now().toISOString();
+    // Wikidata: odstęp między zapytaniami (zasady Wikimedia — bez serii zapytań, które kończą się kodem 429).
+    if (registry === 'Wikidata') {
+      const wait = lastWikidataAt + WIKIDATA_SPACING_MS - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      lastWikidataAt = Date.now();
+    }
     // Chwilowy błąd sieci albo przeciążenie (5xx, 429) — jedna ponowna próba po krótkiej przerwie.
     for (let attempt = 0; ; attempt++) {
       try {
         const signal = params.signal ? AbortSignal.any([params.signal, AbortSignal.timeout(limits.requestTimeoutMs)]) : AbortSignal.timeout(limits.requestTimeoutMs);
         const response = await doFetch(url, { headers: { 'User-Agent': ORG_USER_AGENT, Accept: accept }, signal });
         if (response.status === 404) return { status: 404 };
-        if (!response.ok) throw Object.assign(new Error(`kod ${response.status}`), { retryable: response.status === 429 || response.status >= 500 });
+        if (!response.ok) throw Object.assign(new Error(`kod ${response.status}`), { retryable: response.status === 429 || response.status >= 500, retryAfterMs: retryAfterMs(response) });
         const json = obj(await response.json());
         const source: RegistrySource = { registry, url, retrievedAt, terms: REGISTRY_TERMS[registry] };
         sources.push(source);
@@ -229,7 +292,7 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
         const retryable = (error as { retryable?: boolean }).retryable !== false && !params.signal?.aborted;
         if (attempt === 0 && retryable) {
           log(`[rejestry] ${registry}: ${message} — ponawiam raz po przerwie.`);
-          await new Promise((resolve) => setTimeout(resolve, REGISTRY_RETRY_DELAY_MS));
+          await new Promise((resolve) => setTimeout(resolve, (error as { retryAfterMs?: number }).retryAfterMs ?? REGISTRY_RETRY_DELAY_MS));
           continue;
         }
         const entry = failures.get(registry) ?? { count: 0, message };
@@ -271,13 +334,98 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
   };
   let personsSkipped = 0;
   const orgsSkipped: string[] = [];
-  const addPerson = (person: Omit<PersonInRole, 'relation'>) => {
+  const addPerson = (person: Omit<PersonInRole, 'relation'> & { relation?: PersonInRole['relation'] }) => {
     if (persons.some((known) => known.organizationId === person.organizationId && known.role === person.role && known.name === person.name && known.wikidata === person.wikidata)) return;
-    if (persons.length >= limits.maxPersons) {
+    const central = params.centralPerson !== undefined && person.wikidata === params.centralPerson;
+    if (!central && countedPersons() >= limits.maxPersons) {
       personsSkipped++;
       return;
     }
-    persons.push({ ...person, relation: 'osoba odpowiedzialna za organizację (rola w rejestrze)' });
+    persons.push({ ...person, relation: person.relation ?? 'osoba odpowiedzialna za organizację (rola w rejestrze)' });
+  };
+
+  /** Rezerwacja zapytania poza `get` (CRBR to SOAP/POST) — ten sam budżet analizy. */
+  const take = (): boolean => {
+    if (requests >= limits.maxRequests || (params.reserve && !params.reserve())) {
+      requestLimitHit++;
+      return false;
+    }
+    requests++;
+    return true;
+  };
+
+  // ---------- CRBR: beneficjenci rzeczywiści spółki (po NIP albo KRS) ----------
+  const fromCrbr = async (org: OrgEntity) => {
+    const query = crbrQueryOf({ ...(org.identifiers.nip ? { nip: org.identifiers.nip } : {}), ...(org.identifiers.krs ? { krs: org.identifiers.krs } : {}) });
+    if (!query || crbrDisabled() || !take()) return;
+    const retrievedAt = now().toISOString();
+    const lookup = await queryCrbr(query, { fetch: doFetch as unknown as CrbrFetch, timeoutMs: limits.requestTimeoutMs, userAgent: ORG_USER_AGENT, ...(params.signal ? { signal: params.signal } : {}) });
+    const key = 'nip' in query ? `NIP ${query.nip}` : `KRS ${query.krs}`;
+    if (lookup.status === 'blad' || lookup.status === 'BladFormalny') {
+      const entry = failures.get('CRBR') ?? { count: 0, message: lookup.error ?? 'błąd' };
+      entry.count++;
+      failures.set('CRBR', entry);
+      log(`[rejestry] CRBR: ${key} — ${lookup.error ?? 'błąd'}.`);
+      return;
+    }
+    const source: RegistrySource = { registry: 'CRBR', url: `${CRBR_ENDPOINT}#${key.replace(' ', '=')}`, retrievedAt, terms: REGISTRY_TERMS.CRBR };
+    sources.push(source);
+    org.sources.push(source);
+    const company = lookup.companies.find((item) => (item.nip && item.nip === org.identifiers.nip) || (item.krs && item.krs === org.identifiers.krs)) ?? lookup.companies[0];
+    if (!company) {
+      notes.push(`CRBR (${key}, „${org.name}”): brak zgłoszenia beneficjentów rzeczywistych — podmiot może nie podlegać zgłoszeniu (np. spółka publiczna) albo go nie złożył.`);
+      return;
+    }
+    org.beneficialOwners = company.beneficialOwners.map((owner) => owner.name);
+    for (const [index, owner] of company.beneficialOwners.entries()) {
+      addPerson({
+        id: `${org.id}:crbr:${index}`,
+        name: owner.name,
+        masked: false,
+        role: CRBR_ROLE,
+        organizationId: org.id,
+        source,
+        ...(owner.interests.length > 0 ? { beneficialInterest: owner.interests.join('; ') } : {}),
+        relation: 'beneficjent rzeczywisty organizacji (rola w CRBR)',
+      });
+    }
+    notes.push(
+      `CRBR (${key}, „${company.name}”): beneficjentów rzeczywistych ${company.beneficialOwners.length} — pokazani w roli z jawnego rejestru (art. 67 ustawy AML), bez numerów PESEL, dat urodzenia i adresów; ` +
+        'beneficjent rzeczywisty NIE jest właścicielem adresów kryptowalutowych organizacji.' +
+        (company.discrepancies > 0 ? ` Do zgłoszenia wniesiono rozbieżności (${company.discrepancies}) — dane mogą być nieaktualne.` : ''),
+    );
+  };
+
+  // ---------- SAOS: orzeczenia z nazwą organizacji (kontekst, dopasowanie po nazwie) ----------
+  const fromSaos = async (org: OrgEntity) => {
+    if (saosDisabled()) return;
+    const phrase = saosPhraseFor(org.name);
+    if (!phrase) {
+      notes.push(`Orzeczenia (SAOS): nazwa „${org.name}” jest zbyt ogólna do wyszukania w treści orzeczeń — pominięto.`);
+      return;
+    }
+    const { json, source } = await get('SAOS', saosSearchUrl(phrase));
+    if (!source) return;
+    org.sources.push(source);
+    const decisions = parseSaosSearch(json);
+    if (decisions.length === 0) return;
+    org.courtDecisions = decisions.map((decision) => ({
+      label: courtDecisionLabel(decision),
+      url: decision.url,
+      ...(decision.date ? { date: decision.date } : {}),
+      caseNumbers: decision.caseNumbers,
+      ...(decision.court ? { court: decision.court } : {}),
+      excerpt: decision.excerpt,
+      insolvency: decision.insolvency,
+      tax: decision.tax,
+      match: 'name_only',
+      source,
+    }));
+    const insolvency = decisions.filter((decision) => decision.insolvency).length;
+    notes.push(
+      `Orzeczenia (SAOS) z frazą „${phrase}” w treści: ${decisions.length}${insolvency > 0 ? `, w tym o upadłości / likwidacji / restrukturyzacji: ${insolvency}` : ''} — kontekst organizacji „${org.name}”, ` +
+        'dopasowanie wyłącznie po nazwie (możliwa zbieżność nazw); orzeczenia są zanonimizowane — osób nie ustalamy i nie przypisujemy.',
+    );
   };
 
   // ---------- KRS ----------
@@ -343,8 +491,11 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
   // ---------- Wikidata ----------
   const entities = async (ids: string[]): Promise<Map<string, Json>> => {
     const result = new Map<string, Json>();
-    for (let at = 0; at < ids.length; at += 40) {
-      const chunk = ids.slice(at, at + 40);
+    // Wpisy pobrane wcześniej (pamięć podręczna wywołującego) nie są pobierane ponownie.
+    for (const id of ids) if (params.entityCache?.has(id)) result.set(id, params.entityCache.get(id)!);
+    const missing = ids.filter((id) => !result.has(id));
+    for (let at = 0; at < missing.length; at += 40) {
+      const chunk = missing.slice(at, at + 40);
       const { json } = await get('Wikidata', `${WIKIDATA_API}?action=wbgetentities&ids=${chunk.join('|')}&props=labels|claims&languages=pl|en&format=json`);
       for (const [id, entity] of Object.entries(obj(json?.entities) ?? {})) if (obj(entity)) result.set(id, obj(entity)!);
     }
@@ -418,7 +569,8 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
     }
     if (!entity || !qid) return undefined;
     const site = websites(entity).map(domainOf).find(Boolean);
-    const source = sources.filter((item) => item.registry === 'Wikidata').at(-1)!;
+    // Wpis z pamięci podręcznej wywołującego (bez zapytania w tym etapie) — źródłem jest strona wpisu.
+    const source = sources.filter((item) => item.registry === 'Wikidata').at(-1) ?? { registry: 'Wikidata' as const, url: `https://www.wikidata.org/wiki/${qid}`, retrievedAt: now().toISOString(), terms: REGISTRY_TERMS.Wikidata };
     const lei = claims(entity, 'P1278').map(claimString).find(Boolean);
     const identifiers = { wikidata: qid, ...(site ? { website: site } : {}), ...(lei ? { lei } : {}) };
     // Podmiot znany z KRS dostaje identyfikatory Wikidata (dopasowanie po domenie strony z odpisu) — bez nowego węzła.
@@ -455,7 +607,7 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
       const to = wikidataTime(qualifier(claim, 'P582'));
       addPerson({
         id: `person:wikidata:${id}:${org.id}:${property}`,
-        name: label(person, id),
+        name: label(person, `osoba ${id} (nazwy nie pobrano z Wikidata)`),
         masked: false,
         role: WIKIDATA_ROLES[property]!,
         organizationId: org.id,
@@ -554,6 +706,10 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
     if (params.signal?.aborted) break;
     let org: OrgEntity | undefined;
     if (seed.krs) org = await fromKrs(seed.krs, seed);
+    if (org) {
+      await fromCrbr(org);
+      await fromSaos(org);
+    }
     const viaWikidata = await fromWikidata(org ? undefined : seed, org);
     org = org ?? viaWikidata;
     if (!org) {
@@ -562,12 +718,12 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
     }
     if (org.match !== 'name_only') {
       await fromGleif(org);
-      if (!seed.krs) await fromProPublica(org, seed.name);
+      if (!seed.krs && !params.skipNonprofitSearch) await fromProPublica(org, seed.name);
     }
   }
 
   // ---------- Krok 2 (tryb głęboki): inne podmioty, w których ta sama osoba pełni rolę ----------
-  const withWikidata = [...new Map(persons.filter((person) => person.wikidata).map((person) => [person.wikidata!, person])).values()];
+  const withWikidata = [...new Map(persons.filter((person) => person.wikidata && person.wikidata !== params.centralPerson).map((person) => [person.wikidata!, person])).values()];
   if (deep) {
     for (const person of withWikidata.slice(0, limits.deepPersons)) {
       const query = `SELECT ?org ?orgLabel ?prop WHERE { VALUES ?prop { ${Object.keys(WIKIDATA_ROLES).map((property) => `wdt:${property}`).join(' ')} } ?org ?prop wd:${person.wikidata} . SERVICE wikibase:label { bd:serviceParam wikibase:language "pl,en". } } LIMIT 10`;
@@ -608,7 +764,7 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
 
   // ---------- Obliczone: wspólny członek zarządu, osoby tej samej organizacji ----------
   const byWikidata = new Map<string, PersonInRole[]>();
-  for (const person of persons) if (person.wikidata && !person.masked) byWikidata.set(person.wikidata, [...(byWikidata.get(person.wikidata) ?? []), person]);
+  for (const person of persons) if (person.wikidata && !person.masked && person.wikidata !== params.centralPerson) byWikidata.set(person.wikidata, [...(byWikidata.get(person.wikidata) ?? []), person]);
   for (const [, roles] of byWikidata) {
     const orgs = [...new Set(roles.map((item) => item.organizationId))];
     for (let i = 0; i < orgs.length; i++) {
@@ -623,8 +779,8 @@ export async function buildOrganizationNetwork(params: OrgNetworkParams): Promis
   const orgsOf = new Map<string, Set<string>>();
   for (const person of persons) orgsOf.set(identityOf(person), (orgsOf.get(identityOf(person)) ?? new Set()).add(person.organizationId));
   const people = [...orgsOf.keys()];
-  for (let i = 0; i < people.length && personLinks.length < 30; i++) {
-    for (let j = i + 1; j < people.length && personLinks.length < 30; j++) {
+  for (let i = 0; i < people.length && personLinks.length < limits.maxPersonLinks; i++) {
+    for (let j = i + 1; j < people.length && personLinks.length < limits.maxPersonLinks; j++) {
       const shared = [...orgsOf.get(people[i]!)!].filter((org) => orgsOf.get(people[j]!)!.has(org));
       if (shared.length === 0) continue;
       const a = persons.find((item) => identityOf(item) === people[i])!;

@@ -38,6 +38,11 @@ export interface SourceDocument {
   author?: string;
   category: SourceCategory;
   identityMatch: IdentityMatch;
+  /**
+   * Uwaga łącznika o przypisaniu (np. „konto o nazwie wygenerowanej z imienia i nazwiska — możliwy imiennik”);
+   * analiza dopisuje ją do przesłanek oceny tożsamości.
+   */
+  identityNote?: string;
   /** Identyfikator, przez który dokument został odnaleziony. */
   matchedIdentifier: Identifier;
   /**
@@ -242,8 +247,11 @@ export type Decision = 'confirmed' | 'rejected';
 export interface AnalystDecision {
   id: string;
   caseId: string;
-  /** `link`: hipoteza wspólnego operatora dwóch kont; klucz z `linkKey(a, b)`. */
-  target: 'profile' | 'address' | 'evidence' | 'link' | 'cashout';
+  /**
+   * `link`: hipoteza wspólnego operatora dwóch kont; klucz z `linkKey(a, b)`.
+   * `public_figure`: dopasowanie podmiotu do wpisu osoby publicznej w Wikidata; klucz = identyfikator wpisu (np. `Q42`).
+   */
+  target: 'profile' | 'address' | 'evidence' | 'link' | 'cashout' | 'public_figure';
   /** Profil: `service|handle` albo URL; adres: `network:address`; para kont: `a<->b`. */
   key: string;
   decision: Decision;
@@ -342,7 +350,12 @@ export interface GraphEdge {
     /** Osoba → organizacja: rola w rejestrze publicznym (nie własność adresu). */
     | 'holds_role'
     /** Organizacja → organizacja: jednostka dominująca / zależna albo wspólny członek zarządu. */
-    | 'org_relation';
+    | 'org_relation'
+    /**
+     * Adres → adres: powiązanie przez płatność. Sam przelew jest faktem z blockchaina; to, czy odbiorca
+     * to nowy portfel tej samej osoby, czy ktoś, komu zapłacono, pozostaje do ustalenia.
+     */
+    | 'payment';
   label?: string;
   /** Waga 0–100: siła dowodu albo względna wartość przepływu. */
   weight?: number;

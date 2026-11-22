@@ -9,7 +9,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
  * `lab` to sieć LABORATORYJNA (apps/identity-lab): lokalny, syntetyczny łańcuch testowy z tokenem LAB
  * bez wartości. To nie jest prawdziwa sieć — adresy `lab1…` nie istnieją poza laboratorium.
  */
-export type Network = 'bitcoin' | 'bitcoin-testnet' | 'ethereum' | 'tron' | 'lab';
+export type Network = 'bitcoin' | 'bitcoin-testnet' | 'ethereum' | 'tron' | 'litecoin' | 'solana' | 'lab';
 
 /** Identyfikator sieci laboratoryjnej (syntetycznej, bez wartości pieniężnej). */
 export const LAB_NETWORK: Network = 'lab';
@@ -23,6 +23,8 @@ export type AddressFormat =
   | 'bech32m'
   | 'evm'
   | 'tron-base58'
+  /** Adres Solana: klucz publiczny 32 bajty w zapisie Base58 — format BEZ sumy kontrolnej. */
+  | 'solana-base58'
   /** Adres sieci laboratoryjnej: `lab1` + 40 znaków szesnastkowych (format bez sumy kontrolnej). */
   | 'lab-hex';
 
@@ -188,36 +190,53 @@ export function validateAddress(candidate: string): Validation | null {
     return { address: candidate.toLowerCase(), network: 'lab', format: 'lab-hex', checksumVerified: false };
   }
 
-  if (/^(bc|tb)1/i.test(candidate)) {
+  if (/^(bc|tb|ltc)1/i.test(candidate)) {
     const decoded = decodeSegwit(candidate);
-    if (!decoded || (decoded.hrp !== 'bc' && decoded.hrp !== 'tb')) return null;
-    return {
-      address: candidate.toLowerCase(),
-      network: decoded.hrp === 'bc' ? 'bitcoin' : 'bitcoin-testnet',
-      format: decoded.format,
-      checksumVerified: true,
-    };
+    const byHrp: Record<string, Network> = { bc: 'bitcoin', tb: 'bitcoin-testnet', ltc: 'litecoin' };
+    const network = decoded ? byHrp[decoded.hrp] : undefined;
+    if (!decoded || !network) return null;
+    return { address: candidate.toLowerCase(), network, format: decoded.format, checksumVerified: true };
   }
 
   const decoded = base58CheckDecode(candidate);
-  if (!decoded || decoded.payload.length !== 20) return null;
-  const byVersion: Record<number, { network: Network; format: AddressFormat }> = {
-    0x00: { network: 'bitcoin', format: 'p2pkh' },
-    0x05: { network: 'bitcoin', format: 'p2sh' },
-    0x6f: { network: 'bitcoin-testnet', format: 'p2pkh' },
-    0xc4: { network: 'bitcoin-testnet', format: 'p2sh' },
-    0x41: { network: 'tron', format: 'tron-base58' },
-  };
-  const kind = byVersion[decoded.version];
-  if (!kind) return null;
-  return { address: candidate, ...kind, checksumVerified: true };
+  if (decoded && decoded.payload.length === 20) {
+    // Litecoin: `L…` (0x30) i `M…` (0x32). Stary zapis P2SH Litecoina (`3…`, 0x05) jest nie do odróżnienia
+    // od Bitcoina — taki adres zostaje przy sieci Bitcoin.
+    const byVersion: Record<number, { network: Network; format: AddressFormat }> = {
+      0x00: { network: 'bitcoin', format: 'p2pkh' },
+      0x05: { network: 'bitcoin', format: 'p2sh' },
+      0x6f: { network: 'bitcoin-testnet', format: 'p2pkh' },
+      0xc4: { network: 'bitcoin-testnet', format: 'p2sh' },
+      0x41: { network: 'tron', format: 'tron-base58' },
+      0x30: { network: 'litecoin', format: 'p2pkh' },
+      0x32: { network: 'litecoin', format: 'p2sh' },
+    };
+    const kind = byVersion[decoded.version];
+    if (kind) return { address: candidate, ...kind, checksumVerified: true };
+  }
+  if (decoded) return null;
+
+  // Solana: 32 bajty w Base58, bez sumy kontrolnej — sprawdzamy alfabet, długość i wynik dekodowania.
+  if (isSolanaAddress(candidate)) return { address: candidate, network: 'solana', format: 'solana-base58', checksumVerified: false };
+  return null;
+}
+
+/**
+ * Czy ciąg jest poprawnym zapisem adresu Solana: 32–44 znaki Base58, które dekodują się DOKŁADNIE do 32 bajtów
+ * (zapis kanoniczny — bez nadmiarowych zer). Format nie ma sumy kontrolnej, więc w tekście przyjmujemy
+ * taki ciąg wyłącznie obok słowa wskazującego sieć Solana (`extractAddresses`).
+ */
+export function isSolanaAddress(candidate: string): boolean {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(candidate)) return false;
+  const bytes = base58Decode(candidate);
+  return bytes !== null && bytes.length === 32;
 }
 
 // Granice (?<![...]) / (?![...]) chronią przed wycinaniem adresu ze środka
 // dłuższego ciągu, np. skrótu transakcji.
 const CANDIDATE_PATTERNS: RegExp[] = [
   /(?<![0-9a-zA-Z])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g,
-  /(?<![0-9a-zA-Z])(?:bc|tb|BC|TB)1[0-9a-zA-Z]{11,87}(?![0-9a-zA-Z])/g,
+  /(?<![0-9a-zA-Z])(?:bc|tb|ltc|BC|TB|LTC)1[0-9a-zA-Z]{11,87}(?![0-9a-zA-Z])/g,
   /(?<![0-9a-zA-Z])[1-9A-HJ-NP-Za-km-z]{26,35}(?![0-9a-zA-Z])/g,
   // Sieć laboratoryjna (syntetyczna): lab1 + 40 znaków hex.
   /(?<![0-9a-zA-Z])(?:lab1[0-9a-f]{40}|LAB1[0-9A-F]{40})(?![0-9a-zA-Z])/g,
@@ -225,17 +244,36 @@ const CANDIDATE_PATTERNS: RegExp[] = [
 
 const CONTEXT_RADIUS = 120;
 
+/** Kandydat na adres Solana: 32–44 znaki Base58 (bez sumy kontrolnej — patrz `SOLANA_CONTEXT`). */
+const SOLANA_CANDIDATE = /(?<![0-9a-zA-Z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![0-9a-zA-Z])/g;
+/**
+ * Słowa wskazujące sieć Solana. Ciągi Base58 o tej długości są w tekstach częste (skróty, identyfikatory,
+ * klucze), a adres Solana nie ma sumy kontrolnej — przyjmujemy go tylko, gdy takie słowo stoi w pobliżu.
+ */
+const SOLANA_CONTEXT = /(?<![\p{L}\p{N}])(?:sol|solana|phantom|solflare|backpack|spl)(?![\p{L}\p{N}])/iu;
+/** Ile znaków przed i po kandydacie szukamy słowa wskazującego sieć Solana. */
+export const SOLANA_CONTEXT_RADIUS = 60;
+
+/** Czy obok kandydata (w promieniu `SOLANA_CONTEXT_RADIUS` znaków) stoi słowo wskazujące sieć Solana. */
+export function hasSolanaContext(text: string, index: number, length: number): boolean {
+  const before = text.slice(Math.max(0, index - SOLANA_CONTEXT_RADIUS), index);
+  const after = text.slice(index + length, index + length + SOLANA_CONTEXT_RADIUS);
+  return SOLANA_CONTEXT.test(before) || SOLANA_CONTEXT.test(after);
+}
+
 /**
  * Wyszukuje w tekście wszystkie poprawne adresy. Ten sam adres w kilku miejscach
- * jest zwracany raz, z pozycją pierwszego wystąpienia.
+ * jest zwracany raz, z pozycją pierwszego wystąpienia. Adres Solana (bez sumy kontrolnej)
+ * jest przyjmowany tylko obok słowa wskazującego tę sieć (SOL, Solana, Phantom…).
  */
 export function extractAddresses(text: string): DetectedAddress[] {
   const found = new Map<string, DetectedAddress>();
-  for (const pattern of CANDIDATE_PATTERNS) {
+  for (const pattern of [...CANDIDATE_PATTERNS, SOLANA_CANDIDATE]) {
     for (const match of text.matchAll(pattern)) {
       const raw = match[0];
       const valid = validateAddress(raw);
       if (!valid) continue;
+      if (valid.network === 'solana' && (pattern !== SOLANA_CANDIDATE || !hasSolanaContext(text, match.index, raw.length))) continue;
       const key = `${valid.network}:${valid.address}`;
       const index = match.index;
       const existing = found.get(key);

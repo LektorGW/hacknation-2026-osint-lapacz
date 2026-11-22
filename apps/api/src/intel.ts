@@ -8,6 +8,7 @@ import type { IdentityAssessment } from './identity.ts';
 import type { PivotLead } from './pivot.ts';
 import type { BeneficiaryAttribution } from './beneficiary.ts';
 import type { OrganizationNetwork } from './org-network.ts';
+import type { PublicFigure } from './public-figure.ts';
 import type { ServiceMention } from './services.ts';
 import type { FiatSignalHit } from './fiat-signals.ts';
 import type { BusinessTextSignals } from './business.ts';
@@ -89,7 +90,9 @@ export type StopReason =
   /** Analizę przerwano z zewnątrz (zamknięcie usługi). */
   | 'aborted'
   /** Źródło albo dostawca danych nie odpowiedział — ta część wyniku jest niepełna. */
-  | 'source_error';
+  | 'source_error'
+  /** Konto zadeklarowane na stronie w serwisie, którego narzędzie nie pobiera — pokazane, ale nie wyszukiwane. */
+  | 'declared_only';
 
 export interface ExpansionStop {
   /** Etap analizy: `search`, `occurrences`, `chain`, `counterparties`, `pivot`. */
@@ -236,6 +239,10 @@ export interface RunIntel {
   beneficiaries?: BeneficiaryAttribution[];
   /** Sieć organizacji z rejestrów publicznych (osoby w rolach, podmioty powiązane) — tylko gdy wskazano organizację. */
   organizationNetwork?: OrganizationNetwork;
+  /** Dopasowanie podmiotu do wpisu osoby publicznej w Wikidata (hipoteza; kandydaci przy kilku osobach o tym nazwisku). */
+  publicFigure?: PublicFigure;
+  /** Sieć organizacji osoby publicznej — tylko gdy dopasowanie potwierdziła druga cecha (rozwinięcie automatyczne, głębokość 1). */
+  publicFigureNetwork?: OrganizationNetwork;
 }
 
 export const sightingKey = (item: { url: string; archivedAt?: string }): string => `${item.url}|${item.archivedAt ?? ''}`;

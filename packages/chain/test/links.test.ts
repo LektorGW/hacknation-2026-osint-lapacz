@@ -304,9 +304,10 @@ test('Blockscout: współwpłacający trafiają do pola `linkedAddresses` wyniku
 
   // Fabryka: powiązania włączone przy danych na żywo, budżet 12 / 40.
   const budgets = (config: object) => createChainProviders({ enableLive: true, fetch: mock.fetch, ...config }).map((item) => (item as unknown as { linkBudget: number; findLinks: boolean }));
-  assert.deepEqual(budgets({}).map((item) => [item.findLinks, item.linkBudget]), Array(4).fill([true, 12]));
-  assert.deepEqual(budgets({ depth: 'deep' }).map((item) => item.linkBudget), [40, 40, 40, 40]);
-  assert.deepEqual(budgets({ findLinks: false }).map((item) => item.findLinks), [false, false, false, false]);
+  // Pięciu dostawców na żywo: Blockstream, mempool.space, Ethereum (wiele sieci EVM), TronGrid, Litecoin Space.
+  assert.deepEqual(budgets({}).map((item) => [item.findLinks, item.linkBudget]), Array(5).fill([true, 12]));
+  assert.deepEqual(budgets({ depth: 'deep' }).map((item) => item.linkBudget), [40, 40, 40, 40, 40]);
+  assert.deepEqual(budgets({ findLinks: false }).map((item) => item.findLinks), [false, false, false, false, false]);
 });
 
 test('adresy-podróbki („address poisoning”) i przelewy zerowe lub w fałszywych tokenach nie tworzą powiązań', async () => {

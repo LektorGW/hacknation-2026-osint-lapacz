@@ -86,7 +86,7 @@ test('analiza z kluczem: żądania EVM idą przez api.blockscout.com, a klucza n
     return new Response(JSON.stringify(route), { status: 200 });
   };
   const providers = createChainProviders({ enableLive: true, blockscoutApiKey: KEY, blockscoutKeyScope: 'all', fetch: fetchImpl, externalLabels: false, findLinks: false });
-  assert.deepEqual(providers.map((item) => item.id).slice(-2), ['blockscout-ethereum', 'trongrid'], 'obie drogi do Ethereum są w jednym dostawcy');
+  assert.deepEqual(providers.map((item) => item.id).slice(-3), ['blockscout-ethereum', 'trongrid', 'esplora-litecoinspace'], 'obie drogi do Ethereum są w jednym dostawcy');
   const activity = (await getActivityFromProviders(providers, 'ethereum', SUBJECT, testContext())) as MultiChainActivity;
 
   assert.equal(activity.profile.balance, 1);

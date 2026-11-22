@@ -102,6 +102,15 @@ export const BUSINESS_RULES = {
     /** Lista sankcyjna albo ostrzeżenie KNF: dopasowanie mocne (identyfikator, druga cecha); słabe (sama nazwa). */
     riskStrong: 40,
     riskWeak: 15,
+    /**
+     * Osoba sprawy figuruje w CRBR jako beneficjent rzeczywisty podmiotu: imię i nazwisko zgodne z wpisem, a podmiot
+     * powiązany z osobą numerem (NIP/KRS z jej publikacji albo z analizy) — sygnał mocny (fakt z jawnego rejestru).
+     */
+    subjectIsBeneficialOwner: 50,
+    /** Podmiot w likwidacji, upadłości albo restrukturyzacji — dopisek w nazwie z rejestru (KRS, wykaz VAT, CRBR). */
+    insolvencyOrLiquidation: 30,
+    /** Tylko orzeczenie (SAOS) o upadłości / likwidacji z nazwą podmiotu w treści — dopasowanie po nazwie, słabe. */
+    insolvencyCourtOnly: 10,
   },
   /** Od tylu wpływów liczymy składniki blockchain. */
   minInflows: 3,
@@ -204,11 +213,13 @@ export interface RegistryDetails {
   capital?: string;
   people: string[];
   accounts: string[];
+  /** Beneficjenci rzeczywiści z CRBR (imię i nazwisko jak w rejestrze; bez PESEL i adresów). */
+  beneficialOwners?: string[];
 }
 
-/** Odczyt pól z treści dokumentu rejestru (format łączników z packages/sources/src/registry.ts). */
+/** Odczyt pól z treści dokumentu rejestru (format łączników z packages/sources/src/registry.ts i registries-pl/crbr.ts). */
 export function registryDetailsOf(connectorId: string, text: string): RegistryDetails | undefined {
-  if (!['live-vat-whitelist', 'live-krs', 'live-ceidg'].includes(connectorId)) return undefined;
+  if (!['live-vat-whitelist', 'live-krs', 'live-ceidg', 'live-crbr'].includes(connectorId)) return undefined;
   const field = (...labels: string[]): string | undefined => {
     for (const label of labels) {
       const hit = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*(.+)$`, 'mi').exec(text);
@@ -236,7 +247,9 @@ export function registryDetailsOf(connectorId: string, text: string): RegistryDe
   const krs = field('KRS')?.replace(/[^\d]/g, '');
   const ceidgStatus = connectorId === 'live-ceidg' ? field('Status') : undefined;
   const removal = date(field('Data wykreślenia', 'Data zakończenia działalności', 'Data zakończenia'));
+  const owners = connectorId === 'live-crbr' ? unique([...text.matchAll(/^Beneficjent rzeczywisty: ([^(\n]+?)(?:\s*\(.*\))?\s*$/gm)].map((hit) => hit[1]!.trim()).filter(Boolean)) : [];
   return {
+    ...(owners.length > 0 ? { beneficialOwners: owners.slice(0, 15) } : {}),
     connectorId,
     ...(field('Nazwa', 'Nazwa firmy') ? { name: field('Nazwa', 'Nazwa firmy')! } : {}),
     ...(nip && nip.length === 10 ? { nip } : {}),
@@ -396,7 +409,17 @@ export interface BusinessRiskFlag {
 export interface RegisteredTrackContext {
   payouts?: BusinessServicePayout[];
   /** Organizacje z sieci organizacji (rejestry) — do adresów płatności firmy i wspólnych członków organów. */
-  organizations?: { id: string; name: string; krs?: string; nip?: string; addressKeys: string[] }[];
+  organizations?: {
+    id: string;
+    name: string;
+    krs?: string;
+    nip?: string;
+    addressKeys: string[];
+    /** Beneficjenci rzeczywiści z CRBR (sieć organizacji). */
+    beneficialOwners?: string[];
+    /** Orzeczenia (SAOS) z nazwą organizacji — dopasowanie po nazwie. */
+    courtDecisions?: { label: string; url: string; insolvency: boolean }[];
+  }[];
   orgRelations?: { from: string; to: string; kind: string; explanation: string }[];
   riskFlags?: BusinessRiskFlag[];
 }
@@ -1053,6 +1076,7 @@ export function assessBusinessActivity(input: BusinessInput): BusinessActivityAs
           ...(firstActivity ? { firstActivity } : {}),
           publications: pubs,
           addressKeys: new Set(input.addresses.map((item) => `${item.network}:${item.address}`)),
+          ...(input.subject.kind === 'subject' || input.subject.kind === 'person' ? { subjectName: input.subject.label } : {}),
         })
       : undefined;
   return {
@@ -1125,7 +1149,21 @@ function whatToVerify(facts: {
 
 // ---------- Ścieżka 2: podmiot zarejestrowany ----------
 
-const REGISTRY_NAME: Record<string, string> = { 'live-vat-whitelist': 'wykaz podatników VAT', 'live-krs': 'KRS', 'live-ceidg': 'CEIDG' };
+const REGISTRY_NAME: Record<string, string> = { 'live-vat-whitelist': 'wykaz podatników VAT', 'live-krs': 'KRS', 'live-ceidg': 'CEIDG', 'live-crbr': 'CRBR' };
+
+/** Podmiot z rejestrów z beneficjentami rzeczywistymi z CRBR (pole dodatkowe — typ w @olcys/core go nie zna). */
+type RegisteredEntityWithOwners = RegisteredEntity & { beneficialOwners?: string[] };
+
+/** Czy imię i nazwisko osoby sprawy zgadza się z wpisem beneficjenta: pierwsze imię i nazwisko z rejestru, oba w etykiecie. */
+export function sameBeneficialOwnerName(owner: string, subject: string): boolean {
+  const tokens = (text: string) => fold(text).replace(/[^a-z\s-]/g, ' ').split(/[\s-]+/).filter((token) => token.length >= 2);
+  const ownerTokens = tokens(owner);
+  const subjectTokens = tokens(subject);
+  if (ownerTokens.length < 2 || subjectTokens.length < 2) return false;
+  return subjectTokens.every((token) => ownerTokens.includes(token)) && subjectTokens.includes(ownerTokens[0]!) && subjectTokens.includes(ownerTokens.at(-1)!);
+}
+
+const STATE_IN_NAME = /(?:^|[\s,])w\s+(likwidacji|upadłości|upadlosci|restrukturyzacji)(?=$|[\s,.)])/i;
 
 /** Podmioty z rejestrów (bez dopasowań po samej nazwie), scalone po NIP / KRS. */
 export function registeredEntitiesOf(records: BusinessRegistryRecord[]): RegisteredEntity[] {
@@ -1146,6 +1184,10 @@ export function registeredEntitiesOf(records: BusinessRegistryRecord[]): Registe
     for (const item of details.pkd) if (!entity.pkd.some((known) => known.code === item.code)) entity.pkd.push(item);
     entity.people = unique([...entity.people, ...details.people]);
     entity.whitelistAccounts = unique([...entity.whitelistAccounts, ...details.accounts]);
+    if (details.beneficialOwners && details.beneficialOwners.length > 0) {
+      const withOwners = entity as RegisteredEntityWithOwners;
+      withOwners.beneficialOwners = unique([...(withOwners.beneficialOwners ?? []), ...details.beneficialOwners]);
+    }
     entity.sources.push({ registry: REGISTRY_NAME[details.connectorId] ?? details.connectorId, url: record.url });
   }
   return entities;
@@ -1159,6 +1201,22 @@ interface TrackFacts {
   firstActivity?: string;
   publications: BusinessPublication[];
   addressKeys: Set<string>;
+  /** Imię i nazwisko osoby sprawy — tylko dla osób (porównanie z beneficjentami rzeczywistymi z CRBR). */
+  subjectName?: string;
+}
+
+/** Punkt „co sprawdzić” o beneficjentach rzeczywistych: wynik z CRBR (jeśli pobrano) albo wskazanie rejestru. */
+function beneficialOwnersLine(entities: RegisteredEntity[], context: RegisteredTrackContext): string {
+  const found = entities
+    .map((entity) => {
+      const org = (context.organizations ?? []).find((item) => (item.nip && item.nip === entity.nip) || (item.krs && item.krs === entity.krs));
+      const owners = unique([...((entity as RegisteredEntityWithOwners).beneficialOwners ?? []), ...(org?.beneficialOwners ?? [])]);
+      return owners.length > 0 ? `${entity.name}: ${owners.slice(0, 5).join(', ')}` : '';
+    })
+    .filter(Boolean);
+  return found.length > 0
+    ? `Beneficjenci rzeczywiści według CRBR (rejestr jawny — podstawę prawną opisuje docs/ZRODLA-PODSTAWA-PRAWNA.md): ${found.join('; ')}. Potwierdź tożsamość po numerze PESEL w CRBR w systemach KAS — narzędzie PESEL nie pobiera.`
+    : 'Ustal beneficjenta rzeczywistego podmiotu w CRBR (Centralny Rejestr Beneficjentów Rzeczywistych, rejestr jawny — podstawę prawną opisuje docs/ZRODLA-PODSTAWA-PRAWNA.md); łącznik live-crbr pyta go po NIP/KRS spółki — w tej analizie nie zwrócił wpisu albo nie był użyty.';
 }
 
 function assessRegisteredTrack(entities: RegisteredEntity[], context: RegisteredTrackContext, facts: TrackFacts): RegisteredEntityAssessment {
@@ -1278,6 +1336,48 @@ function assessRegisteredTrack(entities: RegisteredEntity[], context: Registered
         limitations: ['Wspólny członek zarządu to częsta i legalna sytuacja.'],
       });
     }
+    // CRBR: beneficjenci rzeczywiści (łącznik live-crbr albo sieć organizacji) — osoba sprawy jako beneficjent podmiotu.
+    const owners = unique([...((entity as RegisteredEntityWithOwners).beneficialOwners ?? []), ...(org?.beneficialOwners ?? [])]);
+    const ownerMatch = facts.subjectName ? owners.find((owner) => sameBeneficialOwnerName(owner, facts.subjectName!)) : undefined;
+    if (ownerMatch) {
+      drafts.push({
+        rule: 'business.registered.subject_is_beneficial_owner',
+        weight: R.subjectIsBeneficialOwner,
+        direction: 'supports',
+        source: 'Centralny Rejestr Beneficjentów Rzeczywistych (CRBR, rejestr jawny)',
+        originKey: `reg:crbr:${entity.id}`,
+        evidence: [...entityRefs(entity), { kind: 'attribute' as const, value: `beneficjent rzeczywisty (CRBR): ${ownerMatch}` }],
+        explanation:
+          `Osoba sprawy („${facts.subjectName}”) figuruje w CRBR jako beneficjent rzeczywisty podmiotu ${label} („${ownerMatch}”), a podmiot jest z nią powiązany numerem rejestrowym. ` +
+          'Obrót kryptowalutowy osoby i obrót podmiotu mogą się przenikać — sygnał do weryfikacji źródła środków i ujęcia obrotu w księgach.',
+        limitations: [
+          'Zgodność imienia i nazwiska z wpisem CRBR — bez numeru PESEL (narzędzie go nie pobiera) możliwy jest imiennik; potwierdź w CRBR po PESEL w systemach KAS.',
+          'Wpis CRBR składa sam podmiot; rejestr domniemywa prawdziwość danych (art. 68 ustawy AML), ale mogą być nieaktualne.',
+        ],
+      });
+    }
+    const stateInName = STATE_IN_NAME.exec(entity.name)?.[1]?.toLowerCase();
+    const insolvencyRulings = (org?.courtDecisions ?? []).filter((decision) => decision.insolvency);
+    if (stateInName || insolvencyRulings.length > 0) {
+      const state = stateInName ? `w ${stateInName.replace('upadlosci', 'upadłości')}` : undefined;
+      drafts.push({
+        rule: 'business.registered.insolvency_or_liquidation',
+        weight: state ? R.insolvencyOrLiquidation : R.insolvencyCourtOnly,
+        direction: 'supports',
+        source: state ? sourceOf(entity) : 'orzeczenia sądów (SAOS) — dopasowanie po nazwie',
+        originKey: `reg:insolvency:${entity.id}`,
+        evidence: [...(state ? entityRefs(entity) : []), ...insolvencyRulings.slice(0, 3).map((decision) => ({ kind: 'url' as const, value: decision.url }))],
+        explanation:
+          (state
+            ? `Podmiot ${label} jest ${state} (dopisek w nazwie z rejestru).`
+            : `Orzeczenia z nazwą podmiotu ${label} dotyczą upadłości, likwidacji albo restrukturyzacji (${insolvencyRulings.slice(0, 2).map((decision) => decision.label).join('; ')}).`) +
+          (facts.inflows.length > 0 ? ` Jednocześnie ${count(facts.inflows.length, 'wpływ', 'wpływy', 'wpływów')} kryptowalut w zebranych danych.` : '') +
+          ' Sygnał do weryfikacji: ryzyko wyprowadzania majątku poza masę lub poza wiedzę wierzycieli — sprawdź Krajowy Rejestr Zadłużonych i akta postępowania.',
+        limitations: [
+          state ? 'Likwidacja, upadłość i restrukturyzacja są zdarzeniami legalnymi; wpływy mogą być spłatą należności lub sprzedażą majątku przez likwidatora / syndyka.' : 'Orzeczenie dopasowano wyłącznie po nazwie w treści (zanonimizowanej) — możliwa zbieżność nazw z innym podmiotem.',
+        ],
+      });
+    }
     for (const flag of (context.riskFlags ?? []).filter((item) => item.nodeId === entity.id)) {
       const strong = flag.confidence === 'strong' || flag.status === 'source_fact';
       drafts.push({
@@ -1303,7 +1403,7 @@ function assessRegisteredTrack(entities: RegisteredEntity[], context: Registered
     `Porównaj obrót kryptowalutowy z plikami JPK_V7 i księgami podmiotu ${names}.`,
     'Sprawdź zeznanie CIT-8 (spółka) albo PIT-36/PIT-36L (przedsiębiorca) podmiotu za lata aktywności oraz ujęcie wpływów z kryptowalut.',
     'Ustal źródło pochodzenia środków wpłacanych z kryptowalut na rachunki podmiotu (dokumenty sprzedaży, umowy, faktury).',
-    'Ustal beneficjenta rzeczywistego podmiotu — CRBR (Centralny Rejestr Beneficjentów Rzeczywistych) jest rejestrem jawnym, ale przed użyciem sprawdź podstawę prawną i zakres dostępu; narzędzie z niego nie korzysta.',
+    beneficialOwnersLine(entities, context),
     ...(drafts.some((item) => item.rule === 'business.registered.payout_to_whitelist_account')
       ? ['Potwierdź pełny numer rachunku z odpowiedzi usługi w wykazie podatników VAT albo w banku — narzędzie porównało tylko końcówkę zamaskowanego numeru.']
       : []),
@@ -1449,7 +1549,8 @@ function excerptsOf(findings: DossierBusinessInput['findings']): Map<string, { e
   return map;
 }
 
-const isRegistrySighting = (sighting: Sighting) => REGISTRY_IDS.has(sighting.connectorId);
+// CRBR to rejestr spółek (beneficjenci) — jego dokumenty są wpisami rejestrowymi, nie publikacjami osoby.
+const isRegistrySighting = (sighting: Sighting) => REGISTRY_IDS.has(sighting.connectorId) || sighting.connectorId === 'live-crbr';
 
 /** Wskaźnik D podmiotu teczki wraz z węzłami siatki (osoby, organizacje) mającymi sygnały działalności. */
 export function buildBusinessActivity(input: DossierBusinessInput): BusinessActivityAssessment {
@@ -1582,7 +1683,14 @@ export interface DossierBusinessParts {
   linkedIdentities: { id: string; displayName: string; accounts: string[]; addresses: { address: string; network: string }[] }[];
   serviceReplies: { id: string; serviceName: string; reference: string; withdrawn?: boolean; match?: { matched?: boolean }; payload: { fiatPayouts: { time: string; amount: number; currency: string; bankAccountMasked?: string }[] } }[];
   organizationNetwork?: {
-    organizations: { id: string; name: string; identifiers: { krs?: string; nip?: string }; addresses: string[] }[];
+    organizations: {
+      id: string;
+      name: string;
+      identifiers: { krs?: string; nip?: string };
+      addresses: string[];
+      beneficialOwners?: string[];
+      courtDecisions?: { label: string; url: string; insolvency: boolean }[];
+    }[];
     relations: { from: string; to: string; kind: string; explanation: string }[];
   };
   riskCheck?: DossierBusinessInput['riskCheck'];
@@ -1635,6 +1743,8 @@ export function businessForDossier(parts: DossierBusinessParts): BusinessActivit
             ...(org.identifiers.krs ? { krs: org.identifiers.krs } : {}),
             ...(org.identifiers.nip ? { nip: org.identifiers.nip } : {}),
             addressKeys: org.addresses.map(keyOfRaw),
+            ...(org.beneficialOwners && org.beneficialOwners.length > 0 ? { beneficialOwners: org.beneficialOwners } : {}),
+            ...(org.courtDecisions && org.courtDecisions.length > 0 ? { courtDecisions: org.courtDecisions.map((item) => ({ label: item.label, url: item.url, insolvency: item.insolvency })) } : {}),
           })),
           orgRelations: network.relations,
         }

@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { validateAddress } from '@olcys/core';
+import { nickCandidates } from '@olcys/sources';
 import type { ChainProvider } from '@olcys/core';
 import { DEFAULT_MAX_REQUESTS, EXPANSION_RELIABILITY, runAnalysis } from '../src/analysis.ts';
 import type { ActivityResolver, AnalysisResult } from '../src/analysis.ts';
@@ -233,12 +234,15 @@ test('wiarygodność źródeł: trop analityka po samym nazwisku idzie o jeden k
   const connector = fakeConnector('profile', 'serwis.example', ['full_name', 'nick'], (identifier) => {
     if (identifier.type === 'full_name') return [{ url: 'https://serwis.example/jkowalski', author: 'jkowalski', identityMatch: 'name_only' as const, text: 'Jan Kowalski.', discoveredIdentifiers: [{ type: 'nick' as const, value: 'jk_portfel' }] }];
     if (identifier.value === 'jk_portfel') return [{ url: 'https://serwis.example/jk_portfel', author: 'jk_portfel', text: `Adres ${BTC_B}`, discoveredIdentifiers: [{ type: 'nick' as const, value: 'jk_trzecie' }] }];
-    return [{ url: 'https://serwis.example/jk_trzecie', author: 'jk_trzecie', text: `Adres ${BTC_C}` }];
+    if (identifier.value === 'jk_trzecie') return [{ url: 'https://serwis.example/jk_trzecie', author: 'jk_trzecie', text: `Adres ${BTC_C}` }];
+    // Nicki wygenerowane z imienia i nazwiska (krok 0) nie dają tu wyników.
+    return [];
   });
   const result = await runAnalysis({ query: { identifiers: [fullName] }, connectors: [connector], chainProviders: [fakeProvider()] });
 
   // Pierwszy krok od identyfikatora analityka jest wykonywany, łańcuch „słaby → słaby” już nie.
-  assert.deepEqual(connector.calls.map((call) => call.value), ['Jan Kowalski', 'jk_portfel']);
+  // Pomijamy nicki-kandydatów z imienia i nazwiska — sprawdzane osobno w name-candidates.test.ts.
+  assert.deepEqual(connector.calls.map((call) => call.value).filter((value) => !nickCandidates('Jan Kowalski').includes(value)), ['Jan Kowalski', 'jk_portfel']);
   assert.deepEqual(result.intel.trail.map((entry) => [entry.identifier.value, entry.match, entry.followed, entry.stopReason]), [
     ['jk_portfel', 'name_only', true, undefined],
     ['jk_trzecie', 'name_only', false, 'low_reliability'],

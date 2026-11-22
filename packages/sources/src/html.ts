@@ -52,7 +52,8 @@ export function htmlToText(html: string): string {
     // zostawiamy go w tekście, bo widoczny napis to często tylko „wpłać tutaj".
     .replace(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi, (tag, href: string) => {
       const address = addressFromHref(href);
-      return address ? `${tag} [adres z odnośnika: ${address}] ` : tag;
+      // Adres Solana (bez sumy kontrolnej) potrzebuje słowa wskazującego sieć, żeby `extractAddresses` go przyjął.
+      return address ? `${tag} [adres ${validateAddress(address)?.network === 'solana' ? 'Solana ' : ''}z odnośnika: ${address}] ` : tag;
     })
     // Strony zbiórek pokazują adres w polu „kopiuj” (`<input readonly value="…">`) — bez tego adres znika z tekstu.
     .replace(/<input\b[^>]*\bvalue\s*=\s*["']([^"']{20,120})["'][^>]*>/gi, (tag, value: string) => {

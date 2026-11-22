@@ -11,6 +11,7 @@ import { BlockscoutProvider } from './providers/blockscout.ts';
 import { EsploraProvider } from './providers/esplora.ts';
 import { LabChainProvider } from './providers/lab.ts';
 import { SandboxChainProvider } from './providers/sandbox.ts';
+import { SolanaRpcProvider } from './providers/solana.ts';
 import { TronGridProvider } from './providers/trongrid.ts';
 import { DEFAULT_REQUEST_BUDGET } from './deposit.ts';
 import { DEEP_FUNDING_BUDGET, DEFAULT_FUNDING_BUDGET } from './funding.ts';
@@ -33,6 +34,7 @@ export * from './links.ts';
 export * from './ofac.ts';
 export * from './offramps.ts';
 export * from './party-labels.ts';
+export * from './roundtrip.ts';
 export * from './trace.ts';
 export * from './valuation.ts';
 export { ChainProviderError, DEFAULT_HOST_POLICIES, RequestBudget, USER_AGENT, createPoliteFetch, fetchJson, fromBaseUnits } from './http.ts';
@@ -41,6 +43,7 @@ export { BlockscoutProvider, parseBlockscoutParty } from './providers/blockscout
 export { EsploraProvider } from './providers/esplora.ts';
 export { LAB_LIMITATIONS, LabChainProvider } from './providers/lab.ts';
 export { SandboxChainProvider } from './providers/sandbox.ts';
+export { SOLANA_STABLECOINS, SolanaRpcProvider, solanaTransfers } from './providers/solana.ts';
 export { TronGridProvider } from './providers/trongrid.ts';
 
 export interface ChainConfig extends ActivityOptions, HistoryOptions {
@@ -104,6 +107,16 @@ export interface ChainConfig extends ActivityOptions, HistoryOptions {
   links?: LinkOptions;
   /** Osobny budżet żądań na pochodzenie środków (śledzenie wstecz): domyślnie 8, w trybie głębokim 16. */
   fundingBudget?: number;
+  /** `false` wyłącza dostawcę Litecoin (litecoinspace.org). */
+  litecoin?: boolean;
+  /**
+   * Adres węzła JSON-RPC Solana (własnego albo zakontraktowanego — np. z `process.env.SOLANA_RPC_URL`). Bez niego
+   * adresy Solana nie są sprawdzane: publicznego węzła api.mainnet-beta.solana.com nie używamy (warunki w
+   * docs/ZRODLA-PODSTAWA-PRAWNA.md, rozdz. „Sieci blockchain: Litecoin, Solana”). Adres może zawierać klucz — nie trafia do opisów ani błędów.
+   */
+  solanaRpcUrl?: string;
+  /** Ile najnowszych transakcji Solana rozpisać na przelewy: domyślnie 20, w trybie głębokim 60. */
+  solanaMaxTransactions?: number;
 }
 
 /** Budżet żądań na adres w trybie `depth: 'deep'`. */
@@ -242,6 +255,32 @@ export function createChainProviders(config: ChainConfig = {}): ChainProvider[] 
         : ethereumProvider,
       new TronGridProvider({ ...live, labelLookup: tronScan, ...(externalLabels ? { tronScanUrl: 'https://apilist.tronscanapi.com' } : {}) }),
     );
+    if (config.litecoin ?? true) {
+      // Litecoin Space (Fundacja Litecoin): to samo API Esplora. Bez etykiet zewnętrznych (WalletExplorer obejmuje
+      // tylko Bitcoin) i bez śledzenia dalszej drogi środków — zbiór etykiet nie zna adresów giełd w tej sieci,
+      // więc dodatkowe zapytania nie mogłyby niczego rozpoznać. Klaster portfela i powiązane adresy — jak dla Bitcoina.
+      providers.push(
+        new EsploraProvider({
+          ...live,
+          network: 'litecoin',
+          followDeposits: false,
+          id: 'esplora-litecoinspace',
+          label: 'Litecoin Space (Litecoin)',
+          siteUrl: 'https://litecoinspace.org',
+        }),
+      );
+    }
+    const solanaRpcUrl = config.solanaRpcUrl?.trim();
+    if (solanaRpcUrl) {
+      providers.push(
+        new SolanaRpcProvider({
+          ...live,
+          rpcUrl: solanaRpcUrl,
+          maxTransactions: config.solanaMaxTransactions ?? (deep ? 60 : undefined),
+          requestBudget: Math.max(live.requestBudget, (config.solanaMaxTransactions ?? (deep ? 60 : 20)) + 2),
+        }),
+      );
+    }
   }
   return providers;
 }

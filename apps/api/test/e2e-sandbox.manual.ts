@@ -65,6 +65,24 @@ for (const value of values) {
   for (const person of dossier.relatedPersons.slice(0, 5)) console.log(`  powiązana: ${person.handle} ${person.strength} ${person.relations.map((item: { kind: string }) => item.kind).join(',')}`);
   console.log(`  priorytet ${dossier.totals.priority}, graf ${dossier.graph.nodes.length}/${dossier.graph.edges.length}, oś czasu ${dossier.timeline.length}`);
   for (const item of dossier.keyFindings) console.log(`  • [${item.layer}] ${item.text}`);
+  // Osoba publiczna (Wikidata): dopasowanie, druga cecha, siatka; CONFIRM_PF=1 — ścieżka potwierdzenia przez analityka.
+  const printFigure = (figure: { wikidataId?: string; label?: string; match: string; status: string; matchedBy: { explanation: string }[]; candidates?: { wikidataId: string; label: string }[]; counts?: { organizations: number; persons: number; relations: number } } | undefined) => {
+    if (!figure) return console.log('  osoba publiczna: brak dopasowania w Wikidata');
+    console.log(`  osoba publiczna: ${figure.label ?? '—'} ${figure.wikidataId ?? ''} [${figure.match}, ${figure.status}] kandydaci: ${(figure.candidates ?? []).map((item) => `${item.label} ${item.wikidataId}`).join('; ') || '—'}`);
+    for (const item of figure.matchedBy) console.log(`      druga cecha: ${item.explanation}`);
+    if (figure.counts) console.log(`      Siatka: ${figure.counts.organizations} organizacji, ${figure.counts.persons} osób, ${figure.counts.relations} relacji`);
+  };
+  printFigure(dossier.publicFigure);
+  if (process.env.CONFIRM_PF && dossier.publicFigure?.wikidataId && dossier.publicFigure.status !== 'confirmed') {
+    const started = Date.now();
+    const confirmed = await app.inject({ method: 'POST', url: `/api/cases/${dossier.caseId}/public-figure`, payload: { wikidataId: dossier.publicFigure.wikidataId, decision: 'confirmed', note: 'próba ręczna' } });
+    console.log(`  potwierdzenie analityka: HTTP ${confirmed.statusCode} (${Date.now() - started} ms) ${confirmed.json().note ?? ''}`);
+    const after = (await app.inject(`/api/cases/${dossier.caseId}/dossier`)).json();
+    printFigure(after.publicFigure);
+    for (const role of (after.publicFigure?.roles ?? []).slice(0, 15)) console.log(`      rola: ${role.organization} — ${role.role} ${[role.from, role.to].filter(Boolean).join('–')}`);
+    for (const stop of after.organizationNetwork?.stops ?? []) console.log(`      zatrzymanie: [${stop.reason}] ${stop.detail}`);
+    console.log(`  graf po potwierdzeniu: ${after.graph.nodes.length} węzłów / ${after.graph.edges.length} krawędzi`);
+  }
   const timing = (await app.inject(`/api/runs/${dossier.runId}/progress`)).json();
   console.log(`  czasy faz: ${(timing.timings ?? []).map((item: { stage: string; ms: number }) => `${item.stage} ${(item.ms / 1000).toFixed(1)} s`).join(', ')}`);
   for (const query of timing.slowestQueries ?? []) console.log(`  wolne zapytanie: ${query.connectorId} ${query.identifier.type} „${query.identifier.value}” ${(query.ms / 1000).toFixed(1)} s, dokumentów ${query.documents}`);

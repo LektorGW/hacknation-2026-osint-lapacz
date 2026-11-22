@@ -1,5 +1,7 @@
 // Organizacja (beneficjent zbiórki), osoby w rolach z rejestrów publicznych i siatka adresu.
 // Zasada: osoba w roli to osoba odpowiedzialna za organizację, nie właściciel adresu; wpłacający nie są osobami.
+import { useState } from 'react';
+import { api, errorMessage } from '../api.ts';
 import { useDossier } from './DossierContext.tsx';
 import { ExternalLink, ShortAddress } from './common.tsx';
 import { StatusBadge } from './Indicators.tsx';
@@ -7,8 +9,8 @@ import { Disclosure } from './ui/Disclosure.tsx';
 import { Score } from './ui/Score.tsx';
 import { Term } from './ui/Term.tsx';
 import { fmtAmount, fmtPlnCompact } from '../format.ts';
-import { rolesByOrganization, shareText } from '../organizations.ts';
-import type { AddressNetwork, DossierOrganization } from '../organizations.ts';
+import { networkCountText, publicFigureStatusText, rolesByOrganization, shareText } from '../organizations.ts';
+import type { AddressNetwork, DossierOrganization, OrganizationNetwork, PublicFigure } from '../organizations.ts';
 
 function OrganizationBlock({ org }: { org: DossierOrganization }) {
   return (
@@ -79,12 +81,197 @@ export function OrganizationTile({ org }: { org: DossierOrganization }) {
   );
 }
 
+/** Liczniki siatki: z teczki (osoba publiczna) albo policzone z sieci organizacji. */
+function countsOf(figure: PublicFigure | undefined, network: OrganizationNetwork | undefined) {
+  if (figure?.counts) return figure.counts;
+  if (!network) return undefined;
+  return {
+    organizations: network.organizations.length,
+    persons: new Set(network.persons.map((person) => person.wikidata ?? person.id)).size,
+    relations: network.persons.length + network.relations.length + network.personLinks.length,
+  };
+}
+
+/** Wiersz kafla „Kto to prawdopodobnie jest”: osoba publiczna z Wikidata, status dopasowania, druga cecha, licznik siatki. */
+export function PublicFigureLine() {
+  const { dossier } = useDossier();
+  const figure = dossier.publicFigure;
+  if (!figure || figure.status === 'rejected') return null;
+  if (!figure.wikidataId) {
+    return <p className="muted small">Osoby publiczne o tym nazwisku w Wikidata: {figure.candidates?.length ?? 0} — wybór należy do analityka (karta „Organizacje i osoby odpowiedzialne”).</p>;
+  }
+  const counts = countsOf(figure, dossier.organizationNetwork);
+  return (
+    <div className="public-figure-line small">
+      <p>
+        Osoba publiczna: <strong>{figure.label}</strong> (<ExternalLink url={figure.url!}>Wikidata</ExternalLink>) ·{' '}
+        <span className={figure.status === 'confirmed' ? 'status status-ok' : 'status status-inference'}>{publicFigureStatusText(figure)}</span>
+      </p>
+      {figure.matchedBy.length > 0 && <p className="muted">druga cecha: {figure.matchedBy.map((item) => `${item.propertyLabel} „${item.caseValue}”`).join(', ')}</p>}
+      {counts && counts.organizations > 0 && <p className="muted">{networkCountText(counts)}</p>}
+    </div>
+  );
+}
+
+/** Blok osoby publicznej w karcie organizacji: dopasowanie, dowody, decyzja analityka, role z datami. */
+function PublicFigureBlock({ figure }: { figure: PublicFigure }) {
+  const { dossier, summary, reload } = useDossier();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const counts = countsOf(figure, dossier.organizationNetwork);
+  const canDecide = Boolean(api.decidePublicFigure);
+
+  async function decide(wikidataId: string, decision: 'confirmed' | 'rejected') {
+    setBusy(`${wikidataId}:${decision}`);
+    setMessage(null);
+    try {
+      const result = await api.decidePublicFigure!(summary.id, { wikidataId, decision });
+      setMessage(result.note ?? null);
+      reload();
+    } catch (problem) {
+      setMessage(errorMessage(problem));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const decisionButtons = (wikidataId: string, label: string) =>
+    canDecide && figure.status !== 'confirmed' ? (
+      <span className="decision-buttons">
+        <button type="button" className="button button-small button-primary" disabled={busy !== null} onClick={() => decide(wikidataId, 'confirmed')}>
+          {busy === `${wikidataId}:confirmed` ? 'Rozwijanie sieci…' : `Potwierdź: to ${label}`}
+        </button>{' '}
+        {figure.wikidataId === wikidataId && figure.status !== 'rejected' && (
+          <button type="button" className="button button-small" disabled={busy !== null} onClick={() => decide(wikidataId, 'rejected')}>
+            Odrzuć dopasowanie
+          </button>
+        )}
+      </span>
+    ) : null;
+
+  return (
+    <article className="card public-figure" aria-label="Osoba publiczna (Wikidata)">
+      <header className="section-head">
+        <div>
+          <p className="eyebrow">Osoba publiczna · Wikidata</p>
+          <h3>
+            {figure.wikidataId ? (
+              <>
+                {figure.label} <span className="muted">({figure.wikidataId})</span>
+              </>
+            ) : (
+              `„${figure.query}” — kilka osób o tym nazwisku`
+            )}{' '}
+            <StatusBadge status={figure.status === 'confirmed' ? 'confirmed' : figure.status === 'rejected' ? 'rejected' : 'hypothesis'} />
+          </h3>
+          {figure.description && <p className="muted small">{figure.description}</p>}
+        </div>
+      </header>
+      <p>
+        <strong>{publicFigureStatusText(figure)}.</strong> {figure.statement}
+      </p>
+      {figure.matchedBy.length > 0 && (
+        <Disclosure title="Druga cecha zgodna z danymi sprawy" meta={figure.matchedBy.length}>
+          <ul className="plain-list">
+            {figure.matchedBy.map((item) => (
+              <li key={`${item.property}-${item.caseSource}`}>
+                {item.explanation}
+                {/^https?:\/\//.test(item.caseSource) && (
+                  <>
+                    {' '}
+                    <ExternalLink url={item.caseSource}>źródło w sprawie</ExternalLink>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Disclosure>
+      )}
+      {figure.wikidataId && decisionButtons(figure.wikidataId, figure.label ?? figure.wikidataId)}
+      {figure.decision && (
+        <p className="muted small">
+          Decyzja analityka ({figure.decision.author}, {figure.decision.decidedAt.slice(0, 10)}){figure.decision.note ? `: „${figure.decision.note}”` : ''}.
+        </p>
+      )}
+      {figure.candidates && figure.candidates.length > 0 && (
+        <Disclosure title={figure.wikidataId ? 'Inne osoby o tym nazwisku w Wikidata' : 'Kandydaci — wybierz osobę albo pozostaw bez wyboru'} meta={figure.candidates.length} defaultOpen={!figure.wikidataId}>
+          <ul className="plain-list">
+            {figure.candidates.map((candidate) => (
+              <li key={candidate.wikidataId}>
+                <ExternalLink url={candidate.url}>{`${candidate.label} (${candidate.wikidataId})`}</ExternalLink>
+                {candidate.description ? ` — ${candidate.description}` : ''}
+                {candidate.corroborated ? ' · druga cecha zgodna' : ' · zgodne tylko imię i nazwisko'} {figure.status !== 'confirmed' && decisionButtons(candidate.wikidataId, candidate.label)}
+              </li>
+            ))}
+          </ul>
+        </Disclosure>
+      )}
+      {counts && counts.organizations > 0 && (
+        <p className="public-figure-counts">
+          <strong>{networkCountText(counts)}</strong>
+          {figure.expansion ? <span className="muted small"> · {figure.expansion.note}</span> : null}
+        </p>
+      )}
+      {figure.roles && figure.roles.length > 0 && (
+        <Disclosure title="Organizacje i role osoby (Wikidata)" meta={figure.roles.length} defaultOpen>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Organizacja</th>
+                <th>Rola</th>
+                <th>Okres</th>
+                <th>Źródło</th>
+              </tr>
+            </thead>
+            <tbody>
+              {figure.roles.map((role) => (
+                <tr key={`${role.organizationId}-${role.property}-${role.from ?? ''}`}>
+                  <td>{role.organization}</td>
+                  <td>{role.role}</td>
+                  <td>{[role.from, role.to].filter(Boolean).join(' – ') || '—'}</td>
+                  <td>
+                    <ExternalLink url={role.source}>{role.property}</ExternalLink>
+                    {role.reference && (
+                      <>
+                        {' · '}
+                        <ExternalLink url={role.reference}>przypis</ExternalLink>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Disclosure>
+      )}
+      {figure.cryptoAddresses && figure.cryptoAddresses.length > 0 && (
+        <ul className="plain-list small">
+          {figure.cryptoAddresses.map((item) => (
+            <li key={item.address}>
+              <ShortAddress value={item.address} /> — {item.note}
+            </li>
+          ))}
+        </ul>
+      )}
+      {message && <p className="notice notice-inline">{message}</p>}
+      <ul className="muted small">
+        <li>Rola w organizacji nie oznacza własności adresu; relacja (rola, wspólna organizacja, rodzina) nie jest dowodem.</li>
+        <li>Dopasowanie po samym imieniu i nazwisku nie wystarcza — sieć rozwija się automatycznie tylko przy drugiej zgodnej cesze albo po decyzji analityka.</li>
+        {figure.notes.map((note) => (
+          <li key={note}>{note}</li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+
 /** Karta „Organizacje i osoby odpowiedzialne” — sekcja „Osoba i konta”. */
 export function OrganizationsCard() {
   const { dossier } = useDossier();
   const organizations = dossier.organizations ?? [];
   const network = dossier.organizationNetwork;
-  if (organizations.length === 0 && !network?.organizations.length) return null;
+  const figure = dossier.publicFigure;
+  if (organizations.length === 0 && !network?.organizations.length && !figure) return null;
   return (
     <section className="card organizations" aria-labelledby="organizacje-tytul">
       <h2 id="organizacje-tytul">Organizacje i osoby odpowiedzialne</h2>
@@ -92,6 +279,7 @@ export function OrganizationsCard() {
         Organizacja wskazana przez treść wokół adresu to hipoteza. Osoby poniżej pełnią role według rejestrów publicznych — są{' '}
         <Term id="osoba-w-roli">osobami odpowiedzialnymi za organizację</Term>, a nie właścicielami adresu.
       </p>
+      {figure && <PublicFigureBlock figure={figure} />}
       {organizations.map((org) => (
         <OrganizationBlock key={org.name} org={org} />
       ))}

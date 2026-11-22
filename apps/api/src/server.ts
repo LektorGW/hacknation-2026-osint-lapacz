@@ -93,8 +93,9 @@ const app = await buildApp({
   monitorConnectors,
   // Dostawcy syntetyczni (piaskownica, laboratorium) osobno od prawdziwych: w trybie danych syntetycznych
   // wycena korzysta z tabeli przykładowej i nie pyta kursów w internecie (przełącznik: data-mode.ts).
-  chainProviders: [...createProviders({ sandboxUrl, labUrl }), ...createProviders({ enableLive, blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined })],
-  deepChainProviders: [...createProviders({ sandboxUrl, labUrl, depth: 'deep' }), ...createProviders({ enableLive, depth: 'deep', blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined })],
+  // SOLANA_RPC_URL: własny / zakontraktowany węzeł RPC Solany — publicznego węzła nie używamy (docs/ZRODLA-PODSTAWA-PRAWNA.md, rozdz. „Sieci blockchain: Litecoin, Solana”).
+  chainProviders: [...createProviders({ sandboxUrl, labUrl }), ...createProviders({ enableLive, blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined, solanaRpcUrl: env.SOLANA_RPC_URL || undefined })],
+  deepChainProviders: [...createProviders({ sandboxUrl, labUrl, depth: 'deep' }), ...createProviders({ enableLive, depth: 'deep', blockscoutApiKey: env.BLOCKSCOUT_API_KEY || undefined, solanaRpcUrl: env.SOLANA_RPC_URL || undefined })],
   resolveActivity: chain.getActivityFromProviders,
   matchService: chain.matchService,
   ai: assistant,

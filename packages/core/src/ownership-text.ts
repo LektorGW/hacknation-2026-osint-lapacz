@@ -67,6 +67,16 @@ const GLOBAL_EXCLUSIONS: { label: string; pattern: RegExp }[] = [
   },
 ];
 
+/**
+ * Wzorce kontekstu rozdania, ostrzeżenia i apelu „nie wpłacajcie” (na tekście po `foldPreservingLength`) —
+ * te same, które wykluczają deklarację własności; korzysta z nich moduł ostrzeżeń o oszustwach (apps/api/src/scam.ts).
+ */
+export const SCAM_CONTEXT_PATTERNS = {
+  giveaway: GLOBAL_EXCLUSIONS[0]!.pattern,
+  warning: GLOBAL_EXCLUSIONS[1]!.pattern,
+  doNotPay: GLOBAL_EXCLUSIONS[2]!.pattern,
+} as const;
+
 /** Kontekst przy adresie, który wskazuje cudzy adres albo przeczy własności. */
 const LOCAL_EXCLUSIONS: { label: string; pattern: RegExp }[] = [
   { label: 'przeczenie („to nie mój adres”)', pattern: /\bnie\s+(jest\s+)?(moj|moja|moje|moim|moich|mojego|swoj|swoim)\b|\b(not|isn'?t|is not)\s+(my|mine)\b|\bnot mine\b/ },

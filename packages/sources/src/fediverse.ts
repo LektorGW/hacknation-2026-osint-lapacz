@@ -3,10 +3,11 @@
 // dokument dostaje `service` równy nazwie hosta instancji.
 
 import { readFileSync } from 'node:fs';
-import type { Identifier, SourceConnector, SourceDocument } from '@olcys/core';
+import type { ConnectorContext, Identifier, IdentityMatch, SourceConnector, SourceDocument } from '@olcys/core';
 import { findEmails, findLinks, htmlToText } from './html.ts';
 import { errorMessage, parseJson } from './http.ts';
 import type { HttpClient } from './http.ts';
+import { displayNameMatch, NAME_SEARCH_REASON } from './name-candidates.ts';
 import { cleanHandle, dedupeIdentifiers, discoveredField, parseHttpUrl, profileUrlIdentifier } from './identity.ts';
 
 const ID = 'live-fediverse';
@@ -64,6 +65,111 @@ export function fediverseTargets(identifier: Identifier, instances: string[]): {
   return { username, hosts: instances.slice(0, MAX_INSTANCES), explicitHost: false };
 }
 
+/** Dokument profilu konta Mastodon (dane z accounts/lookup albo z wyszukiwarki kont). */
+function accountDocument(account: MastodonAccount & { username: string }, host: string, identifier: Identifier, identityMatch: IdentityMatch, identityNote?: string): SourceDocument {
+  const note = htmlToText(account.note ?? '');
+  const fields = (account.fields ?? []).filter((field) => field?.name || field?.value);
+  const fieldLines = fields.map((field) => {
+    const value = htmlToText(field.value ?? '').replace(/\n/g, ' ');
+    return `- ${field.name ?? ''}: ${value}${field.verified_at ? ' (odnośnik potwierdzony przez instancję)' : ''}`;
+  });
+  const text = [
+    `Profil ${account.username}@${host}`,
+    account.display_name && `Nazwa wyświetlana: ${account.display_name}`,
+    account.created_at && `Konto utworzone: ${account.created_at.slice(0, 10)}`,
+    note && `Opis:\n${note}`,
+    fieldLines.length > 0 && `Pola profilu:\n${fieldLines.join('\n')}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const discovered: Identifier[] = [];
+  for (const field of fields) {
+    if (!field.verified_at) continue;
+    // Potwierdzenie oznacza, że wskazana strona odsyła z powrotem do tego profilu (rel="me").
+    const href = findLinks(field.value ?? '')[0] ?? htmlToText(field.value ?? '');
+    const found = profileUrlIdentifier(href);
+    if (found) discovered.push(found);
+  }
+  for (const email of findEmails(note)) discovered.push({ type: 'email', value: email });
+  // Do danych profilu trafiają wszystkie odnośniki z pól — także te niepotwierdzone przez instancję.
+  const fieldUrls = fields
+    .map((field) => findLinks(field.value ?? '')[0])
+    .filter((href): href is string => typeof href === 'string' && /^https?:\/\//i.test(href));
+
+  return {
+    connectorId: ID,
+    service: host,
+    url: account.url ?? `https://${host}/@${account.username}`,
+    title: `Profil Mastodon: ${account.username}@${host}`,
+    text,
+    fetchedAt: new Date().toISOString(),
+    author: account.username,
+    category: 'own_profile',
+    identityMatch,
+    ...(identityNote ? { identityNote } : {}),
+    matchedIdentifier: identifier,
+    profile: {
+      handle: account.username,
+      ...(account.display_name ? { displayName: account.display_name } : {}),
+      ...(findEmails(note).length > 0 ? { emails: findEmails(note) } : {}),
+      ...(fieldUrls.length > 0 ? { urls: [...new Set(fieldUrls)] } : {}),
+      ...(account.avatar ? { avatarUrl: account.avatar } : {}),
+      ...(note ? { bio: note } : {}),
+      ...(account.created_at && !Number.isNaN(Date.parse(account.created_at)) ? { createdAt: new Date(account.created_at).toISOString() } : {}),
+    },
+    ...discoveredField(dedupeIdentifiers(discovered, identifier, [host])),
+  };
+}
+
+/** Najwyżej tyle kont z wyszukiwarki trafia do wyniku dla jednego imienia i nazwiska. */
+export const FEDIVERSE_NAME_RESULTS = 5;
+
+/**
+ * Wyszukiwarka kont na instancjach z listy (/api/v2/search?type=accounts). Bez tokenu dokumentacja Mastodon pozwala na
+ * wyszukiwanie kont, ale nie na parametry `resolve` i `offset` — nie wysyłamy ich (domyślnie resolve=false).
+ */
+async function searchAccountsByName(http: HttpClient, instances: string[], identifier: Identifier, context: ConnectorContext): Promise<SourceDocument[]> {
+  const name = identifier.value.trim().replace(/\s+/g, ' ');
+  if (name.split(' ').length < 2 || name.length > 100) return [];
+  const session = http.session(context, { label: `${LABEL} — wyszukiwarka kont`, limit: instances.length });
+  const seen = new Set<string>();
+  const found: { document: SourceDocument; exact: boolean }[] = [];
+  let mismatched = 0;
+  for (const instance of instances) {
+    const response = await session.get(`https://${instance}/api/v2/search?q=${encodeURIComponent(name)}&type=accounts&limit=10`, {
+      headers: { Accept: 'application/json' },
+      quietMissing: true,
+    });
+    const body = response ? parseJson<{ accounts?: MastodonAccount[] }>(response.text) : null;
+    for (const account of body?.accounts ?? []) {
+      if (!account?.username || !USERNAME.test(account.username)) continue;
+      // Konto z innej instancji ma w `acct` postać nick@host — dokument dostaje host konta, nie instancji pytanej.
+      const host = (account.acct?.includes('@') ? account.acct.split('@')[1]! : instance).toLowerCase();
+      if (!HOSTNAME.test(host)) continue;
+      const key = `${account.username.toLowerCase()}@${host}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const match = displayNameMatch(account.display_name, name);
+      if (!match) {
+        mismatched++;
+        continue;
+      }
+      found.push({ document: accountDocument({ ...account, username: account.username }, host, identifier, 'name_only', NAME_SEARCH_REASON), exact: match === 'exact' });
+    }
+  }
+  const ordered = [...found.filter((item) => item.exact), ...found.filter((item) => !item.exact)].map((item) => item.document);
+  const kept = ordered.slice(0, FEDIVERSE_NAME_RESULTS);
+  const skipped = ordered.length - kept.length;
+  context.log(
+    `${LABEL}: wyszukiwarka kont „${name}” — kont z pasującą nazwą ${ordered.length}, przyjętych ${kept.length}` +
+      (mismatched > 0 ? `, odrzuconych (inna nazwa wyświetlana) ${mismatched}` : '') +
+      (skipped > 0 ? `; pominięto ${skipped} dalszych wyników (limit ${FEDIVERSE_NAME_RESULTS})` : '') +
+      ` (instancje: ${instances.join(', ')}).`,
+  );
+  return kept;
+}
+
 export interface FediverseConfig {
   /** Nadpisuje listę z config/fediverse-instances.json. */
   instances?: string[];
@@ -81,12 +187,15 @@ export function createFediverseConnector(http: HttpClient, config: FediverseConf
       `Publiczne API instancji Mastodon (/api/v1/accounts/lookup?acct=<nick>, bez logowania). Nick sprawdzany na liście z ` +
       `config/fediverse-instances.json (${instances.join(', ')}); zapis nick@instancja lub adres profilu — tylko na wskazanej instancji. ` +
       'Pobierane: opis konta oraz pola profilu; pola z potwierdzonym odnośnikiem (verified_at) wskazują inne profile tej samej osoby. ' +
-      'Najwyżej 4 żądania na identyfikator, po jednym na instancję.',
-    accepts: ['nick', 'login', 'profile_url'],
+      'Imię i nazwisko: wyszukiwarka kont instancji (/api/v2/search?type=accounts, bez logowania, bez parametrów resolve i offset — ' +
+      `dostępne publicznie według dokumentacji Mastodon); przyjmowane tylko konta z pasującą nazwą wyświetlaną, najwyżej ${FEDIVERSE_NAME_RESULTS}, ` +
+      'jako „zgodne tylko imię i nazwisko”. Najwyżej 4 żądania na identyfikator, po jednym na instancję.',
+    accepts: ['nick', 'login', 'profile_url', 'full_name'],
     enabledByDefault: true,
 
     async search(identifier, context) {
       if ('problem' in loaded && loaded.problem) context.log(`${LABEL}: nie można odczytać listy instancji: ${loaded.problem}`);
+      if (identifier.type === 'full_name') return searchAccountsByName(http, instances, identifier, context);
       const targets = fediverseTargets(identifier, instances);
       if (!targets) return [];
       const session = http.session(context, { label: LABEL });
@@ -101,59 +210,7 @@ export function createFediverseConnector(http: HttpClient, config: FediverseConf
         });
         const account = response ? parseJson<MastodonAccount>(response.text) : null;
         if (!account?.username) continue;
-
-        const note = htmlToText(account.note ?? '');
-        const fields = (account.fields ?? []).filter((field) => field?.name || field?.value);
-        const fieldLines = fields.map((field) => {
-          const value = htmlToText(field.value ?? '').replace(/\n/g, ' ');
-          return `- ${field.name ?? ''}: ${value}${field.verified_at ? ' (odnośnik potwierdzony przez instancję)' : ''}`;
-        });
-        const text = [
-          `Profil ${account.username}@${host}`,
-          account.display_name && `Nazwa wyświetlana: ${account.display_name}`,
-          account.created_at && `Konto utworzone: ${account.created_at.slice(0, 10)}`,
-          note && `Opis:\n${note}`,
-          fieldLines.length > 0 && `Pola profilu:\n${fieldLines.join('\n')}`,
-        ]
-          .filter(Boolean)
-          .join('\n');
-
-        const discovered: Identifier[] = [];
-        for (const field of fields) {
-          if (!field.verified_at) continue;
-          // Potwierdzenie oznacza, że wskazana strona odsyła z powrotem do tego profilu (rel="me").
-          const href = findLinks(field.value ?? '')[0] ?? htmlToText(field.value ?? '');
-          const found = profileUrlIdentifier(href);
-          if (found) discovered.push(found);
-        }
-        for (const email of findEmails(note)) discovered.push({ type: 'email', value: email });
-        // Do danych profilu trafiają wszystkie odnośniki z pól — także te niepotwierdzone przez instancję.
-        const fieldUrls = fields
-          .map((field) => findLinks(field.value ?? '')[0])
-          .filter((href): href is string => typeof href === 'string' && /^https?:\/\//i.test(href));
-
-        documents.push({
-          connectorId: ID,
-          service: host,
-          url: account.url ?? `https://${host}/@${account.username}`,
-          title: `Profil Mastodon: ${account.username}@${host}`,
-          text,
-          fetchedAt: new Date().toISOString(),
-          author: account.username,
-          category: 'own_profile',
-          identityMatch: 'exact_identifier',
-          matchedIdentifier: identifier,
-          profile: {
-            handle: account.username,
-            ...(account.display_name ? { displayName: account.display_name } : {}),
-            ...(findEmails(note).length > 0 ? { emails: findEmails(note) } : {}),
-            ...(fieldUrls.length > 0 ? { urls: [...new Set(fieldUrls)] } : {}),
-            ...(account.avatar ? { avatarUrl: account.avatar } : {}),
-            ...(note ? { bio: note } : {}),
-            ...(account.created_at && !Number.isNaN(Date.parse(account.created_at)) ? { createdAt: new Date(account.created_at).toISOString() } : {}),
-          },
-          ...discoveredField(dedupeIdentifiers(discovered, identifier, [host])),
-        });
+        documents.push(accountDocument(account, host, identifier, 'exact_identifier'));
       }
 
       context.log(

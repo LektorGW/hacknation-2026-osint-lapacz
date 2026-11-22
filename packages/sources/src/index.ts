@@ -20,8 +20,13 @@ import { createLabConnectors } from './lab.ts';
 import { createNostrConnector } from './nostr.ts';
 import type { NostrRelayQuery } from './nostr.ts';
 import { createOpenPgpConnector } from './openpgp.ts';
+import { createCodebergConnector, createGitlabConnector } from './code-hosts.ts';
+import { createKeyoxideConnector } from './keyoxide.ts';
+import { createCratesConnector, createNpmConnector, createPypiConnector } from './packages.ts';
 import { applyOwnershipProofsToAll } from './proof-text.ts';
 import { createCeidgConnector, createKrsConnector, createVatWhitelistConnector, withRegistryIdentifiers } from './registry.ts';
+import { createCrbrConnector, crbrDisabled } from './registries-pl/index.ts';
+export * from './registries-pl/index.ts';
 import { createSandboxConnectors } from './sandbox.ts';
 import { createSearchConnectors } from './search/index.ts';
 import { createRiskListsConnector } from './sanctions/index.ts';
@@ -40,13 +45,36 @@ export {
   WARNING_LIST_CAVEAT,
 } from './sanctions/index.ts';
 export type { RiskListMatch, RiskListQuery, RiskListResult, RiskNodeFlag, RiskNodeInput, RiskAddressFlag, RiskGraphResult, ScreenSanctionsRow } from './sanctions/index.ts';
+export { SCAM_LIST_CAVEAT, SCAM_SOURCES, getDefaultScamLists, hostOf as scamHostOf, loadScamLists, scamListAddressFlags, scamListDomainFlags } from './scam/index.ts';
+export type { LoadedScamLists, ScamAddressSnapshot, ScamDomainSnapshot, ScamListAddressFlag, ScamListDomainFlag } from './scam/index.ts';
 import type { SearchConfig } from './search/index.ts';
 import { createTelegramConnector } from './telegram.ts';
 import { createTorConnector } from './tor.ts';
 import { createWaybackConnector } from './wayback.ts';
 import { createWwwConnector } from './www.ts';
+import { createNameDomainsConnector } from './name-candidates.ts';
+import type { DomainExists } from './name-candidates.ts';
 
 export { htmlToText } from './html.ts';
+export { createGithubSocialProvider, GITHUB_SOCIAL_LIMITS } from './github-social.ts';
+export type { GithubSocialConfig, SocialAccount, SocialGraph, SocialGraphContext, SocialGraphProvider, SocialRepo, SocialStop } from './github-social.ts';
+export { DECLARED_ONLY_NOTE, declaredAccountOf, isDeclaredOnlyHost } from './www.ts';
+export type { AnnotatedIdentifier, DeclaredAccount } from './www.ts';
+export {
+  CONNECTOR_STOP_PREFIX,
+  DOMAIN_CANDIDATE_REASON,
+  MAX_NICK_CANDIDATES,
+  NAME_DOMAINS_ID,
+  NAME_SEARCH_REASON,
+  NICK_CANDIDATE_REASON,
+  createNameDomainsConnector,
+  displayNameMatch,
+  domainCandidates,
+  foldName,
+  nickCandidates,
+  textContainsName,
+} from './name-candidates.ts';
+export type { DomainExists } from './name-candidates.ts';
 export { addressFromHref, findEnsNames, normalizeAddressText } from './address-text.ts';
 export { applyOwnershipProofs, applyOwnershipProofsToAll, findOwnershipProofs, publisherNamedIn, proofUrl, PROOF_NOTE_PREFIX, PROOF_URL_PARAM } from './proof-text.ts';
 export type { OwnershipProof, ProofFormat } from './proof-text.ts';
@@ -147,6 +175,8 @@ export interface SourcesConfig {
   ceidgToken?: string;
   /** Łączniki katalogu search/: wyszukiwarka internetowa (klucze), Farcaster, rejestry publiczne. */
   search?: SearchConfig;
+  /** Zamiennik sprawdzenia domeny w DNS dla łącznika domen osobistych (wyłącznie testy). */
+  nameDomainExists?: DomainExists;
 }
 
 export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
@@ -174,10 +204,25 @@ export function createLiveConnectors(config: SourcesConfig): SourceConnector[] {
     createBlueskyConnector(http),
     createNostrConnector(http, { relays: nostrRelays, ...(config.nostrRelayQuery ? { relayQuery: config.nostrRelayQuery } : {}) }),
     createOpenPgpConnector(http),
+    // Web2: dowody Ariadne (weryfikacja lokalna), serwisy z kodem, rejestry pakietów. Token GitLab tylko w nagłówku do gitlab.com.
+    createKeyoxideConnector(http, { githubToken: github.token }),
+    createGitlabConnector(http, { token: (process.env.GITLAB_TOKEN ?? '').trim() || undefined }),
+    createCodebergConnector(http),
+    createNpmConnector(http),
+    createPypiConnector(http),
+    createCratesConnector(http),
     createVatWhitelistConnector(http),
     createKrsConnector(http),
     ...(ceidgToken ? [createCeidgConnector(http, { token: ceidgToken })] : []),
+    // CRBR (beneficjenci rzeczywiści): publiczne API MF, tylko po NIP/KRS spółki; CRBR_DISABLE=1 wyłącza.
+    ...(crbrDisabled() ? [] : [createCrbrConnector(config.fetcher ? { fetch: config.fetcher } : {})]),
     createWwwConnector(http, { skipHosts: instances }),
+    // Imię i nazwisko → domeny osobiste (DNS) → strona główna przez „Strona WWW” (robots.txt); wynik zawsze słaby.
+    // Z atrapą `fetch` (testy) bez podanej atrapy DNS żadna domena „nie istnieje” — test nie pyta prawdziwego resolvera.
+    // Własna instancja „Strona WWW” bez podstron: domena imiennika nie jest przeszukiwana głębiej niż strona główna.
+    createNameDomainsConnector(createWwwConnector(http, { skipHosts: instances, extraPages: 0 }), {
+      domainExists: config.nameDomainExists ?? (config.fetcher ? async () => false : undefined),
+    }),
     createWaybackConnector(http),
     createWaybackTwitterConnector(http),
     createWalletExplorerConnector(http),

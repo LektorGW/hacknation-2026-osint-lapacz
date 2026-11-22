@@ -47,6 +47,16 @@ test('każdy widok należy do dokładnie jednej sekcji, a sekcji jest najwyżej 
   assert.equal(sectionOf('decyzje').id, 'wiecej');
 });
 
+test('kolejka „Do potwierdzenia” ma własny adres w sekcji „Podsumowanie” i krótkie aliasy', () => {
+  assert.equal(href.case(CASE, 'do-potwierdzenia'), `#/sprawa/${CASE}/do-potwierdzenia`);
+  assert.deepEqual(parseRoute(`#/sprawa/${CASE}/do-potwierdzenia`), { page: 'case', caseId: CASE, tab: 'do-potwierdzenia' });
+  assert.deepEqual(parseRoute('#/analiza/r1/do-potwierdzenia'), { page: 'run', runId: 'r1', tab: 'do-potwierdzenia' });
+  assert.equal(sectionOf('do-potwierdzenia').id, 'podsumowanie');
+  assert.equal(DOSSIER_SECTIONS[0]!.tabs[0], 'podsumowanie', 'podsumowanie zostaje pierwszym widokiem sekcji');
+  assert.equal(toTab('potwierdz'), 'do-potwierdzenia');
+  assert.equal(toTab('kolejka'), 'do-potwierdzenia');
+});
+
 test('pozostałe ekrany bez zmian', () => {
   assert.deepEqual(parseRoute('#/'), { page: 'dashboard' });
   assert.deepEqual(parseRoute(''), { page: 'dashboard' });

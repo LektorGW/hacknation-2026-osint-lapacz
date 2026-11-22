@@ -12,6 +12,8 @@ import { NETWORK_ADDR, networkAccounts, networkLabeledAddresses, networkLedger, 
 import { BUSINESS_ADDR, businessAccounts, businessLabeledAddresses, businessLedger, businessPages } from './business.ts';
 import { FIAT_ADDR, fiatAccounts, fiatLabeledAddresses, fiatLedger, fiatPages, fiatThreads } from './fiat.ts';
 import { MIXER_ADDR, mixerAccounts, mixerLabeledAddresses, mixerLedger, mixerPages } from './mixers.ts';
+import { ROUNDTRIP_ADDR, roundtripAccounts, roundtripLabeledAddresses, roundtripLedger, roundtripPages } from './roundtrip.ts';
+import { SCAM_ADDR, scamAccounts, scamLabeledAddresses, scamLedger, scamThreads } from './scam.ts';
 
 export type Service = 'gitpub' | 'www' | 'targ' | 'forum' | 'spolecznosc' | 'komunikator';
 
@@ -722,9 +724,9 @@ export const snapshots: Snapshot[] = [
 // ---------- Całość: scenariusze a–h, „rynek P2P" (data/market.ts), „powiązane tożsamości" (data/related.ts), „dowody" (data/proofs.ts) ----------
 
 /** Adresy części rynkowej — do testów i dokumentacji. */
-export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR, NETWORK_ADDR, BUSINESS_ADDR, FIAT_ADDR, MIXER_ADDR };
+export { MARKET_ADDR, RELATED_ADDR, PROOF_ADDR, NETWORK_ADDR, BUSINESS_ADDR, FIAT_ADDR, MIXER_ADDR, ROUNDTRIP_ADDR, SCAM_ADDR };
 
-export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses, ...networkLabeledAddresses, ...businessLabeledAddresses, ...fiatLabeledAddresses, ...mixerLabeledAddresses];
+export const labeledAddresses: LabeledAddress[] = [...baseLabeledAddresses, ...marketLabeledAddresses, ...relatedLabeledAddresses, ...proofLabeledAddresses, ...networkLabeledAddresses, ...businessLabeledAddresses, ...fiatLabeledAddresses, ...mixerLabeledAddresses, ...roundtripLabeledAddresses, ...scamLabeledAddresses];
 export const ledger: LedgerRow[] = [
   ...baseLedger,
   ...marketLedger(ADDR),
@@ -759,10 +761,14 @@ export const ledger: LedgerRow[] = [
   ...fiatLedger({ swapEth: ADDR.swapEth, anonEth: MARKET_ADDR.anonEth4 }),
   // Część „miksery i CoinJoin” (data/mixers.ts) — przelewy do i z fikcyjnego miksera oraz transakcja o wzorcu CoinJoin.
   ...mixerLedger({ exchangeBtc: ADDR.exchangeBtc }),
+  // Część „obieg środków (ping-pong)” (data/roundtrip.ts) — przelewy wracające na adres podmiotu.
+  ...roundtripLedger(),
+  // Część „ostrzeżenia o możliwym oszustwie” (data/scam.ts) — wpłaty wielu ofiar na adres „rozdania” i szybkie wyprowadzenie.
+  ...scamLedger(),
 ];
-export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts, ...networkAccounts, ...businessAccounts, ...fiatAccounts, ...mixerAccounts];
-export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages, ...networkPages, ...businessPages, ...fiatPages, ...mixerPages];
-export const threads: Thread[] = [...baseThreads, ...marketThreads, ...proofThreads, ...fiatThreads];
+export const accounts: Account[] = [...baseAccounts, ...marketAccounts, ...relatedAccounts, ...proofAccounts, ...networkAccounts, ...businessAccounts, ...fiatAccounts, ...mixerAccounts, ...roundtripAccounts, ...scamAccounts];
+export const pages: Page[] = [...basePages, ...marketPages, ...relatedPages, ...proofPages, ...networkPages, ...businessPages, ...fiatPages, ...mixerPages, ...roundtripPages];
+export const threads: Thread[] = [...baseThreads, ...marketThreads, ...proofThreads, ...fiatThreads, ...scamThreads];
 
 export const scenario = { accounts, pages, threads, snapshots, labeledAddresses, ledger };
 export type Scenario = typeof scenario;

@@ -242,6 +242,32 @@ export function addressLinkGraph(findings: (Finding & { relatedAddresses?: Relat
     const from = `addr:${finding.network}:${finding.address}`;
     if (!known.has(from)) continue;
     for (const item of [...(finding.relatedAddresses ?? [])].sort((a, b) => b.strength - a.strength).slice(0, NETWORK_GRAPH_RELATED)) {
+      // Zasilenie w którąkolwiek stronę to płatność: sam przelew jest zapisem w blockchainie (fakt),
+      // a hipotezą pozostaje dopiero to, czy odbiorca to nowy portfel tej samej osoby, czy ktoś, komu zapłacono.
+      if (item.kind === 'funds' || item.kind === 'funded_by') {
+        const other = addressNode(finding.network, item.address, item.kind === 'funds' ? 'odbiorca płatności z adresu sprawy' : 'nadawca płatności na adres sprawy');
+        const [payer, payee] = item.kind === 'funds' ? [from, other] : [other, from];
+        const id = `payment:${payer}->${payee}`;
+        if (edgeIds.has(id)) continue;
+        edgeIds.add(id);
+        const count = item.txids.length;
+        edges.push({
+          id,
+          from: payer,
+          to: payee,
+          kind: 'payment',
+          label: `płatność${count > 1 ? ` (${count} przelewy)` : ''}${item.kind === 'funds' ? ' z adresu sprawy' : ' na adres sprawy'}`,
+          weight: item.strength,
+          status: 'source_fact',
+          layer: 'chain',
+          evidence: item.txids.slice(0, 5).map((txid) => ({ kind: 'txid' as const, value: txid })),
+          explanation:
+            `${item.kind === 'funds' ? 'Adres sprawy zapłacił temu adresowi' : 'Ten adres zapłacił na adres sprawy'} — przelew jest zapisem w blockchainie. ` +
+            'Do ustalenia pozostaje, kto jest po drugiej stronie: nowy portfel tej samej osoby czy ktoś, komu zapłacono (hipoteza). ' +
+            (item.reason ?? ''),
+        });
+        continue;
+      }
       const to = addressNode(finding.network, item.address, KIND_TEXT[item.kind] ?? item.kind);
       const id = `related:${from}->${to}`;
       if (edgeIds.has(id)) continue;

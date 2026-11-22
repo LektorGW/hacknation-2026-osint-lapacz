@@ -24,6 +24,8 @@ import type { CaseStat, HistorySortKey, SortDirection } from '../stats.ts';
 import { useAsync } from '../useAsync.ts';
 import { CaseStatusBadge } from '../components/CaseLifecycle.tsx';
 import type { CaseStatus } from '../api.ts';
+import { PendingChip } from '../components/ReviewQueue.tsx';
+import { knownPending } from '../review.ts';
 
 const STATUS_FILTERS: { value: CaseStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'wszystkie' },
@@ -275,7 +277,9 @@ function CaseHistory({ cases, overview }: { cases: CaseSummary[]; overview: Over
             return (
               <tr key={item.id} className={(item.status ?? 'open') !== 'open' ? 'is-closed' : undefined}>
                 <th scope="row">
-                  <a href={href.case(item.id)}>{item.name}</a> <RunModeTag tag={runDataModeTag(item.runs.at(-1))} />
+                  <a href={href.case(item.id)}>{item.name}</a> <RunModeTag tag={runDataModeTag(item.runs.at(-1))} />{' '}
+                  {/* Liczba znana tylko dla teczek już otwartych w tej karcie — lista nie pobiera każdej teczki. */}
+                  <PendingChip count={knownPending(item.id)} href={href.case(item.id, 'do-potwierdzenia')} small />
                 </th>
                 {withStatus && (
                   <td>

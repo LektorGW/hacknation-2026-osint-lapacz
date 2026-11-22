@@ -190,12 +190,19 @@ test('createChainProviders: sandbox pierwszy, dostawcy live tylko za zgodą', ()
   assert.deepEqual(createChainProviders({}), []);
   assert.deepEqual(createChainProviders({ sandboxUrl: SANDBOX }).map((p) => p.id), ['sandbox-explorer']);
   const all = createChainProviders({ sandboxUrl: SANDBOX, enableLive: true });
-  assert.deepEqual(all.map((p) => p.id), ['sandbox-explorer', 'esplora-blockstream', 'esplora-mempool', 'blockscout-ethereum', 'trongrid']);
+  assert.deepEqual(all.map((p) => p.id), ['sandbox-explorer', 'esplora-blockstream', 'esplora-mempool', 'blockscout-ethereum', 'trongrid', 'esplora-litecoinspace']);
   const live = all.slice(1);
-  assert.deepEqual(live.map((p) => p.supports('bitcoin', 'x')), [true, true, false, false]);
-  assert.deepEqual(live.map((p) => p.supports('bitcoin-testnet', 'x')), [true, true, false, false]);
-  assert.deepEqual(live.map((p) => p.supports('ethereum', 'x')), [false, false, true, false]);
-  assert.deepEqual(live.map((p) => p.supports('tron', 'x')), [false, false, false, true]);
+  assert.deepEqual(live.map((p) => p.supports('bitcoin', 'x')), [true, true, false, false, false]);
+  assert.deepEqual(live.map((p) => p.supports('bitcoin-testnet', 'x')), [true, true, false, false, false]);
+  assert.deepEqual(live.map((p) => p.supports('ethereum', 'x')), [false, false, true, false, false]);
+  assert.deepEqual(live.map((p) => p.supports('tron', 'x')), [false, false, false, true, false]);
+  assert.deepEqual(live.map((p) => p.supports('litecoin', 'x')), [false, false, false, false, true]);
+  // Bez węzła RPC operatora żaden dostawca nie obsługuje Solany (publicznego węzła nie używamy).
+  assert.deepEqual(live.map((p) => p.supports('solana', 'x')), [false, false, false, false, false]);
+  const withSolana = createChainProviders({ enableLive: true, solanaRpcUrl: 'https://rpc.example.com/?api-key=tajne' });
+  assert.equal(withSolana.at(-1)?.id, 'solana-rpc');
+  assert.equal(withSolana.at(-1)?.label, 'Solana RPC (rpc.example.com)', 'opis dostawcy bez ścieżki i klucza');
+  assert.equal(createChainProviders({ enableLive: true, litecoin: false }).some((p) => p.id === 'esplora-litecoinspace'), false);
 });
 
 // ---------- Esplora (Bitcoin) ----------

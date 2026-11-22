@@ -191,6 +191,24 @@ const entries = {
     why: 'Rozpoznajemy go heurystyką (wiele równych wyjść w jednej transakcji) — to hipoteza, bo wypłata zbiorcza usługi może wyglądać podobnie.',
     group: 'adresy',
   },
+  scam: {
+    term: 'Scam (oszustwo z użyciem adresu)',
+    short: 'Adres, na który oszust zbiera wpłaty ofiar: fałszywe rozdanie, fałszywa giełda, phishing. Zgłoszenia pochodzą z publikacji poszkodowanych i świadków albo z publicznych zbiorów ostrzeżeń.',
+    why: 'Zgłoszenie to informacja, nie wyrok — piszemy „adres mógł być wykorzystywany do oszustwa”. Autorzy ostrzeżeń nigdy nie są właścicielami adresu; właściciel pozostaje nieustalony.',
+    group: 'adresy',
+  },
+  'falszywe-rozdanie': {
+    term: 'Fałszywe rozdanie (fake giveaway)',
+    short: 'Oszustwo „wyślij 1 BTC, odeślemy 2”: ogłoszenie często podszywa się pod znaną osobę lub markę. Nic nie wraca.',
+    why: 'W blockchainie widać zwykle wiele wpłat od wielu różnych osób w krótkim czasie, a potem szybkie wyprowadzenie środków — to heurystyka, bo zbiórka lub sprzedaż może wyglądać podobnie.',
+    group: 'adresy',
+  },
+  'zatruwanie-adresu': {
+    term: 'Zatruwanie adresu (address poisoning)',
+    short: 'Oszust wysyła drobny przelew z adresu o tym samym początku i końcu co prawdziwy kontrahent, licząc, że ofiara skopiuje podróbkę z historii przy następnym przelewie.',
+    why: 'Sygnał dotyczy kontrahenta-podróbki, nie badanego adresu.',
+    group: 'adresy',
+  },
 
   // ---------- Pieniądze i giełdy ----------
   spieniezenie: {

@@ -35,6 +35,8 @@ export const NETWORK_LABEL: Record<Network, string> = {
   'bitcoin-testnet': 'Bitcoin (testnet)',
   ethereum: 'Ethereum',
   tron: 'Tron',
+  litecoin: 'Litecoin',
+  solana: 'Solana',
   lab: 'Sieć laboratoryjna (testowa)',
 };
 
@@ -43,6 +45,8 @@ export const NETWORK_SHORT: Record<Network, string> = {
   'bitcoin-testnet': 'tBTC',
   ethereum: 'ETH',
   tron: 'TRON',
+  litecoin: 'LTC',
+  solana: 'SOL',
   lab: 'LAB',
 };
 
@@ -153,6 +157,7 @@ export const EDGE_KIND_LABEL: Record<GraphEdge['kind'], string> = {
   beneficiary_of: 'adres zbiórki organizacji (hipoteza)',
   holds_role: 'pełni funkcję w organizacji (rejestr) — nie właściciel adresu',
   org_relation: 'relacja między organizacjami (rejestr)',
+  payment: 'powiązanie przez płatność',
 };
 
 /** Status twierdzenia: skąd wiemy to, co pokazujemy. Kolejność = kolejność w legendzie i filtrach. */

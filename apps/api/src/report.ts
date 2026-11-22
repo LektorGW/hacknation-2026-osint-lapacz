@@ -26,6 +26,7 @@ import { renderServiceSection } from './report-service.ts';
 import { renderOrganizationSections } from './report-org.ts';
 import { renderBusinessSection } from './report-business.ts';
 import { renderMixerSection } from './mixers.ts';
+import { renderScamSection } from './report-scam.ts';
 import type { CaseSummary } from './storage.ts';
 
 export interface ConnectorInfo {
@@ -735,6 +736,8 @@ ${renderOrganizationSections(dossier)}
 ${renderProofSection(dossier.cashOutProof)}
 
 ${renderMixerSection(dossier.mixerExposure)}
+
+${renderScamSection((dossier as { scamWarnings?: Parameters<typeof renderScamSection>[0] }).scamWarnings)}
 
 ${
   dossier.unconfirmedAddresses.length > 0

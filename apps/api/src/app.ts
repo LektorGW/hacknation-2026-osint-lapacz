@@ -172,12 +172,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const loadDossier = async (run: AnalysisRun): Promise<DossierView> => {
     const cached = dossiers.get(run.id);
     if (cached) return cached;
-    const [caseSummary, intel, decisions, latest, serviceReplies] = await Promise.all([
+    const [caseSummary, intel, decisions, latest, serviceReplies, documents, expansions] = await Promise.all([
       requireCase(run.caseId),
       storage.getRunIntel(run.id),
       storage.listDecisions(run.caseId),
       storage.listLatestRuns(),
       storage.listServiceReplies(run.caseId),
+      // Pełne treści dokumentów — do ostrzeżeń o możliwym oszustwie (publikacje innych autorów); błąd odczytu nie blokuje teczki.
+      storage.listDocuments(run.id).catch(() => undefined),
+      // Rozwinięcia sieci — teczka bierze z nich sieć osoby publicznej rozwiniętą po decyzji analityka.
+      storage.listNetworkExpansions(run.caseId).catch(() => []),
     ]);
     const dossier = buildDossier({
       caseSummary,
@@ -191,6 +195,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       matchService: deps.matchService,
       serviceLabels: deps.serviceLabels,
       deep: (run as AnalysisRun & { depth?: RunDepth }).depth === 'deep',
+      ...(documents ? { documents } : {}),
+      ...(expansions.length > 0 ? { expansions } : {}),
     });
     if (ai && dossier.keyFindings.length > 0) {
       // Streszczenie powstaje wyłącznie z gotowych ustaleń; błąd modelu zostawia teczkę bez streszczenia.
@@ -679,6 +685,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   (await import('./export-routes.ts')).registerExportRoutes(app, context);
   // Rozwijanie sieci na żądanie („Rozwiń” w grafie śledczym).
   (await import('./network/routes.ts')).registerNetworkRoutes(app, context);
+  // Osoba publiczna: decyzja analityka o dopasowaniu do Wikidata i rozwinięcie jej sieci organizacji.
+  (await import('./public-figure-routes.ts')).registerPublicFigureRoutes(app, context);
   // Cykl życia sprawy (zamknięcie, archiwum, usunięcie), audyt, retencja i stan zabezpieczeń.
   registerLifecycleRoutes(app, context, { watch, security, options: deps.lifecycle ?? {} });
 

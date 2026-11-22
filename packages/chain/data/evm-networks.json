@@ -217,13 +217,13 @@
    "id": "base",
    "name": "Base",
    "host": "base.blockscout.com",
-   "reason": "Bez klucza: HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka „OLCyS-research/0.1”. Z kluczem API na planie darmowym: HTTP 402 „Featured chain … requires one of the following plans: Builder, Business, Pro” — sieć wymaga płatnego planu Blockscout (sprawdzone 2026-11-21)."
+   "reason": "Bez klucza: HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka „OLCyS-research/0.1”. Z kluczem API na planie darmowym: HTTP 402 „Featured chain … requires one of the following plans: Builder, Business, Pro” — sieć wymaga płatnego planu Blockscout (sprawdzone 2026-11-21; ponownie 2026-11-22 — bez zmian: 403 bez klucza, 402 z kluczem)."
   },
   {
    "id": "polygon",
    "name": "Polygon PoS",
    "host": "polygon.blockscout.com",
-   "reason": "Bez klucza: HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka „OLCyS-research/0.1”. Z kluczem API na planie darmowym: HTTP 402 „Featured chain … requires one of the following plans: Builder, Business, Pro” — sieć wymaga płatnego planu Blockscout (sprawdzone 2026-11-21)."
+   "reason": "Bez klucza: HTTP 403 (zabezpieczenie Cloudflare) dla nagłówka „OLCyS-research/0.1”. Z kluczem API na planie darmowym: HTTP 402 „Featured chain … requires one of the following plans: Builder, Business, Pro” — sieć wymaga płatnego planu Blockscout (sprawdzone 2026-11-21; ponownie 2026-11-22 — bez zmian: 403 bez klucza, 402 z kluczem)."
   },
   {
    "id": "bnb",

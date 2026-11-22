@@ -7,6 +7,8 @@ export const NETWORK_LABEL: Record<string, string> = {
   'bitcoin-testnet': 'Bitcoin (sieć testowa)',
   ethereum: 'Ethereum',
   tron: 'TRON',
+  litecoin: 'Litecoin',
+  solana: 'Solana',
 };
 
 export function esc(value: unknown): string {

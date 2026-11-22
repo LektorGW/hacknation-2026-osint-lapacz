@@ -39,3 +39,9 @@
 .gnode.risk-fact .gnode-caption, .gnode.risk-hypothesis .gnode-caption { fill: var(--danger); font-weight: 700; }
 @keyframes network-node-in { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .gnode.is-new > :first-child { animation: none; } }
+
+/* Obieg środków (ping-pong): lista obiegów w panelu i odznaka adresów pośrednich na grafie. */
+.roundtrip-list { margin: 0.35rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.6rem; }
+.roundtrip-list > li p { margin: 0.15rem 0; }
+.roundtrip-hops li { margin-bottom: 0.25rem; word-break: break-word; }
+.gnode.is-pingpong .gnode-caption { fill: var(--inference); font-weight: 700; }

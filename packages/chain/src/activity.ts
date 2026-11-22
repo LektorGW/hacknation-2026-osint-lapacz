@@ -37,6 +37,8 @@ export const NATIVE_ASSET: Record<Network, string> = {
   'bitcoin-testnet': 'tBTC',
   ethereum: 'ETH',
   tron: 'TRX',
+  litecoin: 'LTC',
+  solana: 'SOL',
   // Sieć laboratoryjna (apps/identity-lab): token bez wartości, nigdy nie wyceniany.
   lab: 'LAB',
 };
@@ -455,6 +457,13 @@ export function unknownActivity(
   );
 }
 
+/** Powód braku danych dla adresu Solana, gdy nie skonfigurowano węzła RPC (docs/ZRODLA-PODSTAWA-PRAWNA.md, rozdz. „Sieci blockchain: Litecoin, Solana”). */
+export const SOLANA_NO_PROVIDER =
+  'Sieć Solana: aktywność adresu NIE została sprawdzona. Publiczny węzeł RPC (api.mainnet-beta.solana.com) według dokumentacji operatora ' +
+  '„nie jest przeznaczony do zastosowań produkcyjnych”, a regulaminu nie udało się przeczytać — narzędzie go nie odpytuje. ' +
+  'Saldo, liczbę transakcji i przelewy SOL / USDC / USDT pokaże własny lub zakontraktowany węzeł RPC (zmienna SOLANA_RPC_URL). ' +
+  'Adres pozostaje identyfikatorem w sprawie; Solana nie ma sumy kontrolnej adresu, więc rozpoznanie w tekście opiera się na słowie wskazującym sieć.';
+
 /**
  * Pyta dostawców po kolei i zwraca pierwszą udaną odpowiedź. Błąd dostawcy
  * (np. „nieznany adres” z sandboxa) trafia do dziennika analizy, a próbę
@@ -485,6 +494,8 @@ export async function getActivityFromProviders(
   const limitations =
     failures.length > 0
       ? [`Brak danych blockchain dla adresu — żaden dostawca nie odpowiedział poprawnie. ${failures.join(' ')}`]
-      : [`Brak danych blockchain dla adresu — żaden skonfigurowany dostawca nie obsługuje sieci ${network}.`];
+      : network === 'solana'
+        ? [SOLANA_NO_PROVIDER]
+        : [`Brak danych blockchain dla adresu — żaden skonfigurowany dostawca nie obsługuje sieci ${network}.`];
   return unknownActivity(network, address, limitations, options);
 }

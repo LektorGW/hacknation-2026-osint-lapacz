@@ -26,6 +26,7 @@ import { isWithdrawn } from '../decisions.ts';
 import type { DecisionRecord } from '../decisions.ts';
 import { SyntheticTag } from './Mode.tsx';
 import { FindingCard, RejectedCard } from './FindingCard.tsx';
+import { ScamBlock } from './ScamWarnings.tsx';
 import { UnconfirmedAddresses } from './Explanations.tsx';
 import { useToast } from './Toast.tsx';
 
@@ -151,6 +152,7 @@ export function AddressesTab() {
   return (
     <>
       <UnconfirmedAddresses />
+      <ScamBlock />
       <section aria-labelledby="powiazane">
         <header className="section-head">
           <div>
@@ -475,7 +477,7 @@ export function PeopleTab() {
 // ---------- Rejestr decyzji ----------
 
 export function DecisionsTab() {
-  const { dossier } = useDossier();
+  const { dossier, tabHref } = useDossier();
   const all = dossier.decisions as DecisionRecord[];
   const withdrawn = all.filter(isWithdrawn).length;
   return (
@@ -488,6 +490,9 @@ export function DecisionsTab() {
             pozostaje widoczna{withdrawn > 0 && ` (wycofane: ${withdrawn})`}.
           </p>
         </div>
+        <a className="button button-quiet" href={tabHref('do-potwierdzenia')}>
+          Co czeka na decyzję →
+        </a>
       </header>
       {all.length === 0 ? (
         <EmptyState title="Brak decyzji — wynik jest w całości automatyczny">

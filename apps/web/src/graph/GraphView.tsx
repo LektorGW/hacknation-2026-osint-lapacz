@@ -53,6 +53,9 @@ import { KIND_ORDER, edgeGeometry, flowLayout, layeredLayout, neighbourhood, poi
 import type { Point } from './layout.ts';
 import { ExpandPanel, NetworkTools, useNetwork } from './ExpandPanel.tsx';
 import { PATH_LEVEL_TEXT, freshNodeIds, pathStrength, riskBadgeOf, riskPathNote, strongestEvidencePath, viewGraph } from './network.ts';
+import { RoundTripPanel } from './RoundTripPanel.tsx';
+import { cycleEvidencePath, roundTripNodeIds } from './roundtrip.ts';
+import type { RoundTripCycle } from './roundtrip.ts';
 
 const hexagon = (r: number) =>
   Array.from({ length: 6 }, (_, index) => {
@@ -527,6 +530,8 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
   const [lastExpansion, setLastExpansion] = useState<string | null>(null);
   const all = useMemo(() => viewGraph(dossier.graph, net.network, hideExpansions), [dossier.graph, net.network, hideExpansions]);
   const fresh = useMemo(() => freshNodeIds(net.network, lastExpansion), [net.network, lastExpansion]);
+  // Adresy pośrednie obiegów środków („Szukaj dalej”) — odznaka „ping-pong”.
+  const pingPong = useMemo(() => roundTripNodeIds(net.network), [net.network]);
   const stage = useRef<HTMLDivElement>(null);
   const full = useFullscreen(stage);
   // Most z podsumowania sprawy otwiera graf od razu w wybranej warstwie (`?warstwa=osint|blockchain`).
@@ -547,7 +552,8 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
   const [active, setActive] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   // `strongest`: ścieżka o największej sile (iloczyn, zanik na hipotezach) — „Ścieżka do podmiotu z listy sankcyjnej”.
-  const [pathEnds, setPathEnds] = useState<{ from: string; to: string; strongest?: boolean } | null>(null);
+  // `cycle`: obieg środków z „Szukaj dalej” — ścieżka po krawędziach-przelewach obiegu (początek = koniec).
+  const [pathEnds, setPathEnds] = useState<{ from: string; to: string; strongest?: boolean; cycle?: RoundTripCycle } | null>(null);
   const [picking, setPicking] = useState(false);
   const [query, setQuery] = useState('');
   const [centre, setCentre] = useState<CanvasCentre | null>(null);
@@ -569,7 +575,14 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
   const kindOf = useMemo(() => new Map(all.nodes.map((node) => [node.id, node.kind])), [all.nodes]);
   const branchSize = (id: string) => (children.get(id) ?? []).filter((child) => kindOf.get(child) !== 'source').length;
   const path = useMemo(
-    () => (pathEnds ? (pathEnds.strongest ? strongestEvidencePath(graph.edges, pathEnds.from, pathEnds.to) : findEvidencePath(graph.edges, pathEnds.from, pathEnds.to)) : null),
+    () =>
+      pathEnds
+        ? pathEnds.cycle
+          ? cycleEvidencePath(pathEnds.cycle, graph.edges)
+          : pathEnds.strongest
+            ? strongestEvidencePath(graph.edges, pathEnds.from, pathEnds.to)
+            : findEvidencePath(graph.edges, pathEnds.from, pathEnds.to)
+        : null,
     [graph.edges, pathEnds],
   );
   const riskLists = (dossier as { riskLists?: Parameters<typeof riskBadgeOf>[1] }).riskLists;
@@ -910,7 +923,9 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
               const baseCaption = isInput ? (statusCaption ? `wejście · ${statusCaption}` : 'wejście') : statusCaption;
               const risk = riskBadgeOf(node, riskLists);
               const marked = risk ? (baseCaption ? `${risk.badge} · ${baseCaption}` : risk.badge) : baseCaption;
-              const caption = isNew ? (marked ? `nowe · ${marked}` : 'nowe') : marked;
+              const isPingPong = pingPong.has(node.id);
+              const tagged = isPingPong ? (marked ? `ping-pong · ${marked}` : 'ping-pong') : marked;
+              const caption = isNew ? (tagged ? `nowe · ${tagged}` : 'nowe') : tagged;
               const description = `${isInput ? 'Wejście wyszukiwania — ' : ''}${NODE_KIND_LABEL[node.kind] ?? node.kind}: ${node.label}${node.sublabel ? `, ${node.sublabel}` : ''}${status ? `, ${CLAIM_STATUS_LABEL[status]}` : ''}${node.score === undefined ? '' : `, wynik ${node.score} na 100`}${node.excluded ? ', odrzucony' : ''}${risk ? ` — ${risk.badge} (${risk.status === 'source_fact' ? 'fakt o liście' : 'hipoteza: zgodność nazwy'}): ${risk.tooltip}` : ''}`;
               const dim = (near && !focus && !near.has(node.id)) || (path && !pathNodes.has(node.id)) || (focus !== null && !focus.has(node.id));
               const serviceBox = flow && node.kind === 'service';
@@ -919,7 +934,7 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
                 <g
                   key={node.id}
                   data-node
-                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''} ${isNew ? 'is-new' : ''} ${risk ? (risk.status === 'source_fact' ? 'risk-fact' : 'risk-hypothesis') : ''} ${mixer ? 'is-mixer' : ''}`}
+                  className={`gnode gnode-${node.kind} ${level} ${status ? `st-${status}` : ''} ${isInput ? 'is-input' : ''} ${node.excluded ? 'is-excluded' : ''} ${dim ? 'is-dim' : ''} ${pathNodes.has(node.id) ? 'is-path' : ''} ${selection?.type === 'node' && selection.id === node.id ? 'is-selected' : ''} ${serviceBox ? 'is-box' : ''} ${isNew ? 'is-new' : ''} ${risk ? (risk.status === 'source_fact' ? 'risk-fact' : 'risk-hypothesis') : ''} ${mixer ? 'is-mixer' : ''} ${isPingPong ? 'is-pingpong' : ''}`}
                   transform={`translate(${point.x},${point.y})`}
                   tabIndex={0}
                   role="button"
@@ -1051,6 +1066,24 @@ export function GraphView({ layer: forcedLayer, embedded = false }: { layer?: La
                     void net.reload();
                   }}
                   onPath={(from, to) => setPathEnds({ from, to })}
+                />
+              )}
+              {selectedNode && (
+                <RoundTripPanel
+                  node={selectedNode}
+                  caseId={summary.id}
+                  network={net.network}
+                  label={label}
+                  onExpanded={(record) => {
+                    setLastExpansion(record.id);
+                    setHideExpansions(false);
+                    void net.reload();
+                  }}
+                  onShowCycle={(cycle) => {
+                    // Kroki obiegu to krawędzie warstwy blockchain — w widoku samego OSINT nie byłoby ich widać.
+                    if (layer === 'identity') setLayer('both');
+                    setPathEnds({ from: cycle.nodeIds[0] ?? selectedNode.id, to: cycle.nodeIds.at(-1) ?? selectedNode.id, cycle });
+                  }}
                 />
               )}
             </aside>

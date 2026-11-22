@@ -197,6 +197,8 @@ Liczby rejestru pochodzą z próby 21.11.2026 zapisanej w [packages/sources/conf
 | Usługa metadanych Blockscout (`metadata.services.blockscout.com`) | hurtowe znaczniki adresów | `ENABLE_LIVE` | — |
 | API Blockscout z kluczem (`api.blockscout.com`) | Arbitrum One, Gnosis; zapasowa droga dla Ethereum | `ENABLE_LIVE` | **wymaga `BLOCKSCOUT_API_KEY`** |
 | TronGrid (`api.trongrid.io`), TronScan (`apilist.tronscanapi.com`) | Tron, USDT TRC-20, znaczniki adresów | `ENABLE_LIVE` | — |
+| Litecoin Space (`litecoinspace.org`, API Esplora) | Litecoin (`L…`, `M…`, `ltc1…`) | `ENABLE_LIVE` | — |
+| Węzeł JSON-RPC Solany operatora | Solana: saldo SOL, liczba transakcji, przelewy SOL / USDC / USDT. Publiczny węzeł `api.mainnet-beta.solana.com` **nie** jest używany (operator wyłącza go z zastosowań produkcyjnych) — bez zmiennej adresy Solana są tylko rozpoznawane | `ENABLE_LIVE` | **wymaga `SOLANA_RPC_URL`** |
 | WalletExplorer (`walletexplorer.com`) | nazwy portfeli Bitcoin (etykiety giełd) | `ENABLE_LIVE` | — |
 | Binance (`api.binance.com`, dzienne świece) | cena dnia do wyceny | `ENABLE_LIVE` | — |
 | NBP (`api.nbp.pl`, tabela A) | kurs średni USD/PLN | `ENABLE_LIVE` | — |

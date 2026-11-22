@@ -2,11 +2,17 @@
 //   GET    /api/cases/:id/network                 — sieć sprawy (teczka + rozwinięcia) i historia rozwinięć,
 //   GET    /api/cases/:id/network/plan?nodeId=…   — dostępne drogi rozwinięcia węzła, koszt i podstawa prawna,
 //   POST   /api/cases/:id/network/expand          — rozwiń węzeł (jeden krok; więcej tylko jawnie, z limitem),
-//   DELETE /api/cases/:id/network/expand/:eid     — wycofaj rozwinięcie (wpis zostaje w audycie).
+//   DELETE /api/cases/:id/network/expand/:eid     — wycofaj rozwinięcie (wpis zostaje w audycie),
+//   GET    /api/cases/:id/network/progress        — postęp trwającego „Szukaj dalej” (obieg środków).
+//
+// „Szukaj dalej” = POST …/expand z `relations: ['roundtrip']` i opcjonalnym `roundtrip: { maxHops, budget, windowDays }`.
 
 import { randomUUID } from 'node:crypto';
+import type { RoundTripProgress } from '@olcys/chain';
 import type { FastifyInstance } from 'fastify';
 import type { AnalysisRun, ChainProvider } from '@olcys/core';
+import { createGithubSocialProvider } from '@olcys/sources';
+import type { SocialGraphProvider } from '@olcys/sources';
 import type { CapturedDocument } from '../analysis.ts';
 import { HttpError, idParams } from '../http-common.ts';
 import type { RouteContext } from '../http-common.ts';
@@ -31,6 +37,8 @@ export interface NetworkDeps {
   rdap?: RdapClient | null;
   organizations?: OrganizationProvider | null;
   sanctions?: SanctionsProvider[];
+  /** Dostawcy relacji kont w serwisach z kodem (grupa `social`); domyślnie GitHub REST API przy `live`, `null` wyłącza. */
+  social?: SocialGraphProvider[] | null;
   /** Kto wykonuje rozwinięcie (narzędzie nie ma kont użytkowników). */
   requestedBy?: string;
 }
@@ -43,7 +51,16 @@ export function registerNetworkRoutes(app: FastifyInstance, context: RouteContex
   const live = config.live ?? context.connectors.some((connector) => connector.id.startsWith('live-'));
   const chainProviders: ChainProvider[] = deps.chainProviders;
   const busy = new Set<string>();
+  /** Postęp ostatniego „Szukaj dalej” w sprawie (w pamięci procesu; po zakończeniu zostaje do odczytu). */
+  const progress = new Map<string, RoundTripProgress & { nodeId: string; startedAt: string; finished: boolean }>();
   const sandboxBase = deps.sandboxUrl?.replace(/\/+$/, '');
+  // Relacje kont w serwisach z kodem: domyślnie GitHub REST API; token GITHUB_TOKEN odczytywany przy każdym żądaniu.
+  const social: SocialGraphProvider[] =
+    config.social === undefined
+      ? live
+        ? [createGithubSocialProvider({ ...(deps.fetch ? { fetcher: deps.fetch } : {}), token: () => process.env.GITHUB_TOKEN })]
+        : []
+      : (config.social ?? []);
 
   // Dostawcy tworzeni raz, leniwie — moduły drugiego zespołu mogą pojawić się po starcie testów.
   let providers: Promise<{ rdap?: RdapClient; organizations?: OrganizationProvider; sanctions: SanctionsProvider[] }> | undefined;
@@ -96,6 +113,7 @@ export function registerNetworkRoutes(app: FastifyInstance, context: RouteContex
       ...(loaded.rdap ? { rdap: loaded.rdap } : {}),
       ...(loaded.organizations ? { organizations: loaded.organizations } : {}),
       sanctions: loaded.sanctions,
+      social,
       // Sprawa wyłącznie na danych demonstracyjnych: żadna droga nie wychodzi do prawdziwych rejestrów.
       synthetic: run.connectors.length > 0 && run.connectors.every((id) => isSyntheticConnector(id) || id === 'corpus'),
       now,
@@ -141,15 +159,24 @@ export function registerNetworkRoutes(app: FastifyInstance, context: RouteContex
       if (!entity) return { nodeId: node.id, expandable: false, reason: 'Węzeł jest hipotezą narzędzia (np. operator) — rozwija się byty ze źródeł: konta, identyfikatory, adresy, organizacje, osoby, publikacje.', items: [], groups: [] };
       const ctx = { ...(await expandContext(request.params.id, run, dossier)), nodes: new Map(merged.nodes.map((item) => [item.id, item])), reserve: () => true };
       const items = planExpansion(entity, ctx, expansions);
-      const groups = RELATION_GROUPS.filter((group) => items.some((item) => item.group === group.id)).map((group) => {
+      // Obieg środków ma osobny przycisk „Szukaj dalej” z parametrami — nie jest polem wyboru zwykłego „Rozwiń”.
+      const groups = RELATION_GROUPS.filter((group) => group.id !== 'roundtrip' && items.some((item) => item.group === group.id)).map((group) => {
         const own = items.filter((item) => item.group === group.id);
         return { ...group, cost: own.filter((item) => item.available && !item.done).reduce((total, item) => total + item.cost, 0), available: own.some((item) => item.available), done: own.every((item) => item.done) };
       });
-      return { nodeId: node.id, entity: { kind: entity.kind, label: entity.label, ...(entity.identifierKind ? { identifierKind: entity.identifierKind } : {}) }, expandable: true, items, groups, limits: NETWORK_LIMITS, live };
+      const roundtripItem = items.find((item) => item.group === 'roundtrip');
+      const roundtrip = roundtripItem ? { available: roundtripItem.available, ...(roundtripItem.reason ? { reason: roundtripItem.reason } : {}), limits: NETWORK_LIMITS.roundtrip } : undefined;
+      return { nodeId: node.id, entity: { kind: entity.kind, label: entity.label, ...(entity.identifierKind ? { identifierKind: entity.identifierKind } : {}) }, expandable: true, items, groups, limits: NETWORK_LIMITS, live, ...(roundtrip ? { roundtrip } : {}) };
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { nodeId: string; relations?: RelationGroup[]; depth?: number; budget?: number; force?: boolean } }>(
+  app.get<{ Params: { id: string } }>('/api/cases/:id/network/progress', { schema: { params: idParams } }, async (request) => {
+    const caseId = request.params.id;
+    return { running: busy.has(caseId), roundtrip: progress.get(caseId) ?? null };
+  });
+
+  const RT = NETWORK_LIMITS.roundtrip;
+  app.post<{ Params: { id: string }; Body: { nodeId: string; relations?: RelationGroup[]; depth?: number; budget?: number; force?: boolean; roundtrip?: { maxHops?: number; budget?: number; windowDays?: number } } }>(
     '/api/cases/:id/network/expand',
     {
       schema: {
@@ -162,8 +189,18 @@ export function registerNetworkRoutes(app: FastifyInstance, context: RouteContex
             nodeId: { type: 'string', minLength: 1, maxLength: 1000 },
             relations: { type: 'array', maxItems: GROUP_IDS.length, items: { type: 'string', enum: GROUP_IDS } },
             depth: { type: 'integer', minimum: 1, maximum: NETWORK_LIMITS.maxDepth },
-            budget: { type: 'integer', minimum: 1, maximum: NETWORK_LIMITS.maxBudget },
+            // Ponad `maxBudget` tylko dla obiegu środków (silnik przycina pozostałe grupy do `maxBudget`).
+            budget: { type: 'integer', minimum: 1, maximum: RT.maxBudget },
             force: { type: 'boolean' },
+            roundtrip: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                maxHops: { type: 'integer', minimum: 2, maximum: RT.maxHops },
+                budget: { type: 'integer', minimum: 1, maximum: RT.maxBudget },
+                windowDays: { type: 'integer', minimum: 1, maximum: RT.maxWindowDays },
+              },
+            },
           },
         },
       },
@@ -176,21 +213,40 @@ export function registerNetworkRoutes(app: FastifyInstance, context: RouteContex
         const { run, dossier, expansions, merged } = await networkOf(caseId);
         const seed = merged.nodes.find((node) => node.id === request.body.nodeId);
         if (!seed) throw new HttpError(404, 'Nie ma takiego węzła w sieci sprawy.');
+        const groups = [...new Set(request.body.relations ?? [])];
+        const roundtrip = groups.includes('roundtrip');
+        const rt = request.body.roundtrip ?? {};
+        // „Szukaj dalej”: budżet = pobrania adresów pośrednich (+1 na sam adres, gdy nie ma go w teczce).
+        const budget = roundtrip ? (rt.budget ?? request.body.budget ?? RT.defaultBudget) + 1 : (request.body.budget ?? NETWORK_LIMITS.defaultBudget);
+        const base = await expandContext(caseId, run, dossier);
+        const startedAt = now().toISOString();
+        if (roundtrip) progress.set(caseId, { nodeId: seed.id, startedAt, finished: false, addressesFetched: 0, deepestHop: 0, cyclesFound: 0, queued: 0 });
         const record = await runExpansion({
           id: randomUUID(),
           caseId,
           runId: run.id,
           seed,
-          groups: [...new Set(request.body.relations ?? [])],
-          depth: request.body.depth ?? 1,
-          budget: request.body.budget ?? NETWORK_LIMITS.defaultBudget,
+          groups,
+          depth: roundtrip ? 1 : (request.body.depth ?? 1),
+          budget,
+          ...(roundtrip ? { maxBudget: RT.maxBudget + 1 } : {}),
           ...(request.body.force ? { force: true } : {}),
           requestedBy: config.requestedBy ?? 'analityk',
           network: { nodes: merged.nodes, edges: merged.edges },
           previous: expansions,
-          context: await expandContext(caseId, run, dossier),
+          context: roundtrip
+            ? {
+                ...base,
+                roundtrip: { ...(rt.maxHops ? { maxHops: rt.maxHops } : {}), budget: budget - 1, ...(rt.windowDays ? { windowDays: rt.windowDays } : {}) },
+                onRoundTripProgress: (value) => progress.set(caseId, { ...value, nodeId: seed.id, startedAt, finished: false }),
+              }
+            : base,
           isSynthetic: isSynthetic(dossier),
         });
+        if (roundtrip) {
+          const last = progress.get(caseId);
+          if (last) progress.set(caseId, { ...last, finished: true });
+        }
         await storage.addNetworkExpansion(record);
         const fresh = record.results.nodes.filter((node) => !node.known).length;
         return reply.code(201).send({ expansion: record, added: { nodes: fresh, edges: record.results.edges.length } });
@@ -207,6 +263,8 @@ export function registerNetworkRoutes(app: FastifyInstance, context: RouteContex
       await context.requireCase(request.params.id);
       const withdrawn = await storage.withdrawNetworkExpansion(request.params.id, request.params.expansionId, { at: now().toISOString(), by: config.requestedBy ?? 'analityk' });
       if (!withdrawn) throw new HttpError(404, 'Nie ma takiego obowiązującego rozwinięcia w tej sprawie.');
+      // Rozwinięcie osoby publicznej zasila teczkę (karta organizacji) — teczkę trzeba policzyć od nowa.
+      context.invalidateDossiers();
       const record = (await storage.listNetworkExpansions(request.params.id)).find((item) => item.id === request.params.expansionId) as ExpansionRecord;
       return { withdrawn: true, expansion: record };
     },

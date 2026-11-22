@@ -7,7 +7,7 @@ import { Hint } from '../components/ui/Hint.tsx';
 import { Term } from '../components/ui/Term.tsx';
 import { fmtDateTime } from '../format.ts';
 import { NODE_KIND_LABEL } from '../labels.ts';
-import { RELATION_GROUP_LABEL, depthSummary, expansionSummary, sanctionedNodes } from './network.ts';
+import { ON_DEMAND_GROUPS, RELATION_GROUP_LABEL, depthSummary, expansionSummary, sanctionedNodes } from './network.ts';
 import type { ExpansionRecord, NetworkNode, NetworkPlan, NetworkView, RelationGroup } from './network.ts';
 import './network.css';
 
@@ -63,8 +63,8 @@ export function ExpandPanel({ node, caseId, network, label, onExpanded, onPath, 
       .then((value) => {
         if (cancelled) return;
         setPlan(value);
-        // Domyślnie zaznaczone grupy dostępne i jeszcze niewykonane.
-        setChosen(new Set((value?.groups ?? []).filter((group) => group.available && !group.done).map((group) => group.id)));
+        // Domyślnie zaznaczone grupy dostępne i jeszcze niewykonane; relacje rodzinne i obieg środków — tylko na żądanie.
+        setChosen(new Set((value?.groups ?? []).filter((group) => group.available && !group.done && !ON_DEMAND_GROUPS.has(group.id)).map((group) => group.id)));
       })
       .catch((problem) => !cancelled && setError(errorMessage(problem)));
     return () => {

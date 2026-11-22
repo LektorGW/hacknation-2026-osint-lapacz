@@ -144,6 +144,26 @@ Dane w `data/mixers.ts` (osoba i mikser „WirMix” zmyślone; wcześniejsze cz
 
 Nowe dane wymagają restartu piaskownicy.
 
+### Obieg środków (ping-pong)
+
+Dane w `data/roundtrip.ts` (osoba i adresy zmyślone; wcześniejsze części bez zmian, bez ogłoszeń). Wynik: w grafie śledczym kliknij adres podmiotu i w panelu bocznym „Obieg środków (ping-pong)” → „Szukaj dalej” (domyślnie do 10 przelewów, budżet 60 adresów, okno 180 dni; do wyboru do 50 przelewów i 200 adresów).
+
+| Przypadek | Identyfikator do wpisania | Oczekiwany wynik |
+|---|---|---|
+| **Leon Krąg** — środki wracają na adres | nick `l_krag` (albo adres `bc1qqk6pav9ap2q6wmex7yc40cy9hkjv4uqpcg7s2w`) | Profil `/gitpub/l_krag` z adresem BTC. „Szukaj dalej” znajduje **3 obiegi**: (1) „obieg przez adresy pośrednie” — 3 przelewy w 3 dni (02.2026): podmiot → `bc1qvd3p…k0cj` (0,8 BTC) → `1PMujJ…dCrj` (0,79) → podmiot (0,78), stosunek 97,5%; (2) i (3) „bezpośredni ping-pong (powtarzany: 2 razy)” z adresem `17nS1U…bik`: 0,3 → 0,3 BTC (03.2026) i 0,25 → 0,24 BTC (04.2026). Gałąź `12V4Kx…HVSv` → inny adres nie wraca. Pobrane adresy pośrednie: 5. Oba adresy pośrednie dostają odznakę „ping-pong”; „Pokaż na grafie” podświetla ścieżkę obiegu. Każdy krok to fakt (przelew), a to, że krążą te same środki — **hipoteza**. Obieg przez mikser pokazuje też sprawa `e_wirski` (WirMix → podmiot). |
+
+Nowe dane wymagają restartu piaskownicy.
+
+### Ostrzeżenia o możliwym oszustwie (fałszywe rozdanie)
+
+Dane w `data/scam.ts` (konta i adresy zmyślone; wcześniejsze części bez zmian, bez ogłoszeń). Wynik: baner pod kafelkami podsumowania sprawy, odznaka „zgłoszenia oszustwa” przy adresie (karta adresu i węzeł grafu), blok „Ostrzeżenia o możliwym oszustwie” w sekcji Adresy (publikacje z odnośnikami), kluczowe ustalenie i sekcja raportu o tej samej nazwie.
+
+| Przypadek | Identyfikator do wpisania | Oczekiwany wynik |
+|---|---|---|
+| **Fałszywe rozdanie BTC** — ostrzeżenia poszkodowanych | adres `bc1qqaqykqddpsm50g6thsqju895cjntaedqynh3dw` | Wpis poszkodowanej `gosia_z_lodzi` na własnym profilu (`/spolecznosc/wpis/777`, cytuje reklamę „odeślemy x2”) i komentarz `pan_tadeusz_btc`; wątek `/forum/watek/88` z ostrzeżeniami `ostrozny_inwestor`, `kasia_poszkodowana`, `moderator_bezpieczenstwo` i **kopią** ostrzeżenia (`przeklejacz_ostrzezen` — ta sama treść, liczy się raz). Blockchain: 10 wpłat od 10 różnych nadawców w ok. 30 godzin od pierwszej aktywności (10–11.05.2026), potem wyprowadzenie 95% na `bc1qay5k…ma5w` (wzorzec rozdania — **hipoteza**). Czerwony baner: „Ostrzeżenie: adres mógł być wykorzystywany do oszustwa (zgłoszenia w 5 niezależnych źródłach)”; składniki `scam.warning_publications` 65, `scam.giveaway_text` 25, `scam.giveaway_chain_pattern` 20. **Nikt nie jest kandydatem na osobę** (także autorka wpisu na własnym profilu) — autorzy ostrzeżeń to poszkodowani lub świadkowie; właściciel nieustalony; linia „co można zrobić” (CERT Polska / Policja). |
+
+Nowe dane wymagają restartu piaskownicy.
+
 ### Podmiana adresu między analizami
 
 Strona `/_demo` przełącza fazę scenariusza Dominika:

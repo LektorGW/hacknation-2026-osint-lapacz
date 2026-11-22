@@ -38,6 +38,8 @@ import { addressKey, sightingKey } from './intel.ts';
 import type { MentionSummary, RunIntel } from './intel.ts';
 import { buildKeyFindings } from './keyfindings.ts';
 import { applyMixerExposure, mixerKeyFindings } from './mixers.ts';
+import { applyScamWarnings, scamKeyFindings } from './scam.ts';
+import type { ScamDocument, ScamWarnings } from './scam.ts';
 import type { MixerExposure } from './mixers.ts';
 import { buildAccountWalletLinks, buildOperatorHypotheses } from './operator.ts';
 import { PERSON_RULES, resolvePersons } from './persons.ts';
@@ -61,6 +63,9 @@ import type { AddressNetwork } from './network.ts';
 import { annotateExplanations, insertOrganizationFindings, organizationGraph, organizationViews, resolveBeneficiaries } from './organizations.ts';
 import type { DossierOrganization } from './organizations.ts';
 import type { OrganizationNetwork } from './org-network.ts';
+import { applyPublicFigureDecision, mergeOrganizationNetworks, networkCounts, publicFigureFinding, publicFigureGraph } from './public-figure.ts';
+import type { PublicFigure, PublicFigureAddress, PublicFigureRole } from './public-figure.ts';
+import type { ExpansionRecord } from './network/types.ts';
 
 /** Adres w teczce: wynik względem osoby głównej plus adnotacje o korektach. */
 export type DossierFinding = Omit<Finding, 'evidence'> & {
@@ -161,12 +166,16 @@ export interface DossierView extends Dossier {
   organizations: DossierOrganization[];
   /** Sieć organizacji z rejestrów publicznych: osoby w rolach (nie właściciele adresu), podmioty powiązane, źródła, zatrzymania. */
   organizationNetwork?: OrganizationNetwork;
+  /** Dopasowanie podmiotu do osoby publicznej w Wikidata (hipoteza / decyzja analityka) z rolami i licznikami siatki. */
+  publicFigure?: PublicFigure;
   /** Siatka adresu: wpływy i wypływy zbiorczo, punkty zapytania, ten sam portfel — bez osób dla wpłacających. */
   addressNetwork: AddressNetwork[];
   /** Odznaki list sankcyjnych i ostrzeżeń dla węzłów grafu (id węzła → trafienie); brak = brak trafień. */
   riskLists?: RiskGraphResult['badges'];
   /** Miksery i CoinJoin: czy środki adresów sprawy przeszły przez mikser (poziom, przekazania, hipotezy, listy sankcyjne). */
   mixerExposure: MixerExposure;
+  /** Ostrzeżenia o możliwym oszustwie z użyciem adresów sprawy (zgłoszenia, wzorzec rozdania, zbiory ostrzeżeń, zatruwanie adresu). */
+  scamWarnings: ScamWarnings;
 }
 
 export interface DossierInput {
@@ -185,6 +194,10 @@ export interface DossierInput {
   serviceLabels?: ServiceLabel[];
   /** Analiza wykonana w trybie głębokim. */
   deep?: boolean;
+  /** Rozwinięcia sieci sprawy — z nich teczka bierze sieć osoby publicznej rozwiniętą po decyzji analityka. */
+  expansions?: Pick<ExpansionRecord, 'id' | 'startedAt' | 'withdrawnAt' | 'results'>[];
+  /** Pełne treści dokumentów analizy (także publikacji innych autorów) — do ostrzeżeń o oszustwie; bez nich tylko fragmenty śladów. */
+  documents?: ScamDocument[];
 }
 
 /** Obowiązuje najnowsza decyzja dla danego celu; wcześniejsze zostają tylko w rejestrze. */
@@ -677,7 +690,9 @@ export function buildDossier(input: DossierInput): DossierView {
     if (related.length > 0) finding.relatedAddresses = related;
   }
   // Siatka adresu (zbiorczo): adresy sprawy podane przez analityka i potwierdzone — z zapisanych danych blockchain.
-  const organizations = organizationViews(beneficiaries, input.intel?.organizationNetwork);
+  // Osoba publiczna (Wikidata): decyzja analityka zmienia status; sieć osoby dochodzi do sieci organizacji teczki.
+  const { publicFigure, organizationNetwork } = publicFigureForDossier(input, decisions);
+  const organizations = organizationViews(beneficiaries, organizationNetwork);
   const addressNetwork = findings
     .filter((finding) => subjectAddresses.has(addressKey(finding)) && linkedKeys.has(addressKey(finding)))
     .map((finding) =>
@@ -736,14 +751,18 @@ export function buildDossier(input: DossierInput): DossierView {
   const addressLinks = addressLinkGraph(findings, graph);
   graph.nodes.push(...addressLinks.nodes);
   graph.edges.push(...addressLinks.edges);
-  const orgGraph = organizationGraph(organizations, input.intel?.organizationNetwork, graph);
+  // Węzeł osoby publicznej przed siecią organizacji: ten sam klucz (`regperson:Q…`) co jej role z rejestru.
+  const figureGraph = publicFigureGraph(publicFigure, 'subject');
+  if (graph.nodes.some((node) => node.id === 'subject')) graph.nodes.push(...figureGraph.nodes.filter((node) => !graph.nodes.some((known) => known.id === node.id)));
+  const orgGraph = organizationGraph(organizations, organizationNetwork, graph);
   graph.nodes.push(...orgGraph.nodes);
   graph.edges.push(...orgGraph.edges);
+  graph.edges.push(...figureGraph.edges.filter((edge) => graph.nodes.some((node) => node.id === edge.from) && graph.nodes.some((node) => node.id === edge.to)));
   // Oficjalne listy sankcyjne i ostrzeżeń (migawki lokalne, bez sieci): wpis listy jako osobny węzeł, trafienie
   // identyfikatora = fakt o liście, zgodność nazwy = hipoteza. Błąd list nie blokuje teczki.
   let riskLists: RiskGraphResult['badges'] | undefined;
   try {
-    const risk = riskListGraph(graph, { attributes: organizationRegistryAttributes(input.intel?.organizationNetwork) });
+    const risk = riskListGraph(graph, { attributes: organizationRegistryAttributes(organizationNetwork) });
     const known = new Set(graph.nodes.map((node) => node.id));
     graph.nodes.push(...risk.nodes.filter((node) => !known.has(node.id)));
     graph.edges.push(...risk.edges);
@@ -773,6 +792,8 @@ export function buildDossier(input: DossierInput): DossierView {
   applyBusinessBadges(graph, indicators.businessActivity);
   // Miksery i CoinJoin: ekspozycja adresów sprawy, składniki informacyjne wskaźników C i D, węzły mikserów w grafie.
   const mixerExposure = applyMixerExposure({ findings, linkedKeys, allFindings: findings, graph, indicators, serviceLinks });
+  // Ostrzeżenia o możliwym oszustwie: autorzy ostrzeżeń to poszkodowani lub świadkowie, nigdy właściciele.
+  const scamWarnings = applyScamWarnings({ findings, ...(input.documents ? { documents: input.documents } : {}), sightings, persons, ...(riskLists ? { riskLists } : {}), graph });
 
   return {
     caseId: caseSummary.id,
@@ -810,10 +831,12 @@ export function buildDossier(input: DossierInput): DossierView {
     ...(input.intel?.expansion ? { expansion: input.intel.expansion } : {}),
     graph,
     organizations,
-    ...(input.intel?.organizationNetwork ? { organizationNetwork: input.intel.organizationNetwork } : {}),
+    ...(organizationNetwork ? { organizationNetwork } : {}),
+    ...(publicFigure ? { publicFigure } : {}),
     addressNetwork,
     ...(riskLists ? { riskLists } : {}),
     mixerExposure,
+    scamWarnings,
     timeline: buildTimeline({
       linked,
       profiles: profiles.filter((profile) => mainProfileIds.has(profile.id)),
@@ -857,7 +880,7 @@ export function buildDossier(input: DossierInput): DossierView {
       relatedPersons,
       priority: summary.priority,
       connectorCount: run.connectors.length,
-    }), organizations, input.intel?.organizationNetwork), riskLists), ...businessKeyFindings(indicators.businessActivity), ...mixerKeyFindings(mixerExposure)],
+    }), organizations, input.intel?.organizationNetwork), riskLists), ...(publicFigureFinding(publicFigure) ? [publicFigureFinding(publicFigure)!] : []), ...businessKeyFindings(indicators.businessActivity), ...mixerKeyFindings(mixerExposure), ...scamKeyFindings(scamWarnings)],
   };
 }
 
@@ -878,4 +901,34 @@ function organizationRegistryAttributes(network: OrganizationNetwork | undefined
 function withRiskListFindings(findings: DossierView['keyFindings'], badges: RiskGraphResult['badges'] | undefined): DossierView['keyFindings'] {
   if (!badges) return findings;
   return [...findings, ...Object.values(badges).map((badge) => ({ text: `${badge.summary} ${badge.caveat}`, layer: badge.status === 'source_fact' ? ('fact' as const) : ('inference' as const) }))];
+}
+
+/**
+ * Osoba publiczna w teczce: decyzja analityka (potwierdzenie, odrzucenie, wybór kandydata), sieć z rozwinięcia po
+ * potwierdzeniu (głębokość 2) albo z analizy (druga cecha, głębokość 1); odrzucone dopasowanie nie wnosi sieci.
+ */
+function publicFigureForDossier(input: DossierInput, decisions: DecisionRecord[]): { publicFigure?: PublicFigure; organizationNetwork?: OrganizationNetwork } {
+  const base = input.intel?.organizationNetwork;
+  const figure = applyPublicFigureDecision(input.intel?.publicFigure, decisions);
+  if (!figure) return base ? { organizationNetwork: base } : {};
+  if (figure.status === 'rejected' || !figure.wikidataId) return { publicFigure: { ...figure, roles: undefined, expansion: undefined }, ...(base ? { organizationNetwork: base } : {}) } as { publicFigure: PublicFigure; organizationNetwork?: OrganizationNetwork };
+  const expansion =
+    figure.status === 'confirmed'
+      ? (input.expansions ?? []).filter((record) => !record.withdrawnAt && record.results.publicFigure?.wikidataId === figure.wikidataId && record.results.organizationNetwork).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1)
+      : undefined;
+  const fromAnalysis = input.intel?.publicFigure?.wikidataId === figure.wikidataId && figure.match === 'corroborated' ? input.intel?.publicFigureNetwork : undefined;
+  const network = (expansion?.results.organizationNetwork as OrganizationNetwork | undefined) ?? fromAnalysis;
+  const view: PublicFigure = {
+    ...figure,
+    ...(expansion
+      ? {
+          roles: (expansion.results.publicFigure?.roles ?? []) as PublicFigureRole[],
+          cryptoAddresses: (expansion.results.publicFigure?.cryptoAddresses ?? []) as PublicFigureAddress[],
+          expansion: { depth: expansion.results.publicFigure?.depth ?? 2, automatic: false, expansionId: expansion.id, note: 'Rozwinięto po potwierdzeniu dopasowania przez analityka (zapis w historii rozwinięć; można go wycofać).' },
+        }
+      : {}),
+    ...(network ? { counts: networkCounts(network) } : {}),
+  };
+  const merged = mergeOrganizationNetworks(base, network);
+  return { publicFigure: view, ...(merged ? { organizationNetwork: merged } : {}) };
 }

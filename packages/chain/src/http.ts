@@ -64,6 +64,8 @@ export interface FetchJsonOptions {
   source: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Treść żądania POST (JSON) — np. wywołanie JSON-RPC; bez niej żądanie GET. */
+  body?: unknown;
 }
 
 export async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: FetchJsonOptions): Promise<T> {
@@ -74,7 +76,14 @@ export async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: F
   let response: Response;
   try {
     // Pola dodatkowe pozwalają ogranicznikowi tempa liczyć limit czasu od faktycznego startu żądania, a nie od wejścia do kolejki.
-    const init = { signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT }, callerSignal: options.signal, timeoutMs } as QueuedRequestInit;
+    const post = options.body !== undefined;
+    const init = {
+      signal,
+      headers: { accept: 'application/json', 'user-agent': USER_AGENT, ...(post ? { 'content-type': 'application/json' } : {}) },
+      ...(post ? { method: 'POST', body: JSON.stringify(options.body) } : {}),
+      callerSignal: options.signal,
+      timeoutMs,
+    } as QueuedRequestInit;
     response = await fetchImpl(url, init);
   } catch (error) {
     if (options.signal?.aborted) throw error;
@@ -142,6 +151,8 @@ export const DEFAULT_HOST_POLICIES: Record<string, HostPolicy> = {
   // Stronicowanie pełnej historii to dziesiątki żądań z rzędu — trzymamy umiarkowane tempo.
   'blockstream.info': { minIntervalMs: 150, retryAfterMs: 4000 },
   'mempool.space': { minIntervalMs: 250, retryAfterMs: 4000 },
+  // Litecoin Space (Fundacja Litecoin) nie publikuje limitów — tempo ostrożniejsze niż dla mempool.space.
+  'litecoinspace.org': { minIntervalMs: 400, retryAfterMs: 5000, maxConcurrent: 2 },
   'eth.blockscout.com': { minIntervalMs: 120, retryAfterMs: 4000 },
   // API Blockscout z kluczem: plan darmowy pozwala na 5 żądań na sekundę.
   // Pomiar na żywo: przy kilkunastu równoczesnych żądaniach brama zrywa połączenia po ~10 s, przy 2–3 odpowiada poprawnie.

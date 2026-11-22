@@ -459,6 +459,7 @@ export async function checkConnectivity(env: NodeJS.ProcessEnv): Promise<ConfigI
     add('ENABLE_LIVE', 'Blockstream (Bitcoin)', 'https://blockstream.info/api/blocks/tip/height');
     add('ENABLE_LIVE', 'Blockscout (Ethereum)', 'https://eth.blockscout.com/api/v2/stats');
     add('ENABLE_LIVE', 'TronScan (Tron)', 'https://apilist.tronscanapi.com/api/system/status');
+    add('ENABLE_LIVE', 'Litecoin Space (Litecoin)', 'https://litecoinspace.org/api/blocks/tip/height');
     add('ENABLE_LIVE', 'NBP (kursy walut)', 'https://api.nbp.pl/api/exchangerates/tables/a/?format=json');
     add('ENABLE_LIVE', 'Binance (ceny)', 'https://api.binance.com/api/v3/ping');
     add('ENABLE_LIVE', 'Wikidata', 'https://www.wikidata.org/w/api.php?action=query&meta=siteinfo&format=json');

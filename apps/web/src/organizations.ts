@@ -69,6 +69,64 @@ export interface OrganizationNetwork {
   notes: string[];
 }
 
+/** Druga cecha zgodna z danymi sprawy (konto w serwisie, domena oficjalnej strony). */
+export interface PublicFigureEvidence {
+  kind: 'account' | 'website';
+  property: string;
+  propertyLabel: string;
+  wikidataValue: string;
+  caseValue: string;
+  caseSource: string;
+  origin: 'analyst' | 'profile' | 'profile_link';
+  explanation: string;
+}
+
+export interface PublicFigureRole {
+  organizationId: string;
+  organization: string;
+  wikidataOrganization: string;
+  property: string;
+  role: string;
+  from?: string;
+  to?: string;
+  reference?: string;
+  source: string;
+}
+
+/** Dopasowanie podmiotu do osoby publicznej w Wikidata (pole teczki `publicFigure`). */
+export interface PublicFigure {
+  query: string;
+  wikidataId?: string;
+  label?: string;
+  description?: string;
+  url?: string;
+  matchedBy: PublicFigureEvidence[];
+  status: 'hypothesis' | 'confirmed' | 'rejected';
+  match: 'corroborated' | 'name_only' | 'ambiguous';
+  candidates?: { wikidataId: string; label: string; description?: string; url: string; corroborated: boolean }[];
+  statement: string;
+  notes: string[];
+  roles?: PublicFigureRole[];
+  cryptoAddresses?: { entityId: string; entityName: string; network: string; address: string; property: string; propertyLabel: string; source: string; note: string }[];
+  expansion?: { depth: number; automatic: boolean; note: string; expansionId?: string };
+  counts?: { organizations: number; persons: number; relations: number };
+  decision?: { decision: 'confirmed' | 'rejected'; decidedAt: string; author: string; note?: string };
+}
+
+/** „Siatka: X organizacji, Y osób, Z relacji” — z liczników teczki albo z sieci organizacji. */
+export function networkCountText(counts: { organizations: number; persons: number; relations: number }): string {
+  return `Siatka: ${counts.organizations} organizacji, ${counts.persons} osób, ${counts.relations} relacji`;
+}
+
+/** Status dopasowania słowami — hipoteza nigdy nie wygląda na potwierdzenie. */
+export function publicFigureStatusText(figure: PublicFigure): string {
+  if (figure.status === 'confirmed') return 'dopasowanie potwierdzone przez analityka';
+  if (figure.status === 'rejected') return 'dopasowanie odrzucone przez analityka';
+  if (figure.match === 'corroborated') return 'hipoteza dopasowania';
+  if (figure.match === 'ambiguous') return 'kilka osób o tym nazwisku — wybór należy do analityka';
+  return 'możliwa osoba publiczna o tym nazwisku (niepotwierdzona)';
+}
+
 export interface NetworkCounterparty {
   address: string;
   transfers: number;

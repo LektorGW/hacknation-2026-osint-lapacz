@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react';
 /** Wszystkie widoki teczki. Identyfikatory są częścią adresów — istniejących nie zmieniamy. */
 export const DOSSIER_TABS = [
   { id: 'podsumowanie', label: 'Podsumowanie' },
+  { id: 'do-potwierdzenia', label: 'Do potwierdzenia' },
   { id: 'osoba', label: 'Ustalenie osoby' },
   { id: 'profile', label: 'Profile' },
   { id: 'tozsamosci', label: 'Powiązane tożsamości' },
@@ -28,7 +29,7 @@ export const DEFAULT_TAB: DossierTab = 'podsumowanie';
  * Sekcja z kilkoma widokami pokazuje drugi rząd przełączników.
  */
 export const DOSSIER_SECTIONS: { id: string; label: string; tabs: readonly DossierTab[]; description: string }[] = [
-  { id: 'podsumowanie', label: 'Podsumowanie', tabs: ['podsumowanie'], description: 'odpowiedź w skrócie i co dalej' },
+  { id: 'podsumowanie', label: 'Podsumowanie', tabs: ['podsumowanie', 'do-potwierdzenia'], description: 'odpowiedź w skrócie, co dalej i co czeka na Twoją decyzję' },
   { id: 'osoba', label: 'Osoba i konta', tabs: ['osoba', 'profile', 'tozsamosci'], description: 'kto to jest i jakie konta prowadzi' },
   { id: 'adresy', label: 'Adresy', tabs: ['adresy'], description: 'adresy krypto i ślady w źródłach' },
   { id: 'pieniadze', label: 'Pieniądze', tabs: ['dowod', 'uslugi', 'przeplywy'], description: 'dokąd trafiły środki' },
@@ -46,6 +47,8 @@ export const TAB_ALIASES: Record<string, DossierTab> = {
   wiecej: 'wskazniki',
   czas: 'os-czasu',
   historia: 'analizy',
+  potwierdz: 'do-potwierdzenia',
+  kolejka: 'do-potwierdzenia',
 };
 
 export const sectionOf = (tab: DossierTab) => DOSSIER_SECTIONS.find((section) => section.tabs.includes(tab)) ?? DOSSIER_SECTIONS[0]!;

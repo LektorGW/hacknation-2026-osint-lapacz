@@ -14,6 +14,8 @@ import { ProofTab } from '../components/ProofTab.tsx';
 import { IdentitiesTab } from '../components/IdentitiesTab.tsx';
 import { OrganizationsCard } from '../components/OrganizationCards.tsx';
 import { IndicatorsTab } from '../components/Indicators.tsx';
+import { PendingChip, ReviewQueue } from '../components/ReviewQueue.tsx';
+import { collectReview, rememberPending } from '../review.ts';
 import { DemoWatermark } from '../components/Mode.tsx';
 import { RELATION_TEXT, identityStatus, linkLabel } from '../identities.ts';
 import { Explanations } from '../components/Explanations.tsx';
@@ -267,6 +269,8 @@ function TabContent({ tab, summary, dossier, onChanged, empty }: { tab: DossierT
       return <IdentitiesTab />;
     case 'wskazniki':
       return <IndicatorsTab />;
+    case 'do-potwierdzenia':
+      return <ReviewQueue />;
     default:
       return (
         <>
@@ -339,6 +343,13 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, key]);
 
+  // „Do potwierdzenia”: liczba pozycji z wczytanej teczki — zapamiętana także dla listy spraw na pulpicie.
+  const pending = useMemo(() => (data && 'dossier' in data ? collectReview(data.dossier).pending.length : undefined), [data]);
+  useEffect(() => {
+    if (pending !== undefined && data && !('runId' in source)) rememberPending(data.summary.id, pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending, data]);
+
   if (!data) {
     return (
       <div className="page">
@@ -374,8 +385,10 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
     tozsamosci: (dossier.linkedIdentities ?? []).length,
     dowod: (dossier.cashOutProof ?? []).length,
     profile: dossier.profiles.length,
+    'do-potwierdzenia': pending,
   };
   const sectionCount = (tabs: readonly DossierTab[]) => (tabs.length === 1 ? counts[tabs[0]!] : undefined);
+  const reviewHref = tabHref('do-potwierdzenia');
 
   return (
     <DossierContext.Provider value={context}>
@@ -395,6 +408,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
             </p>
             <h1>{summary.name}</h1>
             <SearchInputChip dossier={dossier} />
+            {!historic && <PendingChip count={pending} href={reviewHref} />}
             <p className="muted dossier-meta">
               Stan na {fmtDateTime(dossier.generatedAt)}
               <RunPeriod runId={dossier.runId} />
@@ -467,6 +481,12 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                   >
                     {item.label}
                     {count !== undefined && count > 0 && <span className="sections-count">{count}</span>}
+                    {item.tabs.includes('do-potwierdzenia') && !!pending && (
+                      <span className="sections-count is-review" title={`Do potwierdzenia: ${pending}`}>
+                        {pending}
+                        <span className="visually-hidden"> do potwierdzenia</span>
+                      </span>
+                    )}
                   </a>
                 </li>
               );
@@ -478,7 +498,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                 <li key={item}>
                   <a href={tabHref(item)} aria-current={item === tab ? 'page' : undefined}>
                     {tabLabel(item)}
-                    {counts[item] !== undefined && counts[item]! > 0 && <span className="sections-count">{counts[item]}</span>}
+                    {counts[item] !== undefined && counts[item]! > 0 && <span className={`sections-count ${item === 'do-potwierdzenia' ? 'is-review' : ''}`}>{counts[item]}</span>}
                   </a>
                 </li>
               ))}
@@ -487,7 +507,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
         </nav>
 
         {printAll ? (
-          DOSSIER_TABS.filter((item) => item.id !== 'graf').map((item) => (
+          DOSSIER_TABS.filter((item) => item.id !== 'graf' && item.id !== 'do-potwierdzenia').map((item) => (
             <div key={item.id} className="print-section">
               <TabContent tab={item.id} summary={summary} dossier={dossier} onChanged={loaded.reload} empty={empty} />
             </div>

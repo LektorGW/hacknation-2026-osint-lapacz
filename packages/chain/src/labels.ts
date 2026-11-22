@@ -42,13 +42,13 @@ export interface LabelSet {
   lookup(network: Network, address: string): LabelEntry | undefined;
 }
 
-const NETWORKS: Network[] = ['bitcoin', 'bitcoin-testnet', 'ethereum', 'tron'];
+const NETWORKS: Network[] = ['bitcoin', 'bitcoin-testnet', 'ethereum', 'tron', 'litecoin', 'solana'];
 const CLASSES: AddressClass[] = ['private', 'unknown', 'exchange', 'smart_contract', 'charity', 'mixer', 'institutional'];
 const KINDS: CashOutKind[] = ['exchange_deposit', 'p2p_service', 'payment_gateway', 'crypto_card', 'stablecoin_swap'];
 
 /** Adresy EVM i bech32 nie rozróżniają wielkości liter; Base58 rozróżnia. */
 export function normalizeAddress(address: string): string {
-  return /^(0x|bc1|tb1)/i.test(address) ? address.toLowerCase() : address;
+  return /^(0x|bc1|tb1|ltc1)/i.test(address) ? address.toLowerCase() : address;
 }
 
 export function createLabelSet(entries: LabelEntry[], name: string): LabelSet {

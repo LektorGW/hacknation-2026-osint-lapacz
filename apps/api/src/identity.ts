@@ -140,6 +140,47 @@ export function assessIdentity(doc: SourceDocument, inputs: Identifier[]): Ident
   };
 }
 
+/** Wartość porównywalna: adres strony bez protokołu, `www.` i końcowego ukośnika; inne — jak `normalize`. */
+function comparable(item: Identifier): string {
+  const value = normalize(item.value);
+  return item.type === 'profile_url' ? value.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '') : value;
+}
+
+/**
+ * Ocena profilu znalezionego po imieniu i nazwisku, które podał inny, mocno przypisany profil podmiotu
+ * (nazwa wyświetlana). Taki profil może należeć do imiennika: potwierdza go dopiero drugi identyfikator —
+ * podany przez analityka (`inputs`) albo ustalony w sprawie z profili mocno przypisanych (`known`: e-mail,
+ * strona, adres profilu). Bez tego zostaje „zgodne tylko imię i nazwisko”.
+ */
+export function assessNameSearchProfile(doc: SourceDocument, inputs: Identifier[], known: Identifier[], distance = 1): IdentityAssessment {
+  if (doc.identityMatch === 'verified_link') return VERIFIED_BY_SOURCE;
+  const direct = corroborating(doc, inputs).filter((item) => item.type !== 'full_name');
+  if (direct.length > 0) {
+    return { match: 'exact_identifier', reasons: [`Profil odnaleziony po imieniu i nazwisku zawiera także: ${describe(direct)}.`], distance: 0 };
+  }
+  const text = doc.text.toLowerCase();
+  const linked = new Set((doc.discoveredIdentifiers ?? []).map(comparable));
+  const ownUrl = comparable({ type: 'profile_url', value: doc.url });
+  const hits = known.filter((item) => {
+    if (item.type === 'full_name') return false;
+    const value = comparable(item);
+    if (value.length < 4 || value === ownUrl) return false;
+    return linked.has(value) || text.includes(value);
+  });
+  if (hits.length > 0) {
+    return {
+      match: 'linked_profile',
+      reasons: [`Profil odnaleziony po imieniu i nazwisku z profilu podmiotu zawiera także identyfikator ustalony w sprawie: ${describe(hits)}.`],
+      distance,
+    };
+  }
+  return {
+    match: 'name_only',
+    reasons: ['Profil odnaleziony po imieniu i nazwisku z profilu podmiotu; poza nazwą nie ma w nim żadnego identyfikatora sprawy — możliwy imiennik.'],
+    distance,
+  };
+}
+
 /**
  * Ocena profilu wskazanego przez inny profil podmiotu. Jeśli sam odsyła z powrotem do
  * identyfikatora podmiotu, odnośniki są wzajemne i tożsamość uznajemy za potwierdzoną.

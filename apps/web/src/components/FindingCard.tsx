@@ -10,6 +10,7 @@ import type { DossierFinding } from '../proof.ts';
 import { countText } from '../ux.ts';
 import { EvidenceList } from './EvidenceList.tsx';
 import { RelatedAddresses } from './FundsOrigin.tsx';
+import { ScamChip } from './ScamWarnings.tsx';
 import { Disclosure } from './ui/Disclosure.tsx';
 import { Score, ScoreSteps } from './ui/Score.tsx';
 import { Term } from './ui/Term.tsx';
@@ -52,6 +53,7 @@ function AddressHeader({ finding, index }: { finding: Finding; index: number }) 
             </span>
           )}
           {extra.chainSkipped && <span className="chip chip-inference">nie analizowano blockchainu (limit)</span>}
+          <ScamChip address={finding.address} />
         </div>
       </div>
       <div className="fc-scores">

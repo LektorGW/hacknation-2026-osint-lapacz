@@ -98,6 +98,25 @@ describe('adresy w nietypowych zapisach', () => {
     assert.equal(addressFromHref('mailto:ktos@poczta.example'), null);
   });
 
+  test('Litecoin i Solana: odnośniki płatności, eksploratory i sklejanie rozbitego adresu', () => {
+    const ltc = 'LbNzkvEjayzxfvfJMXcDnVboRL3QmyorVR';
+    const ltcBech = 'ltc1q0yws8mlw9pkhyu5e99232u50tfs8t5pm6gj8g3';
+    const sol = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    assert.equal(addressFromHref(`litecoin:${ltc}?amount=1`), ltc);
+    assert.equal(addressFromHref(`https://litecoinspace.org/address/${ltcBech}`), ltcBech);
+    assert.deepEqual(found(`LTC: ${ltc.slice(0, 9)} ${ltc.slice(9)}`), [ltc]);
+    assert.deepEqual(found(`${ltcBech.slice(0, 12)} ${ltcBech.slice(12)}`), [ltcBech]);
+    // Solana z odnośnika: tekst dostaje słowo wskazujące sieć, więc adres jest przyjmowany.
+    assert.equal(addressFromHref(`solana:${sol}?amount=1`), sol);
+    assert.equal(addressFromHref(`https://solscan.io/account/${sol}`), sol);
+    assert.deepEqual(found(`Wpłać: <solana:${sol}?amount=1>`.replace(/[<>]/g, ' ')), [sol]);
+    assert.deepEqual(extractAddresses(htmlToText(`<a href="https://explorer.solana.com/address/${sol}">wesprzyj</a>`)).map((item) => item.network), ['solana']);
+    // Adres Solana nie powstaje ze sklejenia słów — ten format nie ma sumy kontrolnej.
+    // (początek „T…” wygląda jak adres Tron, więc normalizacja próbuje sklejać — i nie może przyjąć wyniku Solana).
+    const solT = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    assert.equal(normalizeAddressText(`SOL ${solT.slice(0, 20)} ${solT.slice(20)}`), `SOL ${solT.slice(0, 20)} ${solT.slice(20)}`);
+  });
+
   test('htmlToText zachowuje adres z atrybutu href, gdy widoczny napis go nie zawiera', () => {
     const html = `<p>Wesprzyj: <a href="bitcoin:${btc}?amount=0.01">kliknij tutaj</a> albo <a class="x" href='https://etherscan.io/address/${eth}'>portfel ETH</a>,
       <a href="https://example.org/">zwykły odnośnik</a></p>`;

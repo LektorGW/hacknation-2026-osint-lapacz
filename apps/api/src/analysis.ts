@@ -10,18 +10,22 @@ import { BENEFICIARY_RULES, OFFICIAL_SITE_CONNECTOR, attributeBeneficiary, benef
 import type { BeneficiaryAttribution, OfficialSiteCheck } from './beneficiary.ts';
 import { buildOrganizationNetwork, krsNumbersIn } from './org-network.ts';
 import type { OrganizationNetwork, OrgSeed } from './org-network.ts';
+import { PUBLIC_FIGURE_STAGE_MS, runPublicFigureStage } from './public-figure.ts';
+import type { PublicFigure } from './public-figure.ts';
 import type { InsightEvidence } from './ai-rules.ts';
 import { createLimiter } from './concurrency.ts';
+import { readScamContext } from './scam.ts';
 import { unlabeledCounterparties } from './counterparties.ts';
 import { buildProfileNodes } from './entity.ts';
-import { assessIdentity, assessLinkedProfile, isUniqueType, matchRank, normalize as normalizeName } from './identity.ts';
+import { assessIdentity, assessLinkedProfile, assessNameSearchProfile, isUniqueType, matchRank, normalize as normalizeName } from './identity.ts';
+import { CONNECTOR_STOP_PREFIX, DECLARED_ONLY_NOTE, MAX_NICK_CANDIDATES, NICK_CANDIDATE_REASON, displayNameMatch, nickCandidates } from '@olcys/sources';
 import type { IdentityAssessment } from './identity.ts';
 import { addressKey, sightingKey } from './intel.ts';
 import { mentionsInDocument } from './services.ts';
 import { detectFiatSignals } from './fiat-signals.ts';
 import { businessTextOf } from './business.ts';
 import type { AuthorComparison, DiscoveryStep, ExpansionStop, MentionSummary, QueryTiming, RunIntel, Sighting, SightingRole, SourceError, StageTiming, StopReason } from './intel.ts';
-import { comparablePairs } from './persons.ts';
+import { comparablePairs, looksLikePersonName } from './persons.ts';
 import { PIVOT_LIMITS, runPivot } from './pivot.ts';
 import type { PivotLead, PivotSource } from './pivot.ts';
 import type {
@@ -255,7 +259,12 @@ interface Pending {
   requireKnownAddress?: boolean;
   /** Identyfikator pytamy tylko w źródłach bezpośrednich (bez kosztownych wyszukiwarek). */
   directOnly?: boolean;
+  /** Nick wygenerowany z imienia i nazwiska (krok 0) — jego wyniki to zawsze możliwi imiennicy. */
+  candidate?: boolean;
 }
+
+/** Najwyżej tyle imion i nazwisk z nazw wyświetlanych mocno przypisanych profili trafia do wyszukiwania. */
+export const MAX_FOLLOWED_NAMES = 2;
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 export const DEFAULT_DISCOVERY_DEPTH = 3;
@@ -716,13 +725,19 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
    * Pyta wszystkie łączniki akceptujące dany typ; błąd jednego nie zatrzymuje pozostałych.
    * `directOnly` pomija kosztowne wyszukiwarki (pytamy tylko źródła bezpośrednie: profile, rejestry, indeks własny).
    */
-  const search = async (identifier: Identifier, options: { timeShare?: number; directOnly?: boolean; stage?: AnalysisStage } = {}): Promise<SourceDocument[]> => {
+  const search = async (identifier: Identifier, options: { timeShare?: number; directOnly?: boolean; stage?: AnalysisStage; onePerService?: boolean } = {}): Promise<SourceDocument[]> => {
     const key = identifierKey(identifier);
     const stage = options.stage ?? 'search';
     const wanted = normalizeName(identifier.value);
-    const accepting = params.connectors.filter(
-      (connector) => connector.accepts.includes(identifier.type) && !(options.directOnly && isBroadSearch(connector.id)),
-    );
+    const services = new Set<string>();
+    const accepting = params.connectors.filter((connector) => {
+      if (!connector.accepts.includes(identifier.type) || (options.directOnly && isBroadSearch(connector.id))) return false;
+      // Zgadywany identyfikator: jeden (pierwszy) łącznik na serwis — np. profil GitHub bez gistów i aktywności.
+      if (!options.onePerService) return true;
+      if (services.has(connector.service)) return false;
+      services.add(connector.service);
+      return true;
+    });
     const results = await Promise.all(
       accepting.map((connector) => {
         // To samo zapytanie (łącznik × identyfikator) wysyłamy raz na analizę; kolejne etapy dostają tę samą odpowiedź.
@@ -764,6 +779,11 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           const context = (signal: AbortSignal): ConnectorContext => ({
             signal,
             log: (message) => {
+              // Łącznik zgłasza własny limit (np. ile domen z imienia i nazwiska sprawdził) — trafia do powodów zatrzymania.
+              if (message.startsWith(CONNECTOR_STOP_PREFIX)) {
+                addStop(stage, 'query_limit', `[${connector.id}] ${message.slice(CONNECTOR_STOP_PREFIX.length)}`);
+                return;
+              }
               log(`[${connector.id}] ${message}`);
               // Łącznik sam obsłużył błąd źródła i zwrócił to, co miał — analityk musi o tym wiedzieć.
               // Zbiorcze podsumowanie wyszukiwarki forów („hostów N: odpowiedziało M…”) wymienia błędy pojedynczych hostów;
@@ -962,8 +982,19 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       const directOnly = requireKnownAddress || !strongSource || broadDiscovered >= MAX_BROAD_DISCOVERED;
       const withinDepth = step < depth;
       const withinLimit = inputKeys.size + [...trail.values()].filter((entry) => entry.followed).length < maxIdentifiers;
-      const followed = withinDepth && withinLimit && !unreliable;
-      const stopReason: StopReason | undefined = followed ? undefined : unreliable ? 'low_reliability' : !withinDepth ? 'depth_limit' : 'identifier_limit';
+      // Konto zadeklarowane na stronie w serwisie, którego nie pobieramy (LinkedIn, X, …): fakt widoczny w teczce,
+      // ale bez dalszego wyszukiwania — nie zajmuje miejsca w limicie identyfikatorów i nie trafia do archiwów.
+      const declaredOnly = (raw as { note?: string }).note === DECLARED_ONLY_NOTE;
+      const followed = withinDepth && withinLimit && !unreliable && !declaredOnly;
+      const stopReason: StopReason | undefined = followed
+        ? undefined
+        : declaredOnly
+          ? 'declared_only'
+          : unreliable
+            ? 'low_reliability'
+            : !withinDepth
+              ? 'depth_limit'
+              : 'identifier_limit';
       trail.set(key, {
         identifier,
         step: step + 1,
@@ -995,12 +1026,47 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     }
   };
 
+  // Samo imię i nazwisko: w kroku 0 sprawdzamy też typowe nicki z niego wygenerowane (imięnazwisko, inazwisko…),
+  // wyłącznie w źródłach bezpośrednich. Konto o takiej nazwie może należeć do imiennika — zawsze „zgodne tylko
+  // imię i nazwisko”, nigdy identyfikator dokładny; potwierdzić je może tylko analityk.
+  const nameInputs = personIdentifiers.filter((identifier) => identifier.type === 'full_name');
+  const candidateNicks: Pending[] = [];
+  if (nameInputs.length > 0 && params.connectors.some((connector) => connector.accepts.includes('nick') && !isBroadSearch(connector.id))) {
+    for (const name of nameInputs) {
+      for (const value of nickCandidates(name.value)) {
+        const identifier: Identifier = { type: 'nick', value };
+        const key = identifierKey(identifier);
+        if (candidateNicks.length >= MAX_NICK_CANDIDATES || inputKeys.has(key) || candidateNicks.some((item) => identifierKey(item.identifier) === key)) continue;
+        candidateNicks.push({ identifier, match: 'name_only', distance: 0, directOnly: true, candidate: true });
+      }
+    }
+    if (candidateNicks.length > 0) {
+      log(`Nicki wygenerowane z imienia i nazwiska (krok 0, tylko źródła bezpośrednie): ${candidateNicks.map((item) => item.identifier.value).join(', ')}.`);
+    }
+  }
+  const candidateStats = { accounts: 0, rejected: 0 };
+  /** Konto kandydata z nazwą wyświetlaną będącą innym imieniem i nazwiskiem — to na pewno nie ta osoba. */
+  const otherPersonName = (doc: SourceDocument): boolean => {
+    const shown = doc.profile?.displayName?.trim();
+    if (!shown || !/^\p{L}+(?:[\s-]+\p{L}+)+$/u.test(shown)) return false;
+    return !nameInputs.some((name) => displayNameMatch(shown, name.value));
+  };
+  /** Identyfikatory z profili mocno przypisanych podmiotowi — potwierdzają profile znalezione po imieniu i nazwisku z tych profili. */
+  const strongIdentifiers: Identifier[] = [];
+  /** Nazwy wyświetlane profili według identyfikatora, po którym je znaleziono (do potwierdzenia odnośnikiem wzajemnym). */
+  const displayNamesBy = new Map<string, string[]>();
+  let followedNames = 0;
+  const skippedNames = new Set<string>();
+
   let lastStep = 0;
-  let frontier: Pending[] = personIdentifiers.map((identifier) => ({ identifier, match: 'exact_identifier', distance: 0 }));
+  let frontier: Pending[] = [...personIdentifiers.map((identifier): Pending => ({ identifier, match: 'exact_identifier', distance: 0 })), ...candidateNicks];
   for (let step = 0; frontier.length > 0; step++) {
-    const batches = await Promise.all(
-      frontier.map(async (item) => ({ item, docs: await search(item.identifier, { directOnly: item.directOnly }) })),
-    );
+    const searchItem = async (item: Pending) => ({ item, docs: await search(item.identifier, { directOnly: item.directOnly, onePerService: item.candidate }) });
+    // Nicki-kandydaci idą po identyfikatorach analityka — nie zabierają im kolejki zapytań do tych samych serwisów.
+    const batches = [
+      ...(await Promise.all(frontier.filter((item) => !item.candidate).map(searchItem))),
+      ...(await Promise.all(frontier.filter((item) => item.candidate).map(searchItem))),
+    ];
     const next = new Map<string, Pending>();
     for (const { item, docs: found } of batches) {
       let docs = found;
@@ -1014,19 +1080,64 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
           log(`${item.identifier.type} „${item.identifier.value}” wymieniono w treści publikacji, ale nie prowadzi do adresu podmiotu — to cudza nazwa, pominięto.`);
         }
       }
-      for (const doc of attributableDocuments(item.identifier, docs)) {
+      for (const found of attributableDocuments(item.identifier, docs)) {
+        let doc = found;
+        if (item.candidate) {
+          if (otherPersonName(doc)) {
+            candidateStats.rejected++;
+            continue;
+          }
+          doc = { ...doc, identityMatch: 'name_only', identityNote: NICK_CANDIDATE_REASON };
+        }
         // Dokument znany z wcześniejszego kroku wraca, bo sam podał identyfikator, po którym teraz
         // szukamy. To nie jest nowe potwierdzenie — zostaje pierwotna ocena.
         const seen = sightings.get(sightingKey(doc));
         if (seen && seen.role === 'subject' && seen.step < step) continue;
-        const identity: IdentityAssessment =
+        let identity: IdentityAssessment =
           step === 0
             ? { ...assessIdentity(doc, personIdentifiers), distance: 0 }
-            : assessLinkedProfile(doc, personIdentifiers, item.match, { step, distance: item.distance, parent: item.parent });
+            : doc.matchedIdentifier.type === 'full_name'
+              ? assessNameSearchProfile(doc, personIdentifiers, strongIdentifiers, item.distance)
+              : assessLinkedProfile(doc, personIdentifiers, item.match, { step, distance: item.distance, parent: item.parent });
+        if (item.candidate) {
+          // Nick zgadnięty z imienia i nazwiska nigdy nie jest identyfikatorem dokładnym — nawet zgodny e-mail tylko podpowiada analitykowi.
+          candidateStats.accounts++;
+          identity = {
+            match: 'name_only',
+            reasons: [NICK_CANDIDATE_REASON, ...(identity.match !== 'name_only' ? [`Do potwierdzenia przez analityka: ${identity.reasons.join(' ')}`] : [])],
+            distance: 0,
+          };
+        }
+        if (doc.identityNote && !identity.reasons.includes(doc.identityNote)) identity = { ...identity, reasons: [...identity.reasons, doc.identityNote] };
         ingest(doc, identity, step);
+        const strong = identity.match === 'verified_link' || identity.match === 'exact_identifier';
+        if (strong) strongIdentifiers.push(...(doc.discoveredIdentifiers ?? []), { type: 'profile_url', value: doc.url });
+        // Imię i nazwisko z profilu mocno przypisanego podmiotowi to nowy trop: wyszukiwanie po nim zaczyna się w kolejnym kroku.
+        // Odnośniki wzajemne potwierdzają też profil wskazujący — jego nazwa wyświetlana również jest tropem.
+        const displayName = doc.profile?.displayName?.trim();
+        if (displayName) {
+          const byKey = identifierKey(doc.matchedIdentifier);
+          displayNamesBy.set(byKey, [...(displayNamesBy.get(byKey) ?? []), displayName]);
+        }
+        const shownNames = new Set<string>();
+        if (strong && displayName) shownNames.add(displayName);
+        if (identity.mutual && identity.match === 'verified_link' && item.parent) for (const name of displayNamesBy.get(identifierKey(item.parent)) ?? []) shownNames.add(name);
+        let followed = doc;
+        for (const name of shownNames) {
+          if (!looksLikePersonName(name) || nameInputs.some((input) => displayNameMatch(name, input.value) === 'exact')) continue;
+          const nameIdentifier: Identifier = { type: 'full_name', value: name };
+          const nameKey = identifierKey(nameIdentifier);
+          const fresh = !next.has(nameKey) && !trail.has(nameKey);
+          if (fresh && followedNames >= MAX_FOLLOWED_NAMES) {
+            skippedNames.add(nameKey);
+            continue;
+          }
+          if (fresh) followedNames++;
+          followed = { ...followed, discoveredIdentifiers: [...(followed.discoveredIdentifiers ?? []), nameIdentifier] };
+        }
         // Dalej śledzimy tylko identyfikatory z publikacji samego podmiotu — nie z cudzych wzmianek
         // przyjętych ze źródła wyszukiwawczego na podstawie danych kontaktowych w treści.
-        if (!isSearchSource(doc.connectorId) || authorMatches(doc) || doc.identityMatch === 'verified_link') collectDiscovered(doc, identity, step, next);
+        if (!isSearchSource(doc.connectorId) || authorMatches(doc) || doc.identityMatch === 'verified_link') collectDiscovered(followed, identity, step, next);
       }
     }
     frontier = [...next.values()];
@@ -1044,6 +1155,15 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const beyondDepth = names('depth_limit');
     const beyondLimit = names('identifier_limit');
     const unreliable = names('low_reliability');
+    const declared = names('declared_only');
+    if (declared.length > 0) {
+      addStop(
+        'search',
+        'declared_only',
+        `Konta zadeklarowane na stronach w serwisach, których narzędzie nie pobiera (pokazane w teczce jako deklaracja, bez wyszukiwania): ${listed(declared)}.`,
+        declared.length,
+      );
+    }
     if (beyondDepth.length > 0) addStop('search', 'depth_limit', `Osiągnięto limit głębokości odkrywania (kroków: ${depth}) — nie wyszukiwano dalej: ${listed(beyondDepth)}.`, beyondDepth.length);
     if (beyondLimit.length > 0) addStop('search', 'identifier_limit', `Osiągnięto limit ${maxIdentifiers} identyfikatorów w analizie — nie wyszukiwano: ${listed(beyondLimit)}.`, beyondLimit.length);
     if (unreliable.length > 0) {
@@ -1052,6 +1172,31 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         'low_reliability',
         `Nie rozwijano identyfikatorów ze źródeł o niskiej wiarygodności (masowe komentarze; dokumenty zgodne tylko nazwiskiem albo pospolitym nickiem poza pierwszym krokiem; cudze nazwy z treści): ${listed(unreliable)}.`,
         unreliable.length,
+      );
+    }
+    if (candidateNicks.length > 0) {
+      addStop(
+        'search',
+        'query_limit',
+        `Imię i nazwisko: sprawdzono ${candidateNicks.length} nicków wygenerowanych z imienia i nazwiska (limit ${MAX_NICK_CANDIDATES}: ` +
+          `${candidateNicks.map((item) => item.identifier.value).join(', ')}) — tylko w kroku 0 i tylko w źródłach bezpośrednich; ` +
+          `znalezionych kont ${candidateStats.accounts} (możliwi imiennicy, do potwierdzenia)` +
+          (candidateStats.rejected > 0 ? `, odrzuconych kont z innym imieniem i nazwiskiem ${candidateStats.rejected}` : '') +
+          '.',
+        candidateStats.rejected > 0 ? candidateStats.rejected : undefined,
+      );
+    }
+    const namesFromProfiles = [...trail.values()].filter((entry) => entry.identifier.type === 'full_name');
+    if (namesFromProfiles.length > 0 || skippedNames.size > 0) {
+      addStop(
+        'search',
+        'query_limit',
+        `Imię i nazwisko z nazw wyświetlanych profili mocno przypisanych podmiotowi: wyszukiwano ${namesFromProfiles.filter((entry) => entry.followed).length} ` +
+          `(limit ${MAX_FOLLOWED_NAMES})` +
+          (namesFromProfiles.length > 0 ? ` — ${namesFromProfiles.map((entry) => `„${entry.identifier.value}”${entry.followed ? '' : ' (nie wyszukano)'}`).join(', ')}` : '') +
+          (skippedNames.size > 0 ? `; pominięto dalszych nazw ${skippedNames.size}` : '') +
+          '. Profile znalezione po tej nazwie są potwierdzone tylko wtedy, gdy zawierają inny identyfikator sprawy.',
+        skippedNames.size > 0 ? skippedNames.size : undefined,
       );
     }
     if (broadCapped > 0) {
@@ -1092,7 +1237,15 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     const citing = { documents: 0, authors: new Set<string>(), services: new Set<string>() };
     if (addressOnly) {
       const relevant = occurrences.filter((doc) => doc.author && containsAddress(doc) && !isAddressList(doc));
-      for (const doc of relevant) if (OWNERSHIP_CATEGORIES.includes(doc.category)) owners.add(normalizeName(doc.author!));
+      for (const doc of relevant) {
+        if (!OWNERSHIP_CATEGORIES.includes(doc.category)) continue;
+        // Wpis na własnym profilu OSTRZEGAJĄCY przed adresem (scam.ts) nie czyni autora właścicielem — to poszkodowany lub świadek.
+        if (readScamContext(normalizeText(doc.text), group.address)?.warning) {
+          log(`${doc.url}: autor „${doc.author}” ostrzega przed adresem (możliwe oszustwo) — nie jest właścicielem, pozostaje wzmianką.`);
+          continue;
+        }
+        owners.add(normalizeName(doc.author!));
+      }
       // Reguła tekstowa (bez modelu): wypowiedź na forum z deklaracją w pierwszej osobie („mój adres”, „wpłaty na”).
       // Najniższa moc: tylko dla autorów bez jawnej podstawy własności, a model językowy może ją uchylić.
       const declared = new Map<SourceDocument, OwnershipDeclaration>();
@@ -1518,6 +1671,48 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     }
   }
 
+  // ---------- Osoba publiczna: dopasowanie do wpisu Wikidata (druga cecha wymagana) i jej sieć organizacji ----------
+
+  let publicFigure: PublicFigure | undefined;
+  let publicFigureNetwork: OrganizationNetwork | undefined;
+  const subjectSightings = [...sightings.values()].filter((sighting) => sighting.role === 'subject');
+  const inputNames = params.query.identifiers.filter((item) => item.type === 'full_name').map((item) => item.value.trim());
+  // Bez imienia i nazwiska na wejściu: najczęstsza nazwa wyświetlana profili podmiotu, która wygląda na imię i nazwisko.
+  const displayCounts = new Map<string, number>();
+  for (const sighting of subjectSightings) {
+    const name = sighting.profile?.displayName?.trim();
+    if (name && looksLikePersonName(name)) displayCounts.set(name, (displayCounts.get(name) ?? 0) + 1);
+  }
+  const figureNames = inputNames.length > 0 ? inputNames : [...displayCounts].sort((a, b) => b[1] - a[1]).slice(0, 1).map(([name]) => name);
+  // Etap krótki i z własnym limitem czasu: wykonuje się także po przekroczeniu czasu analizy (osoby publiczne mają
+  // zwykle bardzo dużo źródeł, więc analiza bywa częściowa) — przerwanie analizy przez analityka go zatrzymuje.
+  if (registriesEnabled && figureNames.length > 0 && !params.signal?.aborted) {
+    const stageSignal = params.signal ? AbortSignal.any([params.signal, AbortSignal.timeout(PUBLIC_FIGURE_STAGE_MS)]) : AbortSignal.timeout(PUBLIC_FIGURE_STAGE_MS);
+    try {
+      const stage = await runPublicFigureStage({
+        names: figureNames,
+        identifiers: params.query.identifiers,
+        profiles: subjectSightings.map((sighting) => ({
+          service: sighting.service,
+          url: sighting.url,
+          ...(sighting.profile?.handle ? { handle: sighting.profile.handle } : {}),
+          ...(sighting.profile?.urls?.length ? { urls: sighting.profile.urls } : {}),
+          ...(sighting.profile?.emails?.length ? { emails: sighting.profile.emails } : {}),
+        })),
+        ...(params.registries && params.registries.fetch ? { fetch: params.registries.fetch } : {}),
+        now,
+        log,
+        signal: stageSignal,
+        reserve: () => reserveRequest('connectors', 'organizations'),
+      });
+      publicFigure = stage.publicFigure;
+      publicFigureNetwork = stage.network;
+      for (const stop of publicFigureNetwork?.stops ?? []) addStop(stop.stage, stop.reason, stop.detail, stop.skipped);
+    } catch (error) {
+      log(`[osoba publiczna] BŁĄD etapu: ${errorText(error)} — dopasowania nie sprawdzono.`);
+    }
+  }
+
   // ---------- Wskaźnik Pewności ----------
 
   report('scoring');
@@ -1742,6 +1937,8 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
       // Zawsze obecne (także puste): teczka odróżnia „sprawdzono, brak beneficjenta” od starszej analizy bez tego etapu.
       beneficiaries: [...beneficiaries.values()],
       ...(organizationNetwork ? { organizationNetwork } : {}),
+      ...(publicFigure ? { publicFigure } : {}),
+      ...(publicFigureNetwork ? { publicFigureNetwork } : {}),
       expansion: {
         limits: {
           discoveryDepth: depth,

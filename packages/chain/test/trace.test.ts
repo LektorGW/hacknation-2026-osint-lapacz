@@ -572,10 +572,11 @@ test('Blockscout: hurtowe znaczniki z usługi metadanych uzupełniają etykiety 
 test('createChainProviders: tryb głęboki podnosi budżet żądań do 40, standardowy zostaje przy 15', () => {
   const budgets = (config: object) =>
     createChainProviders({ enableLive: true, fetch: mockFetch({}).fetch, ...config }).map((provider) => (provider as unknown as { requestBudget: number }).requestBudget);
-  assert.deepEqual(budgets({}), [15, 15, 15, 15]);
-  assert.deepEqual(budgets({ depth: 'deep' }), [DEEP_REQUEST_BUDGET, DEEP_REQUEST_BUDGET, DEEP_REQUEST_BUDGET, DEEP_REQUEST_BUDGET]);
+  // Pięciu dostawców na żywo (z Litecoin Space).
+  assert.deepEqual(budgets({}), [15, 15, 15, 15, 15]);
+  assert.deepEqual(budgets({ depth: 'deep' }), Array(5).fill(DEEP_REQUEST_BUDGET));
   assert.equal(DEEP_REQUEST_BUDGET, 40);
-  assert.deepEqual(budgets({ depth: 'deep', requestBudget: 25 }), [25, 25, 25, 25]);
+  assert.deepEqual(budgets({ depth: 'deep', requestBudget: 25 }), [25, 25, 25, 25, 25]);
 });
 
 // ---------- Kursy: sporadyczne błędy NBP ----------

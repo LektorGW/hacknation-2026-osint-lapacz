@@ -3,8 +3,9 @@
 // publiczne gisty. Token jest opcjonalny i służy tylko podniesieniu limitu
 // zapytań — trafia wyłącznie w nagłówku Authorization do api.github.com.
 
-import type { ConnectorContext, Identifier, ProfileAttributes, SourceConnector, SourceDocument } from '@olcys/core';
+import type { ConnectorContext, Identifier, IdentityMatch, ProfileAttributes, SourceConnector, SourceDocument } from '@olcys/core';
 import { findEmails, htmlToText } from './html.ts';
+import { displayNameMatch, NAME_SEARCH_REASON } from './name-candidates.ts';
 import { parseJson } from './http.ts';
 import type { HttpClient, HttpSession } from './http.ts';
 import { dedupeIdentifiers, discoveredField, handleFromIdentifier, isTechnicalEmail, profileUrlIdentifier } from './identity.ts';
@@ -81,6 +82,114 @@ function apiHeaders(accept: string, config: GithubConfig): Record<string, string
   };
 }
 
+/** Dokument profilu użytkownika GitHub (dane z /users/<login>). */
+function userProfileDocument(user: GithubUser, identifier: Identifier, connectorId: string, identityMatch: IdentityMatch, identityNote?: string): SourceDocument {
+  const blogUrl = user.blog?.trim() ? (/^https?:\/\//i.test(user.blog.trim()) ? user.blog.trim() : `https://${user.blog.trim()}`) : undefined;
+  const profileEmails = [...new Set([user.email?.toLowerCase(), ...findEmails(user.bio ?? '')].filter((email): email is string => Boolean(email)))];
+  const profileUrls = [blogUrl, user.twitter_username ? `https://x.com/${user.twitter_username}` : undefined].filter((url): url is string => Boolean(url));
+  const profile: ProfileAttributes = {
+    handle: user.login,
+    ...(user.name ? { displayName: user.name } : {}),
+    ...(profileEmails.length > 0 ? { emails: profileEmails } : {}),
+    ...(profileUrls.length > 0 ? { urls: profileUrls } : {}),
+    ...(user.location ? { location: user.location } : {}),
+    ...(user.avatar_url ? { avatarUrl: user.avatar_url } : {}),
+    ...(user.bio || user.company ? { bio: [user.bio, user.company && `Firma: ${user.company}`].filter(Boolean).join(' · ') } : {}),
+    ...(user.created_at ? { createdAt: user.created_at } : {}),
+  };
+  const profileText = [
+    `Profil GitHub: ${user.login}`,
+    user.name && `Imię i nazwisko: ${user.name}`,
+    user.bio && `Bio: ${user.bio}`,
+    user.company && `Firma: ${user.company}`,
+    user.location && `Lokalizacja: ${user.location}`,
+    user.blog && `Strona: ${user.blog}`,
+    user.email && `E-mail: ${user.email}`,
+    user.twitter_username && `Twitter/X: ${user.twitter_username}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const discovered: Identifier[] = [];
+  if (user.email) discovered.push({ type: 'email', value: user.email.toLowerCase() });
+  if (user.twitter_username) discovered.push({ type: 'nick', value: user.twitter_username });
+  if (blogUrl) {
+    const blog = profileUrlIdentifier(blogUrl);
+    if (blog) discovered.push(blog);
+  }
+  for (const email of findEmails(user.bio ?? '')) discovered.push({ type: 'email', value: email });
+  return {
+    connectorId,
+    service: SERVICE,
+    url: user.html_url,
+    title: `Profil GitHub: ${user.login}`,
+    text: profileText,
+    fetchedAt: new Date().toISOString(),
+    ...(user.updated_at ? { publishedAt: user.updated_at } : {}),
+    author: user.login,
+    category: 'own_profile',
+    identityMatch,
+    ...(identityNote ? { identityNote } : {}),
+    matchedIdentifier: identifier,
+    profile,
+    ...discoveredField(dedupeIdentifiers(discovered, identifier, [SERVICE])),
+  };
+}
+
+/** Najwyżej tyle profili z wyszukiwarki użytkowników pobieramy dla jednego imienia i nazwiska. */
+export const GITHUB_NAME_RESULTS = 5;
+
+/**
+ * Wyszukiwarka użytkowników GitHub (GET /search/users, `"imię nazwisko" in:name`), potem profile najwyżej 5 pierwszych wyników.
+ * Zgodność nazwy jest tylko „zgodnym imieniem i nazwiskiem” — konto może należeć do imiennika.
+ */
+async function searchUsersByName(http: HttpClient, identifier: Identifier, context: ConnectorContext, config: GithubConfig, connectorId: string): Promise<SourceDocument[]> {
+  const name = identifier.value.trim().replace(/\s+/g, ' ').replace(/"/g, '');
+  if (name.split(' ').length < 2 || name.length > 100) return [];
+  const label = `${LABEL} — wyszukiwarka użytkowników`;
+  const session = http.session(context, {
+    label,
+    limit: 1 + GITHUB_NAME_RESULTS,
+    refusalMessage: (status) => `${label}: limit wyszukiwarki GitHub (kod ${status}; z tokenem 30 zapytań na minutę, bez tokenu 10). Pomijam.`,
+  });
+  const headers = apiHeaders('application/vnd.github+json', config);
+  const query = encodeURIComponent(`"${name}" in:name`);
+  const response = await session.get(`${API}/search/users?q=${query}&per_page=${GITHUB_NAME_RESULTS}`, { headers });
+  const found = response ? parseJson<{ total_count?: number; items?: { login?: string }[] }>(response.text) : null;
+  const logins = (found?.items ?? []).map((item) => item?.login).filter((login): login is string => typeof login === 'string' && LOGIN.test(login));
+  const total = Math.max(found?.total_count ?? 0, logins.length);
+  if (logins.length === 0) {
+    if (!session.refused) context.log(`${label}: „${name}” — brak użytkowników o tym imieniu i nazwisku.`);
+    return [];
+  }
+  const documents: { document: SourceDocument; exact: boolean }[] = [];
+  let mismatched = 0;
+  for (const login of logins.slice(0, GITHUB_NAME_RESULTS)) {
+    const userResponse = await session.get(`${API}/users/${login}`, { headers, quietMissing: true });
+    const user = userResponse ? parseJson<GithubUser>(userResponse.text) : null;
+    if (!user?.login) {
+      if (session.refused) break;
+      continue;
+    }
+    // Wyszukiwarka dopasowuje po słowach — profil bez wszystkich słów imienia i nazwiska odrzucamy.
+    const match = displayNameMatch(user.name ?? undefined, name);
+    if (!match) {
+      mismatched++;
+      continue;
+    }
+    documents.push({ document: userProfileDocument(user, identifier, connectorId, 'name_only', NAME_SEARCH_REASON), exact: match === 'exact' });
+  }
+  // Najpierw dokładna zgodność nazwy wyświetlanej; kolejność wyszukiwarki zachowana w obrębie grupy.
+  const ordered = [...documents.filter((item) => item.exact), ...documents.filter((item) => !item.exact)].map((item) => item.document);
+  const skipped = Math.max(0, total - Math.min(logins.length, GITHUB_NAME_RESULTS));
+  context.log(
+    `${label}: „${name}” — wyników ${total}, profili przyjętych ${ordered.length}` +
+      (mismatched > 0 ? `, odrzuconych (inna nazwa wyświetlana) ${mismatched}` : '') +
+      (skipped > 0 ? `; pominięto ${skipped} dalszych wyników (limit ${GITHUB_NAME_RESULTS})` : '') +
+      ` (zapytań: ${session.used}).`,
+  );
+  return ordered;
+}
+
 export function createGithubConnector(http: HttpClient, config: GithubConfig = {}): SourceConnector {
   const id = 'live-github';
   return {
@@ -90,11 +199,14 @@ export function createGithubConnector(http: HttpClient, config: GithubConfig = {
     description:
       'Publiczne REST API GitHuba (api.github.com): profil użytkownika o podanym loginie (bio, strona, e-mail, konto Twitter/X), ' +
       'README profilu (repozytorium <login>/<login>) oraz FUNDING.yml (w repozytorium profilu lub .github). ' +
-      `Najwyżej 4 żądania na identyfikator; ${config.token ? 'z tokenem (wyższy limit zapytań)' : 'bez tokenu (limit 60 zapytań na godzinę na adres IP)'}.`,
-    accepts: ['login', 'nick', 'profile_url'],
+      'Imię i nazwisko: wyszukiwarka użytkowników (GET /search/users, „"imię nazwisko" in:name”, limit wyszukiwarki 30 zapytań/min z tokenem) ' +
+      `i profile najwyżej ${GITHUB_NAME_RESULTS} pierwszych wyników z pasującą nazwą wyświetlaną — jako „zgodne tylko imię i nazwisko”. ` +
+      `Najwyżej 4 żądania na identyfikator (6 dla imienia i nazwiska); ${config.token ? 'z tokenem (wyższy limit zapytań)' : 'bez tokenu (limit 60 zapytań na godzinę na adres IP)'}.`,
+    accepts: ['login', 'nick', 'profile_url', 'full_name'],
     enabledByDefault: true,
 
     async search(identifier, context) {
+      if (identifier.type === 'full_name') return searchUsersByName(http, identifier, context, config, id);
       const login = loginFrom(identifier, [SERVICE]);
       if (!login) return [];
       const session = openSession(http, context, LABEL, config);
@@ -109,19 +221,7 @@ export function createGithubConnector(http: HttpClient, config: GithubConfig = {
         return [];
       }
 
-      const blogUrl = user.blog?.trim() ? (/^https?:\/\//i.test(user.blog.trim()) ? user.blog.trim() : `https://${user.blog.trim()}`) : undefined;
-      const profileEmails = [...new Set([user.email?.toLowerCase(), ...findEmails(user.bio ?? '')].filter((email): email is string => Boolean(email)))];
-      const profileUrls = [blogUrl, user.twitter_username ? `https://x.com/${user.twitter_username}` : undefined].filter((url): url is string => Boolean(url));
-      const profile: ProfileAttributes = {
-        handle: user.login,
-        ...(user.name ? { displayName: user.name } : {}),
-        ...(profileEmails.length > 0 ? { emails: profileEmails } : {}),
-        ...(profileUrls.length > 0 ? { urls: profileUrls } : {}),
-        ...(user.location ? { location: user.location } : {}),
-        ...(user.avatar_url ? { avatarUrl: user.avatar_url } : {}),
-        ...(user.bio || user.company ? { bio: [user.bio, user.company && `Firma: ${user.company}`].filter(Boolean).join(' · ') } : {}),
-        ...(user.created_at ? { createdAt: user.created_at } : {}),
-      };
+      const profileDocument = userProfileDocument(user, identifier, id, 'exact_identifier');
       const base = {
         connectorId: id,
         service: SERVICE,
@@ -129,38 +229,9 @@ export function createGithubConnector(http: HttpClient, config: GithubConfig = {
         category: 'own_profile' as const,
         identityMatch: 'exact_identifier' as const,
         matchedIdentifier: identifier,
-        profile,
+        profile: profileDocument.profile!,
       };
-
-      const profileText = [
-        `Profil GitHub: ${user.login}`,
-        user.name && `Imię i nazwisko: ${user.name}`,
-        user.bio && `Bio: ${user.bio}`,
-        user.company && `Firma: ${user.company}`,
-        user.location && `Lokalizacja: ${user.location}`,
-        user.blog && `Strona: ${user.blog}`,
-        user.email && `E-mail: ${user.email}`,
-        user.twitter_username && `Twitter/X: ${user.twitter_username}`,
-      ]
-        .filter(Boolean)
-        .join('\n');
-      const discovered: Identifier[] = [];
-      if (user.email) discovered.push({ type: 'email', value: user.email.toLowerCase() });
-      if (user.twitter_username) discovered.push({ type: 'nick', value: user.twitter_username });
-      if (user.blog?.trim()) {
-        const blog = profileUrlIdentifier(/^https?:\/\//i.test(user.blog.trim()) ? user.blog.trim() : `https://${user.blog.trim()}`);
-        if (blog) discovered.push(blog);
-      }
-      for (const email of findEmails(user.bio ?? '')) discovered.push({ type: 'email', value: email });
-      documents.push({
-        ...base,
-        url: user.html_url,
-        title: `Profil GitHub: ${user.login}`,
-        text: profileText,
-        fetchedAt: new Date().toISOString(),
-        publishedAt: user.updated_at,
-        ...discoveredField(dedupeIdentifiers(discovered, identifier, [SERVICE])),
-      });
+      documents.push(profileDocument);
 
       // README profilu leży w repozytorium o nazwie równej loginowi.
       const readme = await get(`/repos/${user.login}/${user.login}/readme`, 'application/vnd.github.raw+json');

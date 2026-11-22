@@ -23,11 +23,12 @@ import { Disclosure } from '../../components/ui/Disclosure.tsx';
 import { Hint } from '../../components/ui/Hint.tsx';
 import { Score } from '../../components/ui/Score.tsx';
 import { Term } from '../../components/ui/Term.tsx';
-import { OrganizationTile } from '../../components/OrganizationCards.tsx';
+import { OrganizationTile, PublicFigureLine } from '../../components/OrganizationCards.tsx';
 import { leadOrganization } from '../../organizations.ts';
 import { BusinessHeroLine } from '../../components/BusinessActivity.tsx';
 import { MixerBanner, SwirlIcon } from '../../components/MixerExposure.tsx';
 import { mixerBadgeText, mixerExposureOf } from '../../mixers.ts';
+import { ScamBanner } from '../../components/ScamWarnings.tsx';
 
 const replyRef = (person: PersonCandidate | undefined): ServiceReplyRef | undefined =>
   (person as (PersonCandidate & { confirmedByReply?: ServiceReplyRef }) | undefined)?.confirmedByReply;
@@ -240,6 +241,7 @@ export function CaseHero() {
               <PersonStatus person={person} />
               <Score value={person.probability} kind="person" reasons={person.reasons} caption="pewność, że to osoba ze sprawy" />
               {person.nameVariants.length > 0 && name !== person.nameVariants[0] && <p className="muted small">występuje też jako: {person.nameVariants.slice(0, 3).join(', ')}</p>}
+              <PublicFigureLine />
             </>
           ) : leadOrganization(dossier) ? (
             <OrganizationTile org={leadOrganization(dossier)!} />
@@ -249,6 +251,7 @@ export function CaseHero() {
               <p className="muted small">
                 {addressInput ? `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.` : 'W źródłach nie znaleziono profili, które dałoby się połączyć w osobę.'}
               </p>
+              <PublicFigureLine />
             </>
           )}
           <a className="answer-link" href={tabHref('osoba')}>
@@ -368,6 +371,7 @@ export function CaseHero() {
       </div>
 
       <MixerBanner />
+      <ScamBanner />
 
       <BusinessHeroLine />
 

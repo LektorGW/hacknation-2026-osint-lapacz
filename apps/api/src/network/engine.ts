@@ -3,10 +3,12 @@
 // pomijanie dróg już wykonanych (w tym żądaniu i we wcześniejszych, niewycofanych rozwinięciach),
 // wynik uporządkowany deterministycznie — to samo rozwinięcie na tych samych danych daje ten sam zapis.
 
+import { ROUNDTRIP_LIMITS } from '@olcys/chain';
 import { entityFromNode } from './entities.ts';
 import { EXPANDERS } from './expanders.ts';
 import type { ExpandContext, Expander } from './expander.ts';
-import type { Entity, ExpanderRun, ExpansionRecord, ExpansionSourceError, ExpansionStop, NetworkEdge, NetworkNode, RelationGroup } from './types.ts';
+import { DEFAULT_RELATION_GROUPS } from './types.ts';
+import type { Entity, ExpanderRun, ExpansionRecord, ExpansionSourceError, ExpansionStop, NetworkEdge, NetworkNode, RelationGroup, RoundTripReport } from './types.ts';
 
 export const NETWORK_LIMITS = {
   /** Domyślny i największy budżet zapytań jednego rozwinięcia. */
@@ -18,6 +20,15 @@ export const NETWORK_LIMITS = {
   frontier: 8,
   /** Najwyżej tyle nowych węzłów w jednym rozwinięciu. */
   maxNodes: 80,
+  /** „Szukaj dalej” (obieg środków): własny budżet pobrań adresów, limit kroków i okno czasu. */
+  roundtrip: {
+    defaultBudget: ROUNDTRIP_LIMITS.defaultBudget,
+    maxBudget: ROUNDTRIP_LIMITS.maxBudget,
+    defaultMaxHops: ROUNDTRIP_LIMITS.defaultMaxHops,
+    maxHops: ROUNDTRIP_LIMITS.maxHops,
+    defaultWindowDays: ROUNDTRIP_LIMITS.defaultWindowDays,
+    maxWindowDays: ROUNDTRIP_LIMITS.maxWindowDays,
+  },
 } as const;
 
 export interface ExpansionPlanItem {
@@ -80,14 +91,17 @@ export interface ExpansionParams {
   /** Czy byt pochodzi z danych demonstracyjnych (np. konto w serwisie piaskownicy). */
   isSynthetic?: (node: NetworkNode) => boolean;
   expanders?: Expander[];
+  /** Górny limit budżetu (domyślnie `NETWORK_LIMITS.maxBudget`; „Szukaj dalej” — budżet obiegu środków). */
+  maxBudget?: number;
 }
 
 export async function runExpansion(params: ExpansionParams): Promise<ExpansionRecord> {
   const startedAt = params.context.now().toISOString();
   const expanders = params.expanders ?? EXPANDERS;
   const depth = Math.max(1, Math.min(NETWORK_LIMITS.maxDepth, Math.floor(params.depth) || 1));
-  const limit = Math.max(1, Math.min(NETWORK_LIMITS.maxBudget, Math.floor(params.budget) || NETWORK_LIMITS.defaultBudget));
-  const groups = params.groups.length > 0 ? params.groups : (['accounts', 'flows', 'organizations', 'sanctions', 'publications'] as RelationGroup[]);
+  const limit = Math.max(1, Math.min(params.maxBudget ?? NETWORK_LIMITS.maxBudget, Math.floor(params.budget) || NETWORK_LIMITS.defaultBudget));
+  const groups = params.groups.length > 0 ? params.groups : DEFAULT_RELATION_GROUPS;
+  let roundtrip: RoundTripReport | undefined;
   let used = 0;
   const known = new Map(params.network.nodes.map((node) => [node.id, node]));
   const nodes = new Map<string, NetworkNode>();
@@ -151,6 +165,7 @@ export async function runExpansion(params: ExpansionParams): Promise<ExpansionRe
         }
         sourceErrors.push(...(output.errors ?? []));
         stops.push(...(output.notes ?? []));
+        if (output.roundtrip) roundtrip ??= output.roundtrip;
         let added = 0;
         for (const raw of output.nodes) {
           const produced = markSynthetic(raw);
@@ -200,7 +215,7 @@ export async function runExpansion(params: ExpansionParams): Promise<ExpansionRe
     startedAt,
     finishedAt: params.context.now().toISOString(),
     requestedBy: params.requestedBy,
-    results: { nodes: sortedNodes, edges: sortedEdges, runs },
+    results: { nodes: sortedNodes, edges: sortedEdges, runs, ...(roundtrip ? { roundtrip } : {}) },
     stops: dedupeStops(stops),
     sourceErrors,
     ...(params.runId ? { runId: params.runId } : {}),

@@ -845,6 +845,8 @@ export interface UtxoTraceSearch {
   txUrl(txid: string): string;
   /** Rozmiar strony historii w API (Esplora: 25). */
   pageSize?: number;
+  /** Symbol waluty sieci (domyślnie BTC; Litecoin — LTC). */
+  asset?: string;
   signal?: AbortSignal;
 }
 
@@ -860,6 +862,7 @@ const MAX_CLUSTER_SPENDS = 3;
 export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTraceResult> {
   const options = { ...DEFAULT_TRACE_OPTIONS, ...search.options };
   const { network, labels, budget } = search;
+  const asset = search.asset ?? 'BTC';
   const pageSize = search.pageSize ?? 25;
   const trails: TracedTrail[] = [];
   const deposits: InferredDeposit[] = [];
@@ -978,7 +981,7 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
       questions.push({
         txid: origin.txid,
         text:
-          `${origin.percent}% wartości wypływu ${origin.txid} (${origin.time.slice(0, 10)}${satoshi ? `; ${satoshi / SATOSHI} BTC` : ''}) trafiło na adres ${address} ` +
+          `${origin.percent}% wartości wypływu ${origin.txid} (${origin.time.slice(0, 10)}${satoshi ? `; ${satoshi / SATOSHI} ${asset}` : ''}) trafiło na adres ${address} ` +
           `o ${count ?? `co najmniej ${pageSize}`} transakcjach — prawdopodobnie usługa bez publicznej etykiety (giełda, kantor, mikser). ` +
           'Ustalenie, do kogo należy ten adres, wskazałoby, gdzie środki mogły zostać spieniężone.',
       });
@@ -991,7 +994,7 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
     time: txTime(tx),
     from,
     to,
-    asset: 'BTC',
+    asset,
     amount: satoshi / SATOSHI,
     ...(known.label ? { toLabel: known.label } : {}),
     toClass: known.addressClass,
@@ -1031,7 +1034,7 @@ export async function traceUtxoFlows(search: UtxoTraceSearch): Promise<UtxoTrace
       deposits.push({
         txid: first.txid,
         counterparty: first.to,
-        asset: 'BTC',
+        asset,
         exchangeAddress: last.to,
         exchangeLabel: service.name,
         exchangeLabelSource: service.source,
