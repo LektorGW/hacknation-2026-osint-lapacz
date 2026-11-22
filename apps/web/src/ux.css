@@ -846,3 +846,46 @@ a.sidebar-button[aria-current='page'] { background: #2b4a86; border-color: #2b4a
   .mixer-banner-link { align-self: flex-start; }
 }
 @media print { .mixer-banner-link { display: none; } }
+
+/* Alerty ryzyka: poziom = kolor + ikona + słowo (nigdy sam kolor).
+   Krytyczne — czerwień, wysokie — pomarańcz, uwaga — bursztyn, informacja — błękit faktów. */
+.sev-krytyczne { --sev: var(--danger); --sev-bg: var(--danger-bg); }
+.sev-wysokie { --sev: var(--level-medium); --sev-bg: color-mix(in srgb, var(--level-medium) 11%, var(--surface)); }
+.sev-uwaga { --sev: var(--inference); --sev-bg: var(--inference-bg); }
+.sev-informacja { --sev: var(--fact); --sev-bg: var(--fact-bg); }
+/* Globalny wskaźnik ryzyka w nagłówku podsumowania (obok priorytetu) — jedna pigułka w kolorze najpoważniejszego alertu. */
+.risk-chip { display: flex; align-items: center; justify-content: center; gap: 0.35rem; margin-top: var(--s2); padding: 0.2rem 0.7rem; border: 1px solid color-mix(in srgb, var(--sev) 55%, transparent); border-radius: 999px; background: var(--sev-bg); color: var(--sev); font-size: 0.82rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.risk-chip:hover { border-color: var(--sev); text-decoration: underline; }
+.risk-chip:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.risk-chip.is-none { --sev: var(--muted); --sev-bg: transparent; border-color: var(--border); font-weight: 500; }
+.risk-chip-icon { line-height: 1; }
+/* Widok „Alerty ryzyka”: grupy po poziomie, alert w jednej linii, dopowiedzenie po rozwinięciu. */
+.alerts-count { display: inline-grid; place-items: center; min-width: 1.6rem; height: 1.6rem; padding: 0 0.45rem; border-radius: 999px; background: var(--sev); color: var(--surface); font-size: 0.85rem; font-weight: 800; font-variant-numeric: tabular-nums; vertical-align: 0.15em; }
+.alerts-count.is-none { background: var(--surface-sunken); color: var(--muted); }
+.alerts-empty { padding: var(--s3) var(--s4); border: 1px dashed var(--border); border-radius: var(--radius-small); }
+.alerts-group { margin: var(--s4) 0 0; }
+.alerts-group-title { margin: 0 0 var(--s2); color: var(--sev); font-size: 0.8rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+.alerts-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.alert-row { display: flex; align-items: flex-start; gap: var(--s3); padding: 0.4rem 0.7rem; border: 1px solid color-mix(in srgb, var(--sev) 35%, transparent); border-left: 4px solid var(--sev); border-radius: 8px; background: var(--sev-bg); }
+.alert-details { flex: 1 1 auto; min-width: 0; }
+.alert-summary { display: flex; align-items: center; gap: var(--s2) var(--s3); cursor: pointer; list-style: none; min-width: 0; }
+.alert-summary::-webkit-details-marker { display: none; }
+.alert-summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.alert-icon { flex: none; width: 1.2rem; text-align: center; color: var(--sev); font-weight: 800; line-height: 1; }
+.alert-title { flex: 1 1 auto; min-width: 0; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-details[open] .alert-title { white-space: normal; }
+.alert-category { flex: none; color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.alert-detail { margin: var(--s1) 0 var(--s1) 1.95rem; color: var(--muted); font-size: 0.9rem; }
+.alert-link { flex: none; align-self: center; color: var(--sev); font-weight: 700; font-size: 0.86rem; white-space: nowrap; }
+.sections a > .sections-count.is-warn { display: inline-flex; align-items: center; gap: 2px; background: var(--sev); color: var(--surface); }
+@media (max-width: 720px) {
+  .alert-row { flex-wrap: wrap; }
+  .alert-summary { flex-wrap: wrap; }
+  .alert-title { flex-basis: calc(100% - 2rem); white-space: normal; }
+  .alert-category { margin-left: 1.95rem; }
+  .alert-link { margin-left: 1.95rem; }
+}
+@media print {
+  .alert-link { display: none; }
+  .alert-title { white-space: normal; }
+}

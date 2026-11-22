@@ -5,7 +5,7 @@ import type { Finding, PersonCandidate } from '@olcys/core';
 import { jointProbability } from '../../dossier.ts';
 import { fmtPln, fmtPlnCompact, shorten, sum } from '../../format.ts';
 import { NETWORK_SHORT } from '../../labels.ts';
-import { proofSummary } from '../../proof.ts';
+import { moneyDestinations, moneyServicesView, proofSummary } from '../../proof.ts';
 import type { FullDossier } from '../../proof.ts';
 import { isExternalDocumentText } from '../../service-reply.ts';
 import type { ServiceReplyRef } from '../../service-reply.ts';
@@ -26,9 +26,9 @@ import { Term } from '../../components/ui/Term.tsx';
 import { OrganizationTile, PublicFigureLine } from '../../components/OrganizationCards.tsx';
 import { leadOrganization } from '../../organizations.ts';
 import { BusinessHeroLine } from '../../components/BusinessActivity.tsx';
-import { MixerBanner, SwirlIcon } from '../../components/MixerExposure.tsx';
+import { SwirlIcon } from '../../components/MixerExposure.tsx';
 import { mixerBadgeText, mixerExposureOf } from '../../mixers.ts';
-import { ScamBanner } from '../../components/ScamWarnings.tsx';
+import { RiskIndicator } from '../../components/Warnings.tsx';
 
 const replyRef = (person: PersonCandidate | undefined): ServiceReplyRef | undefined =>
   (person as (PersonCandidate & { confirmedByReply?: ServiceReplyRef }) | undefined)?.confirmedByReply;
@@ -158,8 +158,17 @@ export function CaseHero() {
   const unconfirmed = dossier.unconfirmedAddresses ?? [];
   const money = totalPln(dossier);
   const proofs = proofSummary(dossier.cashOutProof ?? []);
-  const outServices = [...dossier.serviceLinks].filter((link) => link.transfersOut > 0).sort((a, b) => (b.outPln ?? 0) - (a.outPln ?? 0));
-  const serviceNames = outServices.length > 0 ? outServices.map((link) => link.name) : proofs.services;
+  // Usługi na kaflu: przelewy do usług PLUS usługi z dowodów spieniężenia (np. kantor P2P na końcu ścieżki).
+  const destinations = moneyDestinations(dossier.serviceLinks, dossier.cashOutProof);
+  const serviceNames = destinations.map((item) => item.name);
+  const fiatSignals = dossier.indicators ? fiatSignalSummary(dossier.indicators.cashOut).total : 0;
+  const servicesView = moneyServicesView({
+    destinations: destinations.length,
+    serviceLinks: dossier.serviceLinks.length,
+    money,
+    proofs: (dossier.cashOutProof ?? []).length,
+    fiatSignals,
+  });
   const strongest = linked[0];
   const actions = nextActions(
     dossier,
@@ -212,6 +221,7 @@ export function CaseHero() {
         </div>
         <div className="case-hero-priority">
           <Score value={dossier.totals.priority} kind="priority" reasons={dossier.totals.priorityReasons} caption="priorytet sprawy" />
+          <RiskIndicator />
         </div>
       </header>
 
@@ -330,26 +340,40 @@ export function CaseHero() {
               <span className="answer-empty">brak oznak wypłat</span>
             )}
           </p>
-          {outServices.length > 0 ? (
+          {servicesView === 'list' ? (
             <ul className="answer-services">
-              {outServices.slice(0, 3).map((link) => (
-                <li key={link.id} className={link.inferredOnly ? 'is-inferred' : undefined} title={link.inferredOnly ? 'powiązanie wyłącznie z wnioskowania' : undefined}>
-                  <span className="answer-service-name">{link.name}</span>
-                  <span className="answer-service-amount tabular">{link.outPln !== undefined ? fmtPlnCompact(link.outPln) : countText(link.transfersOut, 'przelew', 'przelewy', 'przelewów')}</span>
+              {destinations.slice(0, 3).map((item) => (
+                <li
+                  key={item.name}
+                  className={item.inferred ? 'is-inferred' : undefined}
+                  title={item.source === 'proof' ? 'usługa na końcu ścieżki z dowodu spieniężenia' : item.inferred ? 'powiązanie wyłącznie z wnioskowania' : undefined}
+                >
+                  <span className="answer-service-name">{item.name}</span>
+                  <span className="answer-service-amount tabular">
+                    {item.pln !== undefined
+                      ? fmtPlnCompact(item.pln)
+                      : item.source === 'proof'
+                        ? countText(item.transfers, 'ścieżka', 'ścieżki', 'ścieżek')
+                        : countText(item.transfers, 'przelew', 'przelewy', 'przelewów')}
+                  </span>
                 </li>
               ))}
-              {outServices.length > 3 && (
+              {destinations.length > 3 && (
                 <li className="answer-services-more">
-                  <a href={tabHref('uslugi')}>+ {countText(outServices.length - 3, 'inna usługa', 'inne usługi', 'innych usług')}</a>
+                  <a href={tabHref('uslugi')}>+ {countText(destinations.length - 3, 'inna usługa', 'inne usługi', 'innych usług')}</a>
                 </li>
               )}
             </ul>
-          ) : (
+          ) : servicesView === 'chips' ? (
             <ServiceChips />
+          ) : servicesView === 'unnamed' ? (
+            <p className="muted small">Nazwy usługi nie ustalono — szczegóły w sekcji Pieniądze.</p>
+          ) : (
+            <p className="muted">Nie stwierdzono powiązań z giełdami ani portfelami.</p>
           )}
           {dossier.indicators && (
             <p className="answer-fiat small">
-              <Term id="off-ramp">oznaki wypłaty na PLN</Term>: <strong className="tabular">{fiatSignalSummary(dossier.indicators.cashOut).total}</strong>
+              <Term id="off-ramp">oznaki wypłaty na PLN</Term>: <strong className="tabular">{fiatSignals}</strong>
             </p>
           )}
           {proofs.strongest && (
@@ -370,8 +394,6 @@ export function CaseHero() {
         </article>
       </div>
 
-      <MixerBanner />
-      <ScamBanner />
 
       <BusinessHeroLine />
 

@@ -13,6 +13,7 @@ export const DOSSIER_TABS = [
   { id: 'uslugi', label: 'Giełdy i portfele' },
   { id: 'przeplywy', label: 'Przepływy' },
   { id: 'graf', label: 'Graf powiązań' },
+  { id: 'alerty', label: 'Alerty ryzyka' },
   { id: 'wskazniki', label: 'Wskaźniki' },
   { id: 'os-czasu', label: 'Oś czasu' },
   { id: 'osoby', label: 'Osoby powiązane' },
@@ -34,7 +35,7 @@ export const DOSSIER_SECTIONS: { id: string; label: string; tabs: readonly Dossi
   { id: 'adresy', label: 'Adresy', tabs: ['adresy'], description: 'adresy krypto i ślady w źródłach' },
   { id: 'pieniadze', label: 'Pieniądze', tabs: ['dowod', 'uslugi', 'przeplywy'], description: 'dokąd trafiły środki' },
   { id: 'graf', label: 'Graf', tabs: ['graf'], description: 'wszystkie powiązania na jednym rysunku' },
-  { id: 'wiecej', label: 'Więcej', tabs: ['wskazniki', 'os-czasu', 'osoby', 'decyzje', 'analizy'], description: 'wskaźniki, oś czasu, decyzje, historia' },
+  { id: 'wiecej', label: 'Więcej', tabs: ['alerty', 'wskazniki', 'os-czasu', 'osoby', 'decyzje', 'analizy'], description: 'alerty ryzyka, wskaźniki, oś czasu, decyzje, historia' },
 ];
 
 /** Dodatkowe nazwy w adresie: nazwy sekcji i krótkie skróty prowadzą do właściwego widoku. */
@@ -49,6 +50,8 @@ export const TAB_ALIASES: Record<string, DossierTab> = {
   historia: 'analizy',
   potwierdz: 'do-potwierdzenia',
   kolejka: 'do-potwierdzenia',
+  ostrzezenia: 'alerty',
+  ryzyko: 'alerty',
 };
 
 export const sectionOf = (tab: DossierTab) => DOSSIER_SECTIONS.find((section) => section.tabs.includes(tab)) ?? DOSSIER_SECTIONS[0]!;

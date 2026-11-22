@@ -113,6 +113,16 @@ export function roundTripReports(network: NetworkView | null, nodeId: string): {
     .sort((a, b) => b.record.startedAt.localeCompare(a.record.startedAt));
 }
 
+/** Liczba obiegów środków z niewycofanych rozwinięć (ten sam obieg z dwóch rozwinięć liczony raz) — do listy ostrzeżeń. */
+export function roundTripCount(network: NetworkView | null): number {
+  const ids = new Set<string>();
+  for (const record of network?.expansions ?? []) {
+    if (record.withdrawnAt || !record.results?.roundtrip) continue;
+    for (const cycle of record.results.roundtrip.cycles ?? []) ids.add(cycle.id);
+  }
+  return ids.size;
+}
+
 /** Adresy pośrednie obiegów z niewycofanych rozwinięć — odznaka „ping-pong” na grafie. */
 export function roundTripNodeIds(network: NetworkView | null): Set<string> {
   const ids = new Set<string>();

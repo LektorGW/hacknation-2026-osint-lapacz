@@ -57,6 +57,18 @@ test('kolejka „Do potwierdzenia” ma własny adres w sekcji „Podsumowanie�
   assert.equal(toTab('kolejka'), 'do-potwierdzenia');
 });
 
+test('„Alerty ryzyka” mają własny adres, aliasy i są pierwszym widokiem sekcji „Więcej”', () => {
+  assert.equal(href.case(CASE, 'alerty'), `#/sprawa/${CASE}/alerty`);
+  assert.deepEqual(parseRoute(`#/sprawa/${CASE}/alerty`), { page: 'case', caseId: CASE, tab: 'alerty' });
+  assert.deepEqual(parseRoute('#/analiza/r1/alerty'), { page: 'run', runId: 'r1', tab: 'alerty' });
+  assert.equal(toTab('ostrzezenia'), 'alerty');
+  assert.equal(toTab('ryzyko'), 'alerty');
+  assert.equal(sectionOf('alerty').id, 'wiecej');
+  assert.equal(DOSSIER_SECTIONS.find((section) => section.id === 'wiecej')!.tabs[0], 'alerty');
+  // Dotychczasowy alias „wiecej” nadal prowadzi do wskaźników.
+  assert.equal(toTab('wiecej'), 'wskazniki');
+});
+
 test('pozostałe ekrany bez zmian', () => {
   assert.deepEqual(parseRoute('#/'), { page: 'dashboard' });
   assert.deepEqual(parseRoute(''), { page: 'dashboard' });

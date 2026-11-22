@@ -1,8 +1,9 @@
-// Ostrzeżenia o możliwym oszustwie: baner pod kafelkami podsumowania, odznaka przy adresie i blok w sekcji Adresy.
+// Ostrzeżenia o możliwym oszustwie: odznaka przy adresie i blok w sekcji Adresy (w podsumowaniu — pozycja listy „Ostrzeżenia”).
 // Ton ostrożny: „adres MÓGŁ być wykorzystywany do oszustwa”; autorzy ostrzeżeń to poszkodowani lub świadkowie.
 import type { Dossier, Network } from '@olcys/core';
 import { fmtDateTime, shorten } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
+import { WARNING_ANCHORS } from '../warnings.ts';
 import { ExternalLink } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { Disclosure } from './ui/Disclosure.tsx';
@@ -56,7 +57,7 @@ interface ScamWarnings {
   limitations: string[];
 }
 
-export const SCAM_ANCHOR = 'oszustwo';
+export const SCAM_ANCHOR = WARNING_ANCHORS.scam;
 
 /** Ostrzeżenia z teczki; brak pola (starsza usługa analizy) → `undefined`. */
 export function scamWarningsOf(dossier: Dossier): ScamWarnings | undefined {
@@ -65,30 +66,6 @@ export function scamWarningsOf(dossier: Dossier): ScamWarnings | undefined {
 
 const tone = (level: ScamLevel) => (level === 'strong' ? 'confirmed' : 'possible');
 const BASIS: Record<ScamPublication['basis'], string> = { rule: 'reguła tekstowa', model: 'odczyt modelu językowego', 'rule+model': 'reguła tekstowa i model' };
-
-/** Baner pod kafelkami podsumowania — tylko gdy są zgłoszenia (czerwony: silne ostrzeżenie, bursztynowy: są zgłoszenia). */
-export function ScamBanner() {
-  const { dossier, tabHref } = useDossier();
-  const warnings = scamWarningsOf(dossier);
-  if (!warnings || warnings.level === 'none') return null;
-  return (
-    <div className={`mixer-banner is-${tone(warnings.level)}`} role="note" aria-label="Ostrzeżenie o możliwym oszustwie">
-      <span className="mixer-banner-icon" aria-hidden="true">
-        ⚠
-      </span>
-      <p className="mixer-banner-text">
-        <strong>{warnings.statement}</strong>
-        <span className="mixer-banner-note">
-          {' '}
-          Autorzy ostrzeżeń to poszkodowani lub świadkowie — nie właściciele adresu. <Term id="scam">Co to scam?</Term>
-        </span>
-      </p>
-      <a className="mixer-banner-link" href={tabHref('adresy')}>
-        Źródła <span aria-hidden="true">→</span>
-      </a>
-    </div>
-  );
-}
 
 /** Odznaka przy adresie (karta adresu). */
 export function ScamChip({ address }: { address: string }) {

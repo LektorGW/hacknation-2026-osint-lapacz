@@ -8,6 +8,7 @@ import type { DossierTab } from '../router.ts';
 import { fmtDateTime } from '../format.ts';
 import { DECISION_TARGET_LABEL, currentDecision, decisionAuthor, decisionHistory, isWithdrawn } from '../decisions.ts';
 import type { DecisionRecord } from '../decisions.ts';
+import type { Warning } from '../warnings.ts';
 
 export interface DossierContextValue {
   dossier: FullDossier;
@@ -18,6 +19,8 @@ export interface DossierContextValue {
   decide(target: DecisionTarget, key: string, decision: Decision, note?: string): Promise<void>;
   undo(decisionId: string): Promise<void>;
   reload(): void;
+  /** Alerty ryzyka policzone raz na stronie teczki (z obiegami środków z sieci sprawy); brak — liczone z samej teczki. */
+  warnings?: Warning[];
 }
 
 export const DossierContext = createContext<DossierContextValue | null>(null);

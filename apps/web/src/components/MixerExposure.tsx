@@ -1,16 +1,17 @@
-// Miksery i CoinJoin: baner w podsumowaniu sprawy i blok „Miksery” w sekcji Pieniądze.
+// Miksery i CoinJoin: blok „Miksery” w sekcji Pieniądze (w podsumowaniu sprawy — pozycja na liście „Ostrzeżenia”).
 // Ton spokojny: narzędzie stwierdza tylko, że środki przeszły przez mikser i dalszej drogi nie widać.
 import type { Network } from '@olcys/core';
 import { fmtAmount, fmtDateTime, fmtPln, shorten } from '../format.ts';
 import { NETWORK_SHORT } from '../labels.ts';
 import { MIXER_STATUS_TEXT, SWIRL_PATH, mixerBanner, mixerExposureOf } from '../mixers.ts';
 import type { MixerTransfer } from '../mixers.ts';
+import { WARNING_ANCHORS } from '../warnings.ts';
 import { ExternalLink } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 import { Disclosure } from './ui/Disclosure.tsx';
 import { Term } from './ui/Term.tsx';
 
-export const MIXER_ANCHOR = 'miksery';
+export const MIXER_ANCHOR = WARNING_ANCHORS.mixers;
 
 /** Znak miksera (spirala) w tekście — dziedziczy kolor. */
 export function SwirlIcon() {
@@ -18,31 +19,6 @@ export function SwirlIcon() {
     <svg className="swirl-icon" viewBox="-13 -13 26 26" width="1em" height="1em" aria-hidden="true" focusable="false">
       <path d={SWIRL_PATH} />
     </svg>
-  );
-}
-
-/** Baner pod kafelkami podsumowania — tylko gdy jest ekspozycja. */
-export function MixerBanner() {
-  const { dossier, tabHref } = useDossier();
-  const exposure = mixerExposureOf(dossier);
-  if (!exposure) return null;
-  const banner = mixerBanner(exposure);
-  return (
-    <div className={`mixer-banner is-${banner.tone}`} role="note" aria-label="Miksery i CoinJoin">
-      <span className="mixer-banner-icon" aria-hidden="true">
-        <SwirlIcon />
-      </span>
-      <p className="mixer-banner-text">
-        <strong>{banner.text}</strong>
-        <span className="mixer-banner-note">
-          {' '}
-          {banner.note} <Term id={exposure.coinjoins.length > 0 && exposure.level === 'possible' ? 'coinjoin' : 'mikser'}>{exposure.coinjoins.length > 0 && exposure.level === 'possible' ? 'Co to CoinJoin?' : 'Co to mikser?'}</Term>
-        </span>
-      </p>
-      <a className="mixer-banner-link" href={tabHref('dowod')}>
-        Szczegóły <span aria-hidden="true">→</span>
-      </a>
-    </div>
   );
 }
 

@@ -16,6 +16,10 @@ import { OrganizationsCard } from '../components/OrganizationCards.tsx';
 import { IndicatorsTab } from '../components/Indicators.tsx';
 import { PendingChip, ReviewQueue } from '../components/ReviewQueue.tsx';
 import { collectReview, rememberPending } from '../review.ts';
+import { collectWarnings, topSeverity } from '../warnings.ts';
+import { AlertsTab } from '../components/Warnings.tsx';
+import { useNetwork } from '../graph/ExpandPanel.tsx';
+import { roundTripCount } from '../graph/roundtrip.ts';
 import { DemoWatermark } from '../components/Mode.tsx';
 import { RELATION_TEXT, identityStatus, linkLabel } from '../identities.ts';
 import { Explanations } from '../components/Explanations.tsx';
@@ -271,6 +275,8 @@ function TabContent({ tab, summary, dossier, onChanged, empty }: { tab: DossierT
       return <IndicatorsTab />;
     case 'do-potwierdzenia':
       return <ReviewQueue />;
+    case 'alerty':
+      return <AlertsTab />;
     default:
       return (
         <>
@@ -314,11 +320,17 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
   }, [tab]);
 
   const data = loaded.data;
+  // Alerty ryzyka: z teczki i z obiegów środków („Szukaj dalej”) zapisanych w sieci sprawy — liczone raz dla całej strony.
+  const hasDossier = !!data && 'dossier' in data;
+  const { network } = useNetwork(hasDossier ? data.summary.id : '', hasDossier && !data.simplified);
+  const roundTrips = roundTripCount(network);
+  const warnings = useMemo(() => (data && 'dossier' in data ? collectWarnings(data.dossier, { roundTrips }) : []), [data, roundTrips]);
   const context = useMemo<DossierContextValue | null>(() => {
     if (!data || !('dossier' in data)) return null;
     const caseId = data.summary.id;
     return {
       ...data,
+      warnings,
       tabHref,
       reload: loaded.reload,
       decide: async (target, decisionKey, decision, note) => {
@@ -341,7 +353,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
       },
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, key]);
+  }, [data, key, warnings]);
 
   // „Do potwierdzenia”: liczba pozycji z wczytanej teczki — zapamiętana także dla listy spraw na pulpicie.
   const pending = useMemo(() => (data && 'dossier' in data ? collectReview(data.dossier).pending.length : undefined), [data]);
@@ -388,6 +400,16 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
     'do-potwierdzenia': pending,
   };
   const sectionCount = (tabs: readonly DossierTab[]) => (tabs.length === 1 ? counts[tabs[0]!] : undefined);
+  // Odznaka „Alerty ryzyka” (przy sekcji „Więcej” i w jej widokach): liczba alertów w kolorze najpoważniejszego poziomu.
+  const topRisk = topSeverity(warnings);
+  const alertBadge =
+    warnings.length > 0 && topRisk ? (
+      <span className={`sections-count is-warn sev-${topRisk}`} title={`Alerty ryzyka: ${warnings.length} · najpoważniejszy poziom: ${topRisk}`}>
+        <span aria-hidden="true">⚠&#xFE0E;</span>
+        {warnings.length}
+        <span className="visually-hidden"> alertów ryzyka</span>
+      </span>
+    ) : null;
   const reviewHref = tabHref('do-potwierdzenia');
 
   return (
@@ -481,6 +503,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                   >
                     {item.label}
                     {count !== undefined && count > 0 && <span className="sections-count">{count}</span>}
+                    {item.tabs.includes('alerty') && alertBadge}
                     {item.tabs.includes('do-potwierdzenia') && !!pending && (
                       <span className="sections-count is-review" title={`Do potwierdzenia: ${pending}`}>
                         {pending}
@@ -498,6 +521,7 @@ export function DossierPage({ source, tab }: { source: Source; tab: DossierTab }
                 <li key={item}>
                   <a href={tabHref(item)} aria-current={item === tab ? 'page' : undefined}>
                     {tabLabel(item)}
+                    {item === 'alerty' && alertBadge}
                     {counts[item] !== undefined && counts[item]! > 0 && <span className={`sections-count ${item === 'do-potwierdzenia' ? 'is-review' : ''}`}>{counts[item]}</span>}
                   </a>
                 </li>

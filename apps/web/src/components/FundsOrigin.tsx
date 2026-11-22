@@ -4,11 +4,12 @@ import { fmtShare, hopsText, relatedKindLabel, relatedSummary, sortRelated, spli
 import type { FundingSource, RelatedAddress, Seizure } from '../funds.ts';
 import { explorerForTxid } from '../identities.ts';
 import { CLASS_LABEL, NETWORK_SHORT } from '../labels.ts';
+import { WARNING_ANCHORS } from '../warnings.ts';
 import { Bar, CopyButton, ExternalLink, LayerTag, ShortAddress } from './common.tsx';
 import { useDossier } from './DossierContext.tsx';
 
-export const SEIZURES_ANCHOR = 'zajecie-srodkow';
-export const FUNDING_ANCHOR = 'pochodzenie-srodkow';
+export const SEIZURES_ANCHOR = WARNING_ANCHORS.seizures;
+export const FUNDING_ANCHOR = WARNING_ANCHORS.funding;
 
 const networkShort = (network: string) => (NETWORK_SHORT as Record<string, string>)[network] ?? network;
 const classLabel = (addressClass: string) => (CLASS_LABEL as Record<string, string>)[addressClass] ?? addressClass;

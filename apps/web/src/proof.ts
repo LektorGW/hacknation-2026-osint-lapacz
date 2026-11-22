@@ -3,7 +3,7 @@ import type { FundingSource, Mention, RelatedAddress, Seizure } from './funds.ts
 import type { LinkedIdentity } from './identities.ts';
 import type { AddressNetwork, DossierOrganization, OrganizationNetwork, PublicFigure } from './organizations.ts';
 import type { ServiceReplyRef, ServiceReplyView } from './service-reply.ts';
-import type { CashOutTrail, Dossier, Finding, Identifier, Network, StoredEvidence, TextInsight } from '@olcys/core';
+import type { CashOutTrail, Dossier, Finding, Identifier, Network, ServiceLink, StoredEvidence, TextInsight } from '@olcys/core';
 
 // ---------- Kształty zwracane przez usługę analizy poza typami `@olcys/core` ----------
 
@@ -225,6 +225,77 @@ export function proofSummary(proofs: CashOutProof[]): ProofSummary {
     topConfidence: sorted[0]?.combinedConfidence ?? 0,
     strongest: sorted[0],
   };
+}
+
+// ---------- Kafel „Dokąd trafiły pieniądze” ----------
+
+/** Usługa na kaflu: nazwa, szacunek w PLN (z przelewów albo z dowodów spieniężenia) i liczba przelewów. */
+export interface MoneyDestination {
+  name: string;
+  pln?: number;
+  transfers: number;
+  /** Powiązanie wyłącznie z wnioskowania narzędzia. */
+  inferred: boolean;
+  /** Skąd pozycja: przelewy do usługi (`serviceLinks`) albo sam dowód spieniężenia. */
+  source: 'transfers' | 'proof';
+}
+
+/** Klucz porównania nazw: „Kraken.com” i „Kraken” to ta sama usługa. */
+const serviceKey = (name: string) =>
+  name
+    .toLowerCase()
+    .replace(/\.(com|net|org|io|pl|eu|co|exchange)\b/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+
+/**
+ * Usługi, do których trafiły pieniądze: przelewy do usług (`serviceLinks`, kierunek „do usługi”) PLUS usługi z dowodów
+ * spieniężenia. Usługa z dowodu, której nie ma wśród przelewów (np. kantor P2P na końcu ścieżki), też trafia na listę —
+ * z kwotą z dowodów. Gdy przelew nie ma wyceny, a dowód ją ma, bierzemy kwotę z dowodu. Od największej kwoty.
+ */
+export function moneyDestinations(links: ServiceLink[] | undefined, proofs: CashOutProof[] | undefined): MoneyDestination[] {
+  const byKey = new Map<string, MoneyDestination>();
+  for (const link of links ?? []) {
+    if (!(link.transfersOut > 0)) continue;
+    byKey.set(serviceKey(link.name), { name: link.name, ...(link.outPln !== undefined ? { pln: link.outPln } : {}), transfers: link.transfersOut, inferred: link.inferredOnly === true, source: 'transfers' });
+  }
+  // Kwoty z dowodów: każda ścieżka liczona raz (kilka dowodów może dzielić tę samą ścieżkę).
+  const fromProofs = new Map<string, { name: string; pln: number; valued: boolean; trails: Set<string>; inferred: boolean }>();
+  for (const proof of proofs ?? []) {
+    if (!proof?.serviceName) continue;
+    const key = serviceKey(proof.serviceName);
+    const entry = fromProofs.get(key) ?? { name: proof.serviceName, pln: 0, valued: false, trails: new Set<string>(), inferred: true };
+    const trailId = proof.trail?.id ?? proof.id;
+    if (!entry.trails.has(trailId)) {
+      entry.trails.add(trailId);
+      if (typeof proof.trail?.valuePln === 'number') {
+        entry.pln += proof.trail.valuePln;
+        entry.valued = true;
+      }
+    }
+    if (proof.layer === 'calculation') entry.inferred = false;
+    fromProofs.set(key, entry);
+  }
+  for (const [key, entry] of fromProofs) {
+    const existing = byKey.get(key);
+    if (existing) {
+      if (existing.pln === undefined && entry.valued) existing.pln = entry.pln;
+      continue;
+    }
+    byKey.set(key, { name: entry.name, ...(entry.valued ? { pln: entry.pln } : {}), transfers: entry.trails.size, inferred: entry.inferred, source: 'proof' });
+  }
+  return [...byKey.values()].sort((a, b) => (b.pln ?? -1) - (a.pln ?? -1) || b.transfers - a.transfers);
+}
+
+/**
+ * Co pokazać pod kwotą, gdy lista usług jest pusta: `chips` — są inne powiązania (wzmianki, wpływy z usług);
+ * `unnamed` — są pieniądze, dowody albo oznaki wypłaty, tylko bez nazwy usługi; `none` — naprawdę brak powiązań.
+ * Zdania „Nie stwierdzono powiązań…” nie wolno pokazać obok kwoty, dowodów ani oznak wypłaty.
+ */
+export function moneyServicesView(input: { destinations: number; serviceLinks: number; money: number; proofs: number; fiatSignals: number }): 'list' | 'chips' | 'unnamed' | 'none' {
+  if (input.destinations > 0) return 'list';
+  if (input.serviceLinks > 0) return 'chips';
+  if (input.money > 0 || input.proofs > 0 || input.fiatSignals > 0) return 'unnamed';
+  return 'none';
 }
 
 /** Nazwa poziomu łącznej pewności — te same progi co w usłudze analizy. */
