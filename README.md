@@ -464,5 +464,5 @@ Zrzuty ekranu (dane syntetyczne z piaskownicy oraz publiczna sprawa Bitfinex) s�
 
 Zrzuty pochodzą z wcześniejszej wersji interfejsu — układ podsumowania sprawy i raportu został od tego czasu uproszczony.
 
-- Prezentacja i film demonstracyjny (do 3 minut) — oddane w zgłoszeniu konkursowym. Zapasowa wersja prezentacji (PDF, 10 slajdów): [`docs/prezentacja-zapasowa/OLCyS-prezentacja-zapasowa.pdf`](docs/prezentacja-zapasowa/OLCyS-prezentacja-zapasowa.pdf).
+- Prezentacja: [`docs/prezentacja/OLCyS_Most_pitch.pptx`](docs/prezentacja/OLCyS_Most_pitch.pptx). Film demonstracyjny (do 3 minut) — oddany w zgłoszeniu konkursowym. Zapasowa wersja prezentacji (PDF, 10 slajdów): [`docs/prezentacja-zapasowa/OLCyS-prezentacja-zapasowa.pdf`](docs/prezentacja-zapasowa/OLCyS-prezentacja-zapasowa.pdf).
 - Wersja demonstracyjna: `pnpm start:demo` (API i piaskownica z danymi syntetycznymi) albo sam interfejs z parametrem `?demo=1` (dane wbudowane, bez API).
