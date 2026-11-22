@@ -65,9 +65,13 @@ export interface DocumentedExitSource {
   payoutSummary: string;
   /** Transakcje adresu objęte odpowiedzią. */
   txids: string[];
+  /** Co najmniej jedna z wypłat nie wskazuje powiązanej wpłaty — dotyczy konta klienta, a nie konkretnej transakcji. */
+  payoutNotTied?: boolean;
   /** Zastrzeżenie, gdy właścicielem konta jest według usługi inna osoba niż kandydat główny. */
   holderNote?: string;
 }
+
+const PAYOUT_NOT_TIED_NOTE = 'Wypłata wskazana w odpowiedzi nie jest powiązana z konkretną wpłatą — dokument potwierdza wypłatę z konta klienta, a nie z tej transakcji.';
 
 /** Jawne reguły wskaźnika C — jedyne miejsce z wagami i progami. */
 export const CASH_OUT_RULES = {
@@ -296,6 +300,7 @@ function documentedByReply(assessment: CashOutAssessment, replies: DocumentedExi
       `(łącznie ${reply.payoutSummary}) z konta, na które trafiły środki z tego adresu. Dokument spoza OSINT wprowadzony przez analityka.`,
     limitations: [
       'Podstawą jest dokument, nie dane blockchain ani źródła publiczne; narzędzie nie weryfikuje jego autentyczności.',
+      ...(reply.payoutNotTied ? [PAYOUT_NOT_TIED_NOTE] : []),
       ...(reply.holderNote ? [reply.holderNote] : []),
     ],
   }));
@@ -313,7 +318,8 @@ function documentedByReply(assessment: CashOutAssessment, replies: DocumentedExi
     statement:
       `${CASH_OUT_STAGE_LABEL.documented_fiat_exit[0]!.toUpperCase()}${CASH_OUT_STAGE_LABEL.documented_fiat_exit.slice(1)}: wypłatę na rachunek bankowy środków z adresu ${shortAddress(assessment.address)} ` +
       `potwierdza ${cite} — dokument spoza OSINT wprowadzony przez analityka. Dane blockchain pokazują przy tym wyłącznie przekazanie środków` +
-      (assessment.txids.length > 0 ? ` (${przelew(assessment.txids.length)}).` : '; w pobranych danych nie ma transakcji przypisanych do tego wyjścia.'),
+      (assessment.txids.length > 0 ? ` (${przelew(assessment.txids.length)}).` : '; w pobranych danych nie ma transakcji przypisanych do tego wyjścia.') +
+      (replies.some((reply) => reply.payoutNotTied) ? ` ${PAYOUT_NOT_TIED_NOTE}` : ''),
   };
 }
 

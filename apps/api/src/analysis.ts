@@ -330,9 +330,16 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  * Liczba niepowiązanych publikujących brana do oceny. Dowód kryptograficzny albo potwierdzona
  * tożsamość profilu ma pierwszeństwo przed liczbą cytujących: adres znanej osoby cytuje wielu,
  * co nie podważa jego własności.
+ * Wyjątek nie dotyczy potwierdzonego profilu, który przy adresie OSTRZEGA przed nim (reguła z scam.ts na
+ * fragmencie śladu) — ostrzeżenie przed adresem współdzielonym nie świadczy o jego własności.
  */
-export function effectiveUnrelatedPublishers(evidence: StoredEvidence[], unrelatedPublishers: number): number {
-  return evidence.some((item) => item.category === 'cryptographic_proof' || item.identityMatch === 'verified_link') ? 0 : unrelatedPublishers;
+export function effectiveUnrelatedPublishers(evidence: StoredEvidence[], unrelatedPublishers: number, address?: string): number {
+  const warns = (item: StoredEvidence) => {
+    const text = item.excerpt ?? '';
+    const targets = address ? [address] : extractAddresses(text).map((found) => found.address);
+    return targets.some((target) => readScamContext(text, target)?.warning === true);
+  };
+  return evidence.some((item) => item.category === 'cryptographic_proof' || (item.identityMatch === 'verified_link' && !warns(item))) ? 0 : unrelatedPublishers;
 }
 
 /** Wykonuje zapytanie z limitem czasu; przerwanie przekazuje też do wywoływanego kodu. */
@@ -432,6 +439,14 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   // testowe i konfiguracje często zawierają cudze adresy z etykietą „donate:” albo komentarzem „my wallet”.
   const declarationIn = (doc: SourceDocument, address: string): OwnershipDeclaration | undefined =>
     TEXT_DECLARATION_CATEGORIES.includes(doc.category) && !isCodeFile(doc.url) ? detectOwnershipDeclaration(normalizeText(doc.text), address) : undefined;
+  /**
+   * Publikacja z podstawą własności (`OWNERSHIP_CATEGORIES`: własny profil, oferta…), w której autor OSTRZEGA przed
+   * adresem (reguła tekstowa z scam.ts, np. „nie wpłacajcie na ten adres, to oszust”) — nie jest podstawą własności:
+   * autor to poszkodowany lub świadek. Tak samo jak w analizie samego adresu (`checkOccurrences`). Wypowiedzi na forum
+   * są tylko wzmiankami (niższa waga) i rozstrzyga je model językowy (`warning_about_address`).
+   */
+  const warnsAbout = (doc: SourceDocument, address: string): boolean =>
+    OWNERSHIP_CATEGORIES.includes(doc.category) && readScamContext(normalizeText(doc.text), address)?.warning === true;
 
   /** Czy publikacja jest listą adresów (zestawieniem), a nie publikacją czyjegoś adresu. */
   const isAddressList = (doc: SourceDocument): boolean => new Set(extract(doc.text).map((item) => item.address)).size >= ADDRESS_LIST_MIN;
@@ -912,12 +927,22 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
     // Zestawienie wielu adresów (np. lista „najbogatszych portfeli”) nie jest publikacją własnego adresu.
     const list = new Set(found.map((item) => item.address)).size >= ADDRESS_LIST_MIN;
     const detected = list ? [] : found;
-    noteSighting(doc, identity, 'subject', step, detected.map(addressKey));
+    // Adresy, przed którymi autor ostrzega, nie są adresami publikowanymi przez profil (wiązania profili, aliasy).
+    noteSighting(doc, identity, 'subject', step, detected.filter((item) => !warnsAbout(doc, item.address)).map(addressKey));
     if (list) log(`${doc.url}: publikacja zawiera ${found.length} adresów — to zestawienie adresów, nie przypisano ich podmiotowi.`);
     if (detected.length === 0) return;
     const contentHash = sha256Hex(doc.text);
     for (const item of detected) {
-      addEvidence(groupFor(item.network, item.address, item.checksumVerified), doc, identity, item.context, contentHash);
+      const group = groupFor(item.network, item.address, item.checksumVerified);
+      if (warnsAbout(doc, item.address)) {
+        // Ostrzeżenie przed adresem nie jest publikacją własnego adresu: bez śladu własności, z adnotacją przy adresie.
+        capture(doc, contentHash);
+        const note = `Autor „${doc.author ?? doc.url}” (profil badanego podmiotu) OSTRZEGA przed tym adresem w ${doc.url} — to ostrzeżenie (poszkodowany lub świadek), nie publikacja własnego adresu; publikacji nie liczono jako podstawy własności.`;
+        if (!group.notes.includes(note)) group.notes.push(note);
+        log(`${doc.url}: autor „${doc.author ?? doc.url}” ostrzega przed adresem ${item.address} (możliwe oszustwo) — nie jest to podstawa własności.`);
+        continue;
+      }
+      addEvidence(group, doc, identity, item.context, contentHash);
     }
     log(`Adresy w ${doc.url}: ${detected.map((item) => item.address).join(', ')}.`);
   };
@@ -1328,6 +1353,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
         noteSighting(doc, identity, 'subject', 0, [key]);
         candidateAuthors.add(author);
         log(`Adres ${group.address} publikuje „${doc.author}”: ${doc.url} — możliwy właściciel.`);
+      } else if (relation && warnsAbout(doc, group.address)) {
+        // Badany podmiot ostrzega przed adresem — to nie publikacja własnego adresu (jak przy profilach w `ingest`).
+        capture(doc, contentHash);
+        const note = `Autor „${doc.author}” (profil badanego podmiotu) OSTRZEGA przed tym adresem w ${doc.url} — to ostrzeżenie (poszkodowany lub świadek), nie publikacja własnego adresu; publikacji nie liczono jako podstawy własności.`;
+        if (!group.notes.includes(note)) group.notes.push(note);
+        log(`Adres ${group.address} w ${doc.url}: autor „${doc.author}” (badany podmiot) ostrzega przed adresem — nie jest to podstawa własności.`);
       } else if (relation) {
         const identity: IdentityAssessment = {
           match: relation,
@@ -1489,9 +1520,12 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   if (pivotLimits.steps > 0) {
     const corpus = params.connectors.find((connector) => connector.id === 'corpus');
     // Adresy publikowane jako własne: jawna kategoria źródła albo — w wypowiedzi na forum — deklaracja odczytana regułą tekstową.
+    // Adres, przed którym autor ostrzega, nie jest jego adresem (także na własnym profilu).
     const ownedAddresses = (doc: SourceDocument) =>
       OWNERSHIP_CATEGORIES.includes(doc.category)
-        ? extract(doc.text).map((item) => ({ network: item.network, address: item.address }))
+        ? extract(doc.text)
+            .filter((item) => !warnsAbout(doc, item.address))
+            .map((item) => ({ network: item.network, address: item.address }))
         : extract(doc.text)
             .filter((item) => declarationIn(doc, item.address)?.verdict === 'declares')
             .map((item) => ({ network: item.network, address: item.address }));
@@ -1721,7 +1755,7 @@ export async function runAnalysis(params: AnalysisParams): Promise<AnalysisResul
   for (const group of groups.values()) {
     const evidence = [...group.evidence.values()];
     const unrelatedPublishers = group.unrelatedAuthors.size;
-    const counted = effectiveUnrelatedPublishers(evidence, unrelatedPublishers);
+    const counted = effectiveUnrelatedPublishers(evidence, unrelatedPublishers, group.address);
     const beneficiary = beneficiaries.get(addressKey(group));
     const subjectOfCase = subjectAddresses.has(group.address.toLowerCase());
     // Adres zbiórki organizacji (klasa „charity”): nie przypisuje się go osobie. Adres podany przez analityka

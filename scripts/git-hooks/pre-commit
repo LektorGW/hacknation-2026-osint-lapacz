@@ -1,0 +1,51 @@
+#!/bin/sh
+# Blokada przed zatwierdzeniem danych spraw i sekretów (OŁCyŚ).
+# Instalacja: automatycznie przy `pnpm install` (skrypt „prepare”) albo ręcznie:
+#   git config core.hooksPath scripts/git-hooks
+# Pominięcie w wyjątkowej sytuacji (świadomie): git commit --no-verify
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+blocked=$(printf '%s\n' "$staged" | grep -E \
+  -e '(^|/)\.data[^/]*(/|$)' \
+  -e '\.migawka\.tar\.gz' \
+  -e 'olcys-migawka-.*\.tar\.gz$' \
+  -e 'olcys-pg-.*\.dump$' \
+  -e '\.blokada$' \
+  -e '(^|/)\.env($|\.)' \
+  -e '(^|/)apps/api/data/pg/' \
+  -e '(^|/)kopie/' \
+  -e '\.(pem|key|p12|pfx)$' \
+  | grep -v -E '(^|/)\.env\.example$')
+
+status=0
+if [ -n "$blocked" ]; then
+  echo "BLOKADA: te pliki mogą zawierać dane spraw albo klucze i nie trafią do repozytorium:" >&2
+  printf '  %s\n' $blocked >&2
+  status=1
+fi
+
+# Wzorce kluczy w dodawanej treści (bez plików binarnych i list publicznych domen).
+keys=$(git diff --cached -U0 --no-color -- . ':(exclude)*.json' ':(exclude)*.png' ':(exclude)*.jpg' ':(exclude)*.pdf' \
+  | grep -E '^\+' \
+  | grep -E -o '(sk-proj-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})' \
+  | head -3)
+if [ -n "$keys" ]; then
+  echo "BLOKADA: w zmianach jest coś, co wygląda na klucz API lub token (pokazano początek):" >&2
+  printf '%s\n' "$keys" | cut -c1-10 | sed 's/$/…/' >&2
+  status=1
+fi
+
+# Pliki większe niż 15 MB (np. przypadkowa kopia bazy albo nagranie).
+for file in $staged; do
+  [ -f "$file" ] || continue
+  size=$(wc -c < "$file" | tr -d ' ')
+  if [ "$size" -gt 15000000 ]; then
+    echo "BLOKADA: $file ma $((size / 1000000)) MB — duże pliki trzymaj poza repozytorium." >&2
+    status=1
+  fi
+done
+
+[ $status -ne 0 ] && echo "Commit przerwany. Usuń plik ze zmian: git restore --staged <plik>" >&2
+exit $status

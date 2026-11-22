@@ -5,7 +5,7 @@ import { detectIdentifierType } from '../src/app.ts';
 test('imię i nazwisko wpisane małymi literami to full_name, a nie nick', () => {
   // Nazwa konta nie zawiera spacji: „anna wzorcowa” potraktowane jako nick nie trafiało do żadnego źródła.
   assert.equal(detectIdentifierType('anna wzorcowa'), 'full_name');
-  assert.equal(detectIdentifierType('Tomasz Przykładny'), 'full_name');
+  assert.equal(detectIdentifierType('Tomasz Przykładowy'), 'full_name');
   assert.equal(detectIdentifierType('anna maria kowalska-nowak'), 'full_name');
   assert.equal(detectIdentifierType('żaneta źdźbło'), 'full_name');
   // Pojedynczy wyraz, cyfry albo znaki nicku — nadal nick.

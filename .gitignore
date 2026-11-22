@@ -19,3 +19,12 @@ build/
 
 # Blokada katalogu danych działającego API (numer procesu, port)
 *.blokada
+
+# Kopie zapasowe, archiwa spraw i domyślny katalog bazy (dane spraw) — nigdy do repozytorium
+*.migawka.tar.gz.bak
+olcys-migawka-*.tar.gz
+olcys-pg-*.dump
+kopie/
+apps/api/data/
+archiwum/
+*.olcys-archiwum*

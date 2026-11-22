@@ -292,3 +292,26 @@ test('raport: synteza na pierwszej stronie, potem Część I i załączniki', as
   assert.ok(html.indexOf('Z11. Dziennik przebiegu analizy') > appendix);
   assert.ok(html.indexOf('<h2>Z2. Ścieżka dowodowa</h2>') > appendix);
 });
+
+test('raport: dane z odpowiedzi usługi (nazwa, sygnatura) są escapowane w ustaleniu osoby', async () => {
+  const base = await baseDossier();
+  const person = { ...base.persons[0]!, status: 'confirmed' as const, confirmedByReply: { serviceName: EVIL, reference: `<img src=x onerror=alert(1)>` } };
+  const html = render({ ...base, persons: [person, ...base.persons.slice(1)] } as DossierView);
+  assert.ok(!/<(script|img|iframe)\b/i.test(html), 'surowy znacznik z odpowiedzi usługi nie może trafić do raportu');
+  assert.ok(html.includes(`potwierdzony odpowiedzią usługi ${esc(EVIL)}`));
+});
+
+test('synteza: adres poniżej progu nie jest „powiązany”, a pośrednie pochodzenie środków to hipoteza', async () => {
+  const base = await baseDossier();
+  const weakFinding = { ...base.findings[0]!, confidence: { ...base.findings[0]!.confidence, score: 10, excluded: false } };
+  const html = render({
+    ...base,
+    findings: [weakFinding],
+    fundingSources: [{ subjectAddress: BTC_A, address: BTC_EXCHANGE, label: 'Kradzież testowa', category: 'incident', share: 0.5, amount: 1, asset: 'BTC', hops: 2, reason: 'heurystyka' }],
+  } as unknown as DossierView);
+  const box = html.slice(html.indexOf('<h2>Synteza sprawy</h2>'), html.indexOf('Część I — Najważniejsze ustalenia'));
+  assert.ok(box.includes('Brak adresów przypisanych podmiotowi'), 'adres z wynikiem 10% nie jest liczony jako powiązany');
+  assert.ok(box.includes('słabe ślady poniżej progu'));
+  const incident = box.slice(box.indexOf('oznaczonego jako incydent'));
+  assert.ok(incident.slice(0, 200).includes('hipoteza'), 'ścieżka przez adres pośredni jest hipotezą');
+});

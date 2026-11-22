@@ -535,13 +535,32 @@ export function resolvePersons(input: PersonsInput): PersonsResult {
   // imię i nazwisko osoby głównej; profil podający INNĄ osobę nie jest do niej dołączany automatycznie.
   const byAnchor = nodes.map((_, index) => index).sort((a, b) => anchors[b]!.weight - anchors[a]!.weight || matchRank(nodes[b]!.base.match) - matchRank(nodes[a]!.base.match) || a - b);
 
-  // 1. Decyzje analityka. Profil potwierdzony trafia do osoby głównej: do profilu, który ją wyznacza
-  //    (najmocniej związanego z identyfikatorami analityka), oraz do samych identyfikatorów.
-  const mainSeed = byAnchor.find((index) => !confirmed[index] && !rejected[index]);
-  for (let i = 0; i < count; i++) {
+  // 1. Decyzje analityka. Profil potwierdzony trafia do osoby głównej: do identyfikatorów analityka oraz do
+  //    profilu, który ją wyznacza (najmocniej związanego z identyfikatorami analityka, niepotwierdzonego).
+  //    Możliwy imiennik (samo nazwisko, pospolity nick) nigdy nie wyznacza osoby, więc potwierdzenie profilu nie
+  //    wciąga go do osoby głównej. Każde połączenie sprawdza sprzeczności: decyzja „to nie ten sam operator”
+  //    je wstrzymuje i trafia do `blockedMerges`.
+  const mainSeed = byAnchor.find((index) => !confirmed[index] && !rejected[index] && nodes[index]!.base.match !== 'name_only' && nodes[index]!.base.match !== 'common_handle');
+  for (const i of byAnchor) {
     if (!confirmed[i]) continue;
+    const conflict = conflictBetween(i, ANCHOR);
+    if (conflict) {
+      blocked.push({ pair: conflict.pair, weight: PERSON_RULES.anchor.analyst_confirmed, reason: conflict.reason });
+      continue;
+    }
     union(i, ANCHOR);
-    if (mainSeed !== undefined) union(mainSeed, i);
+    if (mainSeed === undefined || groupOf[mainSeed] === groupOf[i]) continue;
+    const seedConflict = conflictBetween(mainSeed, i);
+    if (seedConflict) {
+      if (blocked.some((item) => item.pair[0] === seedConflict.pair[0] && item.pair[1] === seedConflict.pair[1])) continue;
+      blocked.push({
+        pair: seedConflict.pair,
+        weight: PERSON_RULES.anchor.analyst_confirmed,
+        reason: `profilu ${tag(mainSeed)} nie dołączono do potwierdzonego profilu ${tag(i)} — ${seedConflict.reason}`,
+      });
+      continue;
+    }
+    union(mainSeed, i);
   }
   //    Para kont potwierdzona jako wspólny operator trafia do jednego kandydata mimo różnych nazwisk.
   for (let i = 0; i < count; i++) {

@@ -149,6 +149,21 @@ export function createRateLimiter(perWindow: number, windowMs = 60_000, now: () 
   };
 }
 
+/**
+ * Czy żądanie dotyczy API: zarejestrowana trasa pod `/api/` albo ścieżka, która po zdekodowaniu
+ * i usunięciu zdublowanych ukośników zaczyna się od `/api/` (także żądania bez trasy — 404 pod /api).
+ */
+export function isApiRequest(rawPath: string, routeUrl: string | undefined): boolean {
+  if (routeUrl?.startsWith('/api/')) return true;
+  let decoded = rawPath;
+  try {
+    decoded = decodeURIComponent(rawPath);
+  } catch {
+    // Niepoprawne kodowanie — oceniamy surową ścieżkę (router i tak odrzuci żądanie).
+  }
+  return decoded.replace(/\/{2,}/g, '/').toLowerCase().startsWith('/api/');
+}
+
 /** Rejestruje uwierzytelnianie, ochronę przed CSRF, limit żądań i nagłówki bezpieczeństwa. */
 export function registerSecurity(app: FastifyInstance, options: SecurityOptions): void {
   const token = options.apiToken;
@@ -178,8 +193,11 @@ export function registerSecurity(app: FastifyInstance, options: SecurityOptions)
   };
 
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+    // Ochrona według zarejestrowanej trasy, nie surowego URL: router dekoduje i normalizuje ścieżkę
+    // (np. `/%61pi/cases` trafia do `/api/cases`), więc sam prefiks surowego adresu dałoby się ominąć.
     const path = request.url.split('?')[0]!;
-    if (!path.startsWith('/api/')) return;
+    const route = request.routeOptions.url;
+    if (!isApiRequest(path, route)) return;
     // DNS rebinding: obca domena wskazująca na 127.0.0.1 nie może rozmawiać z API jak „ta sama strona”.
     if (!hostAllowed(request.headers.host)) {
       return reply.code(403).send({ error: 'Niedozwolona nazwa hosta w żądaniu (nagłówek Host).' });
@@ -191,7 +209,7 @@ export function registerSecurity(app: FastifyInstance, options: SecurityOptions)
     if (STATE_CHANGING.has(request.method) && typeof origin === 'string' && !sameOrigin && !origins.has(origin.toLowerCase())) {
       return reply.code(403).send({ error: 'Żądanie z niedozwolonej strony (Origin) zostało odrzucone.' });
     }
-    if (token && path !== '/api/health' && !isAuthorized(request, token)) {
+    if (token && (route ?? path) !== '/api/health' && !isAuthorized(request, token)) {
       return reply
         .code(401)
         .header('WWW-Authenticate', 'Bearer realm="olcys"')
@@ -216,7 +234,7 @@ export function registerSecurity(app: FastifyInstance, options: SecurityOptions)
   app.addHook('onSend', async (request, reply, payload) => {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) if (!reply.hasHeader(name)) reply.header(name, value);
     // Polityka treści tylko dla odpowiedzi API (interfejs podawany z tego samego portu ma własne zasoby i skrypty).
-    if (!request.url.startsWith('/api/')) return payload;
+    if (!isApiRequest(request.url.split('?')[0]!, request.routeOptions.url)) return payload;
     // Trasy z własną polityką (np. raport HTML) zostawiają swoją, uzupełnioną o zakaz osadzania; reszta dostaje ścisłą politykę API.
     const own = reply.getHeader('Content-Security-Policy');
     if (typeof own !== 'string' || !own) reply.header('Content-Security-Policy', API_CSP);

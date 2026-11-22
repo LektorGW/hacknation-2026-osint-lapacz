@@ -57,6 +57,12 @@ test('token wymagany dla każdej trasy /api oprócz /api/health; Bearer albo cia
   assert.equal(viaCookie.statusCode, 401);
   // Nowe trasy też są chronione.
   for (const url of ['/api/audit', '/api/retention/preview', '/api/security/status']) assert.equal((await secured.inject(url)).statusCode, 401, url);
+  // Router dekoduje ścieżkę — zakodowany albo zdublowany zapis nie może ominąć tokenu.
+  for (const url of ['/%61pi/cases', '/api%2Fcases', '//api/cases', '/API/cases']) {
+    const response = await secured.inject(url);
+    assert.ok([401, 404].includes(response.statusCode), `${url} → ${response.statusCode}`);
+    assert.notEqual(response.statusCode, 200, `${url} nie może zwrócić danych bez tokenu`);
+  }
   // Bez skonfigurowanego tokenu wszystko działa jak dotąd.
   assert.equal((await open.inject('/api/cases')).statusCode, 200);
 });

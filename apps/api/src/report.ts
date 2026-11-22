@@ -413,7 +413,7 @@ function renderPersons(dossier: DossierView): string {
               ? 'odrzucony decyzją analityka'
               : 'hipoteza — do weryfikacji';
         return `<div class="zrodlo">
-          <h4>${index === 0 ? 'Osoba główna' : `Inny kandydat ${index}`}: ${esc(person.fullName ?? 'imię i nazwisko nieustalone')} — wskaźnik ${person.probability}/100 (${state})</h4>
+          <h4>${index === 0 ? 'Osoba główna' : `Inny kandydat ${index}`}: ${esc(person.fullName ?? 'imię i nazwisko nieustalone')} — wskaźnik ${person.probability}/100 (${esc(state)})</h4>
           ${person.nameVariants.length > 0 ? `<p>Inne zapisy nazwy: ${esc(person.nameVariants.join(', '))}.</p>` : ''}
           ${(person.replyContradictions ?? []).map((text) => `<p><strong>${esc(text)}</strong></p>`).join('')}
           <p>Przesłanki, krok po kroku:</p><ol>${person.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ol>

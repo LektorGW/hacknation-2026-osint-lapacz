@@ -323,13 +323,15 @@ export class BlockscoutProvider implements ChainProvider {
       const amount = fromBaseUnits(tx.value ?? '0', 18);
       if (amount === 0 || tx.status === 'error' || !tx.timestamp) continue;
       const outgoing = tx.from?.hash !== undefined && normalizeAddress(tx.from.hash) === self;
+      // Przelew na własny adres zostaje w historii, ale bez przepływu netto: nie jest wypływem ani wpływem.
+      const toSelf = outgoing && tx.to?.hash !== undefined && normalizeAddress(tx.to.hash) === self;
       transfers.push({
         txid: tx.hash,
         time: tx.timestamp,
-        direction: outgoing ? 'out' : 'in',
+        direction: outgoing && !toSelf ? 'out' : 'in',
         ...this.describe(outgoing ? (tx.to ?? tx.created_contract) : tx.from),
         asset: this.nativeAsset,
-        amount,
+        amount: toSelf ? 0 : amount,
         explorerUrl: `${this.explorerUrl}/tx/${tx.hash}`,
       });
     }
@@ -345,13 +347,15 @@ export class BlockscoutProvider implements ChainProvider {
       const decimals = declaredDecimals(item.total.decimals, item.token?.decimals);
       const symbol = verifiedTokenSymbol(labels, network, item.token?.address_hash ?? item.token?.address, item.token?.symbol);
       const outgoing = item.from?.hash !== undefined && normalizeAddress(item.from.hash) === self;
+      // Przelew na własny adres zostaje w historii, ale bez przepływu netto: nie jest wypływem ani wpływem.
+      const toSelf = outgoing && item.to?.hash !== undefined && normalizeAddress(item.to.hash) === self;
       transfers.push({
         txid,
         time: item.timestamp,
-        direction: outgoing ? 'out' : 'in',
+        direction: outgoing && !toSelf ? 'out' : 'in',
         ...this.describe(outgoing ? item.to : item.from),
         asset: decimals === undefined ? amountUnitUnknown(symbol) : symbol,
-        amount: fromBaseUnits(item.total.value, decimals ?? 0),
+        amount: toSelf ? 0 : fromBaseUnits(item.total.value, decimals ?? 0),
         explorerUrl: `${this.explorerUrl}/tx/${txid}`,
       });
     }

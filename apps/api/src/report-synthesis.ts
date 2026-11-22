@@ -4,6 +4,7 @@
 
 import type { DossierView } from './dossier.ts';
 import { formatPln as pln, shortAddress as short } from './format.ts';
+import { PRIORITY_RULES } from './priority.ts';
 import { esc } from './report-html.ts';
 
 export type RiskLevel = 'krytyczne' | 'wysokie' | 'uwaga' | 'informacja';
@@ -38,8 +39,10 @@ export function collectRisks(dossier: DossierView): RiskItem[] {
   if (dossier.seizures.length > 0) risks.push({ level: 'wysokie', layer: 'fact', text: `Przekazania na adres organu państwa — zajęcie środków (${dossier.seizures.length})` });
   const sanctionedFunding = dossier.fundingSources.filter((item) => item.category === 'sanctioned');
   const incidentFunding = dossier.fundingSources.filter((item) => item.category === 'incident');
-  if (sanctionedFunding.length > 0) risks.push({ level: 'krytyczne', layer: 'fact', text: 'Środki pochodzą z adresu objętego sankcjami' });
-  if (incidentFunding.length > 0) risks.push({ level: 'wysokie', layer: 'fact', text: 'Środki pochodzą z adresu oznaczonego jako incydent (np. kradzież)' });
+  // Przelew wprost to fakt z blockchaina; ścieżka przez adres pośredni (heurystyka) to hipoteza.
+  const fundingLayer = (items: typeof sanctionedFunding): RiskItem['layer'] => (items.every((item) => item.hops <= 1) ? 'fact' : 'inference');
+  if (sanctionedFunding.length > 0) risks.push({ level: 'krytyczne', layer: fundingLayer(sanctionedFunding), text: 'Środki pochodzą z adresu objętego sankcjami' });
+  if (incidentFunding.length > 0) risks.push({ level: 'wysokie', layer: fundingLayer(incidentFunding), text: 'Środki pochodzą z adresu oznaczonego jako incydent (np. kradzież)' });
 
   const business = dossier.indicators?.businessActivity?.indicator;
   if (business && business.score >= 50) risks.push({ level: 'uwaga', layer: 'inference', text: `Sygnały działalności gospodarczej: ${business.score} · ${business.level}` });
@@ -76,8 +79,12 @@ function nextSteps(dossier: DossierView): string[] {
 /** Pierwsza strona raportu — synteza w jednym widoku. */
 export function renderSynthesis(dossier: DossierView): string {
   const person = dossier.persons[0];
-  const accepted = dossier.findings.filter((finding) => !finding.confidence.excluded);
-  const rejected = dossier.findings.length - accepted.length;
+  // Ta sama kwalifikacja co w sumach teczki (priority.ts): próg Wskaźnika Pewności albo adres podany przez analityka.
+  const analystAddresses = new Set(dossier.subject.identifiers.filter((item) => item.origin === 'analyst').map((item) => item.identifier.value.toLowerCase()));
+  const active = dossier.findings.filter((finding) => !finding.confidence.excluded);
+  const accepted = active.filter((finding) => finding.confidence.score >= PRIORITY_RULES.linkedMinScore || analystAddresses.has(finding.address.toLowerCase()));
+  const weak = active.length - accepted.length;
+  const rejected = dossier.findings.length - active.length;
   const best = [...accepted].sort((a, b) => b.confidence.score - a.confidence.score)[0];
   const services = [...dossier.serviceLinks].filter((link) => link.transfersOut > 0 || (link.outPln ?? 0) > 0).sort((a, b) => (b.outPln ?? 0) - (a.outPln ?? 0));
   const proof = dossier.cashOutProof[0];
@@ -95,8 +102,8 @@ export function renderSynthesis(dossier: DossierView): string {
   const network = dossier.organizationNetwork;
 
   const addresses = accepted.length === 0
-    ? `Brak adresów przypisanych podmiotowi${rejected ? ` · odrzucone: ${rejected}` : ''}`
-    : `<strong>${accepted.length}</strong> ${accepted.length === 1 ? 'adres powiązany' : 'adresy powiązane'}${best ? ` · najmocniejszy <span class="mono">${esc(short(best.address))}</span> — Wskaźnik Pewności ${best.confidence.score}% (${esc(best.confidence.tier)}) ${tag('calc')}` : ''}${rejected ? `<br>Odrzucone (giełdy, kontrakty, adresy współdzielone): ${rejected}` : ''}${dossier.unconfirmedAddresses.length ? ` · do potwierdzenia: ${dossier.unconfirmedAddresses.length}` : ''}`;
+    ? `Brak adresów przypisanych podmiotowi${weak ? ` · słabe ślady poniżej progu ${PRIORITY_RULES.linkedMinScore}%: ${weak}` : ''}${rejected ? ` · odrzucone: ${rejected}` : ''}`
+    : `<strong>${accepted.length}</strong> ${accepted.length === 1 ? 'adres powiązany' : 'adresy powiązane'}${best ? ` · najmocniejszy <span class="mono">${esc(short(best.address))}</span> — Wskaźnik Pewności ${best.confidence.score}% (${esc(best.confidence.tier)}) ${tag('calc')}` : ''}${weak ? `<br>Słabe ślady poniżej progu ${PRIORITY_RULES.linkedMinScore}%: ${weak}` : ''}${rejected ? `<br>Odrzucone (giełdy, kontrakty, adresy współdzielone): ${rejected}` : ''}${dossier.unconfirmedAddresses.length ? ` · do potwierdzenia: ${dossier.unconfirmedAddresses.length}` : ''}`;
 
   const money = services.length === 0 && !proof
     ? 'Nie stwierdzono przekazań do giełd ani usług wymiany'

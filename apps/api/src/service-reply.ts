@@ -220,8 +220,19 @@ export interface ReplyAddressMatch {
   by: ('deposit_address' | 'txid')[];
   /** Transakcje adresu objęte odpowiedzią. */
   txids: string[];
+  /** Transakcje adresu wskazane jako powiązane z wypłatą na rachunek (`relatedTxid` wypłaty). */
+  payoutTxids?: string[];
   /** Adres wykluczony (klasa adresu, decyzja analityka) — odpowiedź nie zmienia jego wyniku. */
   excluded?: boolean;
+}
+
+/**
+ * Wypłaty odpowiedzi, które dotyczą dopasowanego adresu: powiązane z jego transakcją (`relatedTxid`)
+ * albo niepowiązane z żadną konkretną wpłatą (wtedy dotyczą wszystkich dopasowanych adresów odpowiedzi).
+ */
+export function payoutsForMatch(payouts: ServiceReplyPayout[], match: Pick<ReplyAddressMatch, 'payoutTxids'>): ServiceReplyPayout[] {
+  const tied = new Set((match.payoutTxids ?? []).map(normTxid));
+  return payouts.filter((payout) => !payout.relatedTxid || tied.has(normTxid(payout.relatedTxid)));
 }
 
 /** Adresy sprawy, których dotyczy odpowiedź: wspólny adres wpłat / adres usługi albo wspólna transakcja. */
@@ -256,7 +267,22 @@ export function matchReplyToFindings(reply: ServiceReply, findings: Finding[], i
       }
     }
     if (by.size === 0) continue;
-    result.push({ key: keyOf(finding), address: finding.address, network: finding.network, by: [...by], txids: [...txids], ...(isExcluded(finding) ? { excluded: true } : {}) });
+    // Wypłata z `relatedTxid` dotyczy tylko adresu, którego transakcję wskazuje.
+    const payoutTxids = new Set<string>();
+    for (const payout of reply.payload.fiatPayouts) {
+      if (!payout.relatedTxid) continue;
+      const hit = hops.find((hop) => normTxid(hop.txid) === normTxid(payout.relatedTxid!));
+      if (hit) payoutTxids.add(hit.txid);
+    }
+    result.push({
+      key: keyOf(finding),
+      address: finding.address,
+      network: finding.network,
+      by: [...by],
+      txids: [...txids],
+      ...(payoutTxids.size > 0 ? { payoutTxids: [...payoutTxids] } : {}),
+      ...(isExcluded(finding) ? { excluded: true } : {}),
+    });
   }
   return result;
 }
@@ -348,8 +374,13 @@ export interface ReplyEvaluation {
   matches: ReplyAddressMatch[];
   identity: ReplyIdentityOutcome;
   identityBasis: string[];
-  /** Odpowiedź dokumentuje wypłatę na rachunek dla dopasowanych adresów. */
+  /** Odpowiedź dokumentuje wypłatę na rachunek dla co najmniej jednego dopasowanego adresu. */
   documentsFiatExit: boolean;
+  /**
+   * Dopasowane (niewykluczone) adresy, których dotyczy wypłata (`network:address`): wypłata powiązana z ich
+   * transakcją albo wypłata bez wskazanej transakcji (ta dotyczy wszystkich dopasowanych adresów odpowiedzi).
+   */
+  fiatExitKeys: string[];
 }
 
 export function evaluateReply(
@@ -372,10 +403,12 @@ export function evaluateReply(
           : 'Żaden adres wpłat ani identyfikator transakcji z odpowiedzi nie występuje w danych sprawy — odpowiedź nie jest stosowana.',
       ],
       documentsFiatExit: false,
+      fiatExitKeys: [],
     };
   }
   const comparison = compareCustomer(reply.payload.customer, main, identifiers);
-  return { reply, matches, identity: comparison.outcome, identityBasis: comparison.basis, documentsFiatExit: reply.payload.fiatPayouts.length > 0 };
+  const fiatExitKeys = matches.filter((item) => !item.excluded && payoutsForMatch(reply.payload.fiatPayouts, item).length > 0).map((item) => item.key);
+  return { reply, matches, identity: comparison.outcome, identityBasis: comparison.basis, documentsFiatExit: fiatExitKeys.length > 0, fiatExitKeys };
 }
 
 export const replyRef = (reply: ServiceReply): ServiceReplyRef => ({ replyId: reply.id, serviceName: reply.serviceName, reference: reply.reference });
@@ -490,15 +523,27 @@ export function buildReplyView(input: ReplyViewInput): ServiceReplyView {
       identityText = 'Odpowiedź niedopasowana — nie wpływa na ustalenie osoby.';
   }
 
-  const exitKeys = input.fiatExitKeys ?? applied.map((item) => item.key);
-  const documented = matched && evaluation.documentsFiatExit && exitKeys.length > 0;
+  // Wypłata z `relatedTxid` dokumentuje wyjście tylko dla adresu wskazanej transakcji; bez niej — dla wszystkich dopasowanych.
+  const covered = new Set(evaluation.fiatExitKeys);
+  const exitKeys = (input.fiatExitKeys ?? evaluation.fiatExitKeys).filter((key) => covered.has(key));
+  const documented = matched && exitKeys.length > 0;
+  const confirmedPayouts = `Usługa potwierdziła ${payouts.length} ${plural(payouts.length, 'wypłatę', 'wypłaty', 'wypłat')} na rachunek bankowy (łącznie ${payoutSummary(payouts)})`;
+  const untied = payouts.filter((payout) => !payout.relatedTxid).length;
+  const uncovered = applied.filter((item) => !covered.has(item.key));
+  const addressesOf = (keys: string[]) => keys.map((key) => shortAddress(applied.find((item) => item.key === key)?.address ?? key)).join(', ');
   const fiatText = !matched
     ? 'Odpowiedź niedopasowana — nie dokumentuje wyjścia do walut tradycyjnych w tej sprawie.'
-    : evaluation.documentsFiatExit && !documented
-      ? `Usługa potwierdziła ${payouts.length} ${plural(payouts.length, 'wypłatę', 'wypłaty', 'wypłat')} na rachunek bankowy (łącznie ${payoutSummary(payouts)}), ale dopasowany adres nie jest zaliczony do adresów podmiotu — wskaźnik C jest liczony tylko dla adresów podmiotu.`
-      : documented
-      ? `Usługa potwierdziła ${payouts.length} ${plural(payouts.length, 'wypłatę', 'wypłaty', 'wypłat')} na rachunek bankowy (łącznie ${payoutSummary(payouts)}) — wskaźnik C dla dopasowanych adresów osiąga szczebel „udokumentowane wyjście do walut tradycyjnych”.`
-      : 'Odpowiedź nie zawiera żadnej wypłaty na rachunek — potwierdza najwyżej właściciela konta, a nie wyjście do walut tradycyjnych; wskaźnik C bez zmian.';
+    : payouts.length === 0
+      ? 'Odpowiedź nie zawiera żadnej wypłaty na rachunek — potwierdza najwyżej właściciela konta, a nie wyjście do walut tradycyjnych; wskaźnik C bez zmian.'
+      : covered.size === 0
+        ? `${confirmedPayouts}, ale żadna nie jest powiązana z transakcją dopasowanych adresów sprawy — wskaźnik C bez zmian.`
+        : !documented
+          ? `${confirmedPayouts}, ale dopasowany adres nie jest zaliczony do adresów podmiotu — wskaźnik C jest liczony tylko dla adresów podmiotu.`
+          : `${confirmedPayouts} — wskaźnik C dla ${uncovered.length > 0 ? `adresów ${addressesOf(exitKeys)}` : 'dopasowanych adresów'} osiąga szczebel „udokumentowane wyjście do walut tradycyjnych”.` +
+            (untied > 0
+              ? ` ${untied === payouts.length ? (untied === 1 ? 'Wypłata nie jest powiązana' : 'Wypłaty nie są powiązane') : `Część wypłat (${untied} z ${payouts.length}) nie jest powiązana`} w odpowiedzi z konkretną wpłatą — dotyczy konta klienta, a nie wskazanej transakcji.`
+              : '') +
+            (uncovered.length > 0 ? ` Wypłaty nie są powiązane z transakcjami adresów ${addressesOf(uncovered.map((item) => item.key))} — dla nich wskaźnik C bez zmian.` : '');
 
   return {
     ...base,

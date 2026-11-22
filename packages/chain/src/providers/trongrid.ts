@@ -210,6 +210,8 @@ export class TronGridProvider implements ChainProvider {
       if (!item.transaction_id || !item.block_ts || !item.quant || !item.from_address || !item.to_address) continue;
       if (item.confirmed === false || (item.finalResult ?? item.contractRet ?? 'SUCCESS') !== 'SUCCESS') continue;
       const outgoing = item.from_address === address;
+      // Przelew na własny adres zostaje w historii, ale bez przepływu netto: nie jest wypływem ani wpływem.
+      const toSelf = outgoing && item.to_address === address;
       const tag = (outgoing ? item.to_address_tag?.to_address_tag : item.from_address_tag?.from_address_tag)?.trim();
       const decimals = declaredDecimals(item.tokenInfo?.tokenDecimal);
       const symbol = verifiedTokenSymbol(labels, network, item.tokenInfo?.tokenId, item.tokenInfo?.tokenAbbr);
@@ -218,10 +220,10 @@ export class TronGridProvider implements ChainProvider {
       transfers.push({
         txid: item.transaction_id,
         time: new Date(item.block_ts).toISOString(),
-        direction: outgoing ? 'out' : 'in',
+        direction: outgoing && !toSelf ? 'out' : 'in',
         counterparty: outgoing ? item.to_address : item.from_address,
         asset,
-        amount: fromBaseUnits(item.quant, decimals ?? 0),
+        amount: toSelf ? 0 : fromBaseUnits(item.quant, decimals ?? 0),
         explorerUrl: this.link(item.transaction_id),
         counterpartyIsContract: (outgoing ? item.toAddressIsContract : item.fromAddressIsContract) === true,
         // TronScan podał wszystko, co publicznie wie o kontrahencie — nie pytamy o niego ponownie.
@@ -253,13 +255,15 @@ export class TronGridProvider implements ChainProvider {
       const from = tronHexToBase58(value.owner_address);
       const to = tronHexToBase58(value.to_address);
       const outgoing = from === address;
+      // Przelew na własny adres zostaje w historii, ale bez przepływu netto: nie jest wypływem ani wpływem.
+      const toSelf = outgoing && to === address;
       transfers.push({
         txid: tx.txID,
         time: new Date(tx.block_timestamp).toISOString(),
-        direction: outgoing ? 'out' : 'in',
+        direction: outgoing && !toSelf ? 'out' : 'in',
         counterparty: outgoing ? to : from,
         asset: 'TRX',
-        amount: fromBaseUnits(value.amount, 6),
+        amount: toSelf ? 0 : fromBaseUnits(value.amount, 6),
         explorerUrl: this.link(tx.txID),
       });
     }
@@ -271,6 +275,8 @@ export class TronGridProvider implements ChainProvider {
     for (const item of items) {
       if (!item.block_timestamp || !item.value || !item.from || !item.to) continue;
       const outgoing = item.from === address;
+      // Przelew na własny adres zostaje w historii, ale bez przepływu netto: nie jest wypływem ani wpływem.
+      const toSelf = outgoing && item.to === address;
       const decimals = declaredDecimals(item.token_info?.decimals);
       const verified = verifiedTokenSymbol(labels, network, item.token_info?.address, item.token_info?.symbol);
       const symbol = decimals === undefined ? amountUnitUnknown(verified) : verified;
@@ -278,10 +284,10 @@ export class TronGridProvider implements ChainProvider {
       transfers.push({
         txid: item.transaction_id,
         time: new Date(item.block_timestamp).toISOString(),
-        direction: outgoing ? 'out' : 'in',
+        direction: outgoing && !toSelf ? 'out' : 'in',
         counterparty: outgoing ? item.to : item.from,
         asset: symbol,
-        amount: fromBaseUnits(item.value, decimals ?? 0),
+        amount: toSelf ? 0 : fromBaseUnits(item.value, decimals ?? 0),
         explorerUrl: this.link(item.transaction_id),
       });
     }

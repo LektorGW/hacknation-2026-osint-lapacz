@@ -442,3 +442,34 @@ test('konto → portfel: adres smart kontraktu nie jest portfelem prywatnym, a w
   const rejected = dossierOf(result, query, { decisions: [decision('address', `bitcoin:${BTC_A}`, 'rejected')] }).indicators.accountWallet.find((link) => link.address === BTC_A)!;
   assert.deepEqual([rejected.status, rejected.indicator.score], ['rejected', 0]);
 });
+
+test('potwierdzenie jednego profilu nie dołącza innego konta; odrzucona para i sprzeczność wstrzymują łączenie', async () => {
+  const { result, query } = await analyse([email, fullName], subjectAndNamesake());
+  const [main, namesake] = ['gitpub.example|jkowalski', 'targ.example|kowalski_auto'];
+
+  // Analityk potwierdza TYLKO profil główny: imiennik (bez wiązań) nie trafia do osoby głównej ani nie dostaje statusu „potwierdzony”.
+  const confirmedMain = dossierOf(result, query, { decisions: [decision('profile', main, 'confirmed', 'profil z akt')] });
+  assert.equal(confirmedMain.persons.length, 2);
+  assert.deepEqual(confirmedMain.persons[0]!.profileIds, [main]);
+  assert.equal(confirmedMain.persons[0]!.status, 'confirmed');
+  const other = confirmedMain.persons.find((person) => person.profileIds.includes(namesake))!;
+  assert.notEqual(other.status, 'confirmed');
+  assert.ok(!other.profileIds.includes(main));
+  assert.equal(confirmedMain.findings.find((finding) => finding.address === BTC_C)!.confidence.score, 0);
+
+  // Potwierdzenie imiennika przy decyzji „to nie ten sam operator” dla pary: profil wyznaczający osobę główną
+  // NIE jest do niego doklejany, a pominięte połączenie jest wykazane z powodem.
+  const rejectedPair = decision('link', `${main}<->${namesake}`, 'rejected', 'różne osoby');
+  const withRejected = dossierOf(result, query, { decisions: [decision('profile', namesake, 'confirmed'), rejectedPair] });
+  assert.ok(!withRejected.persons.some((person) => person.profileIds.includes(main) && person.profileIds.includes(namesake)));
+  const skipped = withRejected.persons.flatMap((person) => person.blockedMerges ?? []);
+  assert.ok(skipped.some((item) => [...item.profileIds].sort().join() === [main, namesake].sort().join() && /decyzja analityka/.test(item.reason)));
+  // Bez odrzuconej pary potwierdzenie imiennika nadal dołącza go do osoby głównej (zachowanie bez zmian).
+  assert.equal(dossierOf(result, query, { decisions: [decision('profile', namesake, 'confirmed')] }).persons.length, 1);
+
+  // Oba profile potwierdzone, ale para odrzucona: nie są łączone, a pominięte połączenie jest wykazane z powodem.
+  const both = dossierOf(result, query, { decisions: [decision('profile', main, 'confirmed'), decision('profile', namesake, 'confirmed'), rejectedPair] });
+  assert.ok(!both.persons.some((person) => person.profileIds.includes(main) && person.profileIds.includes(namesake)));
+  const blocked = both.persons.flatMap((person) => person.blockedMerges ?? []);
+  assert.ok(blocked.some((item) => [...item.profileIds].sort().join() === [main, namesake].sort().join() && /decyzja analityka/.test(item.reason)));
+});

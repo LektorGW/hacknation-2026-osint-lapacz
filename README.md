@@ -388,6 +388,10 @@ Zależności bezpośrednie (wersje zainstalowane, licencje z pola `license` w `n
 
 Dane zewnętrzne w repozytorium: lista OFAC SDN (publiczny plik Departamentu Skarbu USA); etykiety adresów z podanym źródłem przy każdym wpisie kategorii `law_enforcement` i `incident`. Gotowe zbiory adresów incydentów nie zostały podłączone — ich licencje wymagają sprawdzenia ([packages/chain/README.md](packages/chain/README.md)).
 
+## Zabezpieczenia repozytorium
+
+Dane spraw i klucze nie trafiają do gita: `.gitignore` wyklucza `.env`, katalogi bazy, migawki i kopie zapasowe, a hook przed commitem (`scripts/git-hooks/pre-commit`, włączany automatycznie przy `pnpm install`) zatrzymuje commit z plikiem bazy, kluczem API albo plikiem większym niż 15 MB. Historia repozytorium została wyczyszczona z roboczych plików bazy. Szczegóły: [docs/BEZPIECZENSTWO.md](docs/BEZPIECZENSTWO.md#zabezpieczenia-repozytorium-git).
+
 ## Znane ograniczenia
 
 **Sieci i eksploratory**
@@ -397,7 +401,8 @@ Dane zewnętrzne w repozytorium: lista OFAC SDN (publiczny plik Departamentu Ska
 - Operator Blockscout zapowiedział wycofanie dostępu bez klucza do publicznych instancji — sieci działające dziś bez klucza mogą przestać odpowiadać.
 - **Eksploratory bywają wolne.** Limit czasu żądania do eksploratorów EVM to 25 s; dla bardzo aktywnych adresów część danych bywa niedostępna. TronScan i TronGrid bez klucza odrzucają serie żądań — analiza adresu Tron w trybie głębokim trwa 10–40 s. Analiza głęboka całej sprawy może trwać do 4 minut i kończyć się wynikiem częściowym.
 - Domyślnie analizowanych jest około 50 najnowszych transakcji adresu; pełna historia dotyczy adresu będącego przedmiotem sprawy i ma limit żądań.
-- Ethereum: bez transakcji wewnętrznych. Bitcoin: transakcja jest sprowadzana do jednego przelewu.
+- Ethereum: bez transakcji wewnętrznych. Bitcoin: transakcja jest sprowadzana do jednego przelewu — przy wpływie z wieloma wejściami cała kwota jest przypisywana pierwszemu obcemu adresowi wejściowemu, więc pochodzenie środków z takiej transakcji traktuj jako wskazówkę.
+- Ten sam adres w kilku sieciach EVM jest sumowany, a jego klasa (np. kontrakt) jest ustalana przede wszystkim na Ethereum. Jeśli w innej sieci pod tym adresem działa kontrakt, sprawdź sumy tej sieci ręcznie.
 
 **Etykiety i ścieżki**
 
@@ -422,7 +427,8 @@ Dane zewnętrzne w repozytorium: lista OFAC SDN (publiczny plik Departamentu Ska
 **Baza i wdrożenie**
 
 - **PGlite w Windows.** Katalog roboczy nie otwiera się ponownie po zamknięciu procesu, dlatego trwałość zapewnia migawka zapisywana co minutę i przy zamknięciu. Katalog może obsługiwać tylko jeden proces naraz; po zabiciu procesu przepadają zmiany od ostatniej migawki. Do pracy na prawdziwych danych — zewnętrzny PostgreSQL.
-- Brak kont użytkowników i uwierzytelniania: API nasłuchuje tylko lokalnie, autor decyzji jest stały („analityk”).
+- Brak kont użytkowników: API nasłuchuje lokalnie, dostęp chroni opcjonalny token (`OLCYS_API_TOKEN`), autor decyzji jest stały („analityk”).
+- Ochrona przed pobieraniem adresów wewnętrznych (SSRF) sprawdza adres IP po rozwiązaniu nazwy, ale połączenie rozwiązuje nazwę ponownie — przy celowej zmianie odpowiedzi DNS w tym czasie ochronę da się obejść. Uruchamiaj narzędzie w sieci bez dostępu do usług wewnętrznych.
 - Harmonogramy cyklicznych analiz spraw nie przetrwają restartu API.
 - Obraz Docker (`Dockerfile`, `docker-compose.yml`) jest przygotowany i sprawdzony składniowo, ale nie był budowany na maszynie zespołu.
 
@@ -434,21 +440,29 @@ Dane zewnętrzne w repozytorium: lista OFAC SDN (publiczny plik Departamentu Ska
 
 - Zgodność samego nicka albo samego imienia i nazwiska to słaba przesłanka — narzędzie obniża wtedy wynik i pokazuje kilku kandydatów, ale rozstrzyga analityk.
 - Powiązane tożsamości i osoby powiązane są wskazówką do weryfikacji, nigdy ustaleniem.
+- Odpowiedź usługi (giełdy) potwierdza posiadacza konta w usłudze. To, że adres nadawczy należy do tej samej osoby, jest wnioskiem z dopasowanych transakcji — przelew od osoby trzeciej na konto klienta zostałby zaliczony do klienta.
+- Sprawa założona z adresu: sumy i pewność opisują badany adres. „P(osoba–adres) = 100%” oznacza adres wskazany przez analityka, a nie ustalonego właściciela.
+- Księga kroków Wskaźnika Pewności pokazuje zastosowane reguły; przy korektach (np. odrzucenie śladu przez model językowy, górne limity wskaźników A–D) suma kroków może nieznacznie różnić się od wyniku końcowego — wiążący jest wynik końcowy.
 
 ## Zrzuty ekranu, prezentacja, film
 
-Zrzuty ekranu — do uzupełnienia (katalog `docs/zrzuty/` jeszcze nie istnieje):
+Zrzuty ekranu (dane syntetyczne z piaskownicy oraz publiczna sprawa Bitfinex) są w katalogu `docs/zrzuty/`:
 
 | Widok | Plik |
 |---|---|
-| Pulpit | `docs/zrzuty/pulpit.png` — do uzupełnienia |
-| Teczka: dowód spieniężenia | `docs/zrzuty/teczka-dowod.png` — do uzupełnienia |
-| Teczka: adresy i księga Wskaźnika Pewności | `docs/zrzuty/teczka-adresy.png` — do uzupełnienia |
-| Teczka: powiązane tożsamości | `docs/zrzuty/teczka-tozsamosci.png` — do uzupełnienia |
-| Teczka: graf powiązań | `docs/zrzuty/teczka-graf.png` — do uzupełnienia |
-| Monitoring | `docs/zrzuty/monitoring.png` — do uzupełnienia |
-| Raport do druku | `docs/zrzuty/raport.png` — do uzupełnienia |
+| Pulpit | [`docs/zrzuty/pulpit.png`](docs/zrzuty/pulpit.png) |
+| Teczka: ustalenie osoby | [`docs/zrzuty/teczka-osoba.png`](docs/zrzuty/teczka-osoba.png) |
+| Teczka: adresy i księga Wskaźnika Pewności | [`docs/zrzuty/teczka-adresy.png`](docs/zrzuty/teczka-adresy.png) |
+| Teczka: dowód spieniężenia | [`docs/zrzuty/teczka-dowod.png`](docs/zrzuty/teczka-dowod.png) |
+| Teczka: powiązane tożsamości | [`docs/zrzuty/teczka-tozsamosci.png`](docs/zrzuty/teczka-tozsamosci.png) |
+| Teczka: adresy wykluczone (giełda, kontrakt) | [`docs/zrzuty/teczka-wykluczenia.png`](docs/zrzuty/teczka-wykluczenia.png) |
+| Teczka: zajęcie i pochodzenie środków (Bitfinex, dane publiczne) | [`docs/zrzuty/teczka-zajecie.png`](docs/zrzuty/teczka-zajecie.png) |
+| Teczka: graf powiązań | [`docs/zrzuty/teczka-graf.png`](docs/zrzuty/teczka-graf.png) |
+| Monitoring źródeł | [`docs/zrzuty/monitoring.png`](docs/zrzuty/monitoring.png) |
+| Zasady punktacji | [`docs/zrzuty/zasady-punktacji.png`](docs/zrzuty/zasady-punktacji.png) |
+| Raport do druku | [`docs/zrzuty/raport.png`](docs/zrzuty/raport.png) |
 
-- Prezentacja (PDF, do 10 slajdów) — do uzupełnienia.
-- Film (do 3 minut) — do uzupełnienia.
-- Wersja demonstracyjna online — do uzupełnienia.
+Zrzuty pochodzą z wcześniejszej wersji interfejsu — układ podsumowania sprawy i raportu został od tego czasu uproszczony.
+
+- Prezentacja i film demonstracyjny (do 3 minut) — oddane w zgłoszeniu konkursowym. Zapasowa wersja prezentacji (PDF, 10 slajdów): [`docs/prezentacja-zapasowa/OLCyS-prezentacja-zapasowa.pdf`](docs/prezentacja-zapasowa/OLCyS-prezentacja-zapasowa.pdf).
+- Wersja demonstracyjna: `pnpm start:demo` (API i piaskownica z danymi syntetycznymi) albo sam interfejs z parametrem `?demo=1` (dane wbudowane, bez API).

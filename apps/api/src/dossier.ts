@@ -50,7 +50,7 @@ import { buildCashOutProof } from './proof.ts';
 import type { CashOutProof } from './proof.ts';
 import { buildRelatedPersons } from './relations.ts';
 import type { OtherCase, RelatedPersonView } from './relations.ts';
-import { buildReplyView, evaluateReply, formatFiat, payoutSummary, replyCitation, replyKeyFindings, replyRef, sameFullName } from './service-reply.ts';
+import { buildReplyView, evaluateReply, formatFiat, payoutSummary, payoutsForMatch, replyCitation, replyKeyFindings, replyRef, sameFullName } from './service-reply.ts';
 import type { ServiceReply, ServiceReplyRef, ServiceReplyView } from './service-reply.ts';
 import type { DocumentedExitSource } from './cashout-stage.ts';
 import { buildServiceLinks, detectServiceMentions } from './services.ts';
@@ -510,6 +510,8 @@ export function buildDossier(input: DossierInput): DossierView {
     const holderName = reply.payload.customer?.fullName;
     for (const match of evaluation.matches.filter((item) => !item.excluded)) {
       const covered = new Set(match.txids);
+      // Wypłata powiązana z transakcją innego adresu nie dokumentuje wyjścia z tego adresu.
+      const paid = evaluation.fiatExitKeys.includes(match.key);
       for (const proof of cashOutProof) {
         if (proof.serviceReply || `${proof.network}:${proof.cluster?.seed ?? proof.address}` !== match.key || !proof.trail.hops.some((hop) => covered.has(hop.txid))) continue;
         const outcome = evaluation.identity === 'confirmed' ? ('confirmed' as const) : evaluation.identity === 'other_person' ? ('other_person' as const) : ('holder_unverified' as const);
@@ -517,13 +519,13 @@ export function buildDossier(input: DossierInput): DossierView {
           ...replyRef(reply),
           outcome,
           ...(holderName ? { holderName } : {}),
-          fiatExitDocumented: evaluation.documentsFiatExit && linkedKeys.has(match.key),
+          fiatExitDocumented: paid && linkedKeys.has(match.key),
           note:
             outcome === 'confirmed'
-              ? `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT): konto, na które trafiły te środki, należy do kandydata głównego${evaluation.documentsFiatExit ? '; usługa potwierdziła wypłatę na rachunek bankowy' : '; wypłaty na rachunek odpowiedź nie potwierdza'}.`
+              ? `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT): konto, na które trafiły te środki, należy do kandydata głównego${paid ? '; usługa potwierdziła wypłatę na rachunek bankowy' : '; wypłaty na rachunek odpowiedź nie potwierdza'}.`
               : outcome === 'other_person'
                 ? `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT): konto, na które trafiły te środki, należy do INNEJ osoby${holderName ? ` („${holderName}”)` : ''}. Ustalenie pokazuje przekazanie środków do usługi, a nie spieniężenie przez kandydata głównego.`
-                : `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT) dotyczy tych transakcji${evaluation.documentsFiatExit ? ' i potwierdza wypłatę na rachunek bankowy' : ''}; właściciela konta nie da się porównać z kandydatem głównym.`,
+                : `Odpowiedź ${replyCitation(reply)} (dokument spoza OSINT) dotyczy tych transakcji${paid ? ' i potwierdza wypłatę na rachunek bankowy' : ''}; właściciela konta nie da się porównać z kandydatem głównym.`,
         };
       }
     }
@@ -591,9 +593,11 @@ export function buildDossier(input: DossierInput): DossierView {
     const other = evaluation?.identity === 'other_person' && holder !== undefined;
     const identity = other ? linkedIdentities.find((item) => [item.fullName, item.displayName].some((name) => name !== undefined && sameFullName(name, holder!))) : undefined;
     const candidate = other ? persons.slice(1).find((person) => person.fullName !== undefined && sameFullName(person.fullName, holder!)) : undefined;
-    const exitKeys = evaluation?.documentsFiatExit ? evaluation.matches.filter((item) => !item.excluded && linkedKeys.has(item.key)).map((item) => item.key) : [];
+    // Tylko adresy, których dotyczy wypłata: powiązana z ich transakcją albo bez wskazanej transakcji.
+    const exitKeys = evaluation ? evaluation.fiatExitKeys.filter((key) => linkedKeys.has(key)) : [];
     for (const key of exitKeys) {
       const match = evaluation!.matches.find((item) => item.key === key)!;
+      const own = payoutsForMatch(reply.payload.fiatPayouts, match);
       replyExits.set(key, [
         ...(replyExits.get(key) ?? []),
         {
@@ -602,9 +606,10 @@ export function buildDossier(input: DossierInput): DossierView {
           serviceId: reply.serviceId,
           reference: reply.reference,
           receivedAt: reply.receivedAt,
-          payouts: reply.payload.fiatPayouts.length,
-          payoutSummary: payoutSummary(reply.payload.fiatPayouts),
+          payouts: own.length,
+          payoutSummary: payoutSummary(own),
           txids: match.txids,
+          ...(own.some((payout) => !payout.relatedTxid) ? { payoutNotTied: true } : {}),
           ...(other ? { holderNote: `Według usługi właścicielem konta jest inna osoba („${holder}”), a nie kandydat główny — wypłatę na rachunek otrzymał właściciel konta.` } : {}),
         },
       ]);

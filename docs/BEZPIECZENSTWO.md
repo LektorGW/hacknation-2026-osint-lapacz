@@ -148,3 +148,21 @@ wypisywania wartości tokenu ani klucza.
   dostęp z sieci lokalnej zabezpiecza dopiero `OLCYS_API_TOKEN`.
 - Brak kont użytkowników: dziennik audytu zapisuje stałego wykonawcę `analityk`.
 - Archiwum bez `OLCYS_ARCHIVE_DIR` istnieje tylko u analityka, który je pobrał; baza ma jego skrót do weryfikacji.
+
+## Zabezpieczenia repozytorium (git)
+
+Dane spraw i klucze nigdy nie trafiają do repozytorium — chronią przed tym trzy warstwy.
+
+1. **`.gitignore`** wyklucza plik `.env` (klucze), katalogi bazy `apps/api/.data*` i `apps/api/data/`, migawki (`*.migawka.tar.gz`, `*.bak`), kopie zapasowe (`kopie/`, `olcys-migawka-*.tar.gz`, `olcys-pg-*.dump`), archiwa spraw i plik blokady `*.blokada`.
+2. **Hook przed commitem** (`scripts/git-hooks/pre-commit`) włącza się sam przy `pnpm install` (skrypt `prepare` ustawia `core.hooksPath`). Zatrzymuje commit, który zawiera:
+   - plik bazy, migawkę, kopię zapasową, blokadę albo `.env` (poza `.env.example`);
+   - treść wyglądającą na klucz API lub token (OpenAI, Anthropic, GitHub, GitLab, AWS);
+   - plik większy niż 15 MB.
+
+   Ominięcie (`git commit --no-verify`) jest możliwe tylko świadomie.
+3. **Czysta historia.** 22.11.2026 historia wszystkich gałęzi została przepisana narzędziem `git filter-repo`: usunięto robocze katalogi bazy PGlite, migawkę i plik blokady, które wcześniej trafiły do commitów, oraz prawdziwe nazwiska z danych testowych. Zmiany wysłano wymuszonym pushem. Skan całej historii na wzorce kluczy nie znalazł żadnego klucza.
+
+Dodatkowo:
+- Klucze są tylko w lokalnym `.env`. Repozytorium zawiera wyłącznie `.env.example` bez wartości.
+- Testy i piaskownica używają wyłącznie danych syntetycznych i fikcyjnych nazwisk. Listy sankcyjne i ostrzeżenia KNF to publiczne rejestry.
+- Kopie repozytorium sklonowane przed 22.11.2026 zawierają starą historię — należy je usunąć i sklonować repozytorium od nowa.
